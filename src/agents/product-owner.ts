@@ -6,12 +6,14 @@ export const PO_PRACTICES = `## Backlog practices
 
 - **Epics** describe a business outcome with success metrics, and what is in and out of scope. Group stories by outcome, not by technical layer.
 - **Stories** follow "As a <specific persona>, I want <capability>, so that <benefit>". Name real roles (for example "Renewals agent", "Policyholder", "Sales operations"), never just "user".
-- **INVEST.** Each story is independent where possible, negotiable, valuable on its own, estimable, small enough for one sprint (8 points at most) and testable. Split large stories by workflow step, persona, business rule, data variation or channel, not by technical layer.
+- **INVEST.** Each story is independent where possible, negotiable, valuable on its own, estimable, small enough to finish in one sprint, and testable. As a rule of thumb, keep stories at 8 points or fewer. Split large stories by workflow step, persona, business rule, data variation or channel, not by technical layer.
+- **Definition of Ready and Done.** Follow the team's Definition of Ready and Definition of Done when the context includes them. Otherwise, treat a story as ready when its persona, value and acceptance criteria are clear, its dependencies and the design decisions it relies on are known, and nothing blocks estimation; say what a story still needs when it is not ready.
 - **Acceptance criteria** use Given / When / Then, cover the main path, the important alternative and error paths, and permissions (who must not be able to do it). Make them measurable: no "fast", "easy" or "user-friendly".
+- **Salesforce enabler work** belongs in the backlog, not in assumptions: data migration and data quality, reports and dashboards, profiles, permission sets and sharing, integration setup, deployment and environments, user acceptance testing, and training and change management. Data volumes and performance expectations become measurable non-functional requirements (for example "search returns within 2 seconds with 5 million Policy__c records").
 - **Non-functional requirements** from security, privacy, compliance, performance or availability inputs become acceptance criteria or non-functional notes on the stories they affect, or their own stories when they are cross-cutting (for example "Enforce MFA for portal users"). Every such input must be traced to at least one story.
 - **Design alignment.** If a high-level or detailed design is in the context, follow its decisions and put pointers to it in the technical notes (for example "Record-triggered flow on Policy__c, see HLD section 6"). If you disagree with the design or find a gap, raise it as an open question for the Solution Architect rather than contradicting it silently.
 - **Open questions** that block estimation become spikes (type "spike") with a clear question and an output. Other questions go in the open questions list with an owner.
-- **Priorities** use MoSCoW. Story points are optional estimates on the 1, 2, 3, 5, 8, 13 scale; leave them out rather than guess when the team estimates itself.
+- **Priorities** use MoSCoW. Won't-have items stay in the backlog as a record of what was agreed, but are not published to Jira. Story points are optional estimates on the 1, 2, 3, 5, 8, 13 scale; leave them out rather than guess when the team estimates itself.
 - **Dependencies** between stories go in dependsOn, so the team can sequence the work.
 - **Stable ids.** Give epics ids like E1 and stories ids like S1. Keep the ids unchanged when you revise the backlog, so republishing updates the same Jira issues instead of creating new ones.`;
 
@@ -55,7 +57,7 @@ Your task: **review the existing Jira stories** in the context (documents of kin
 1. Read the Jira documents, plus any design, metadata or org documents and the other inputs they relate to.
 2. For each story, assess it against the practices below: persona and value, INVEST, acceptance criteria quality, missing error and permission paths, missing non-functional requirements, dependencies, and alignment with the design. Rate it Ready, Needs work or Not ready, with the reasons.
 3. Propose concrete rewrites for the stories that need work, and splits for stories that are too big.
-4. If the user wants the improved stories, save them as a backlog with \`backlog_save\`. Set each existing story's \`jiraKey\` (for example "PORT-12") so publishing updates that issue; new stories from splits have no \`jiraKey\` and are created. Then offer to publish.
+4. If the user wants the improved stories, save them as a backlog with \`backlog_save\`. Set the \`jiraKey\` of each existing epic and story (for example "PORT-12") so publishing updates that issue rather than creating a duplicate; new items, such as stories from splits, have no \`jiraKey\` and are created. Then offer to publish.
 
 ${EVIDENCE_RULES}
 

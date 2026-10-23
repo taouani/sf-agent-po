@@ -116,8 +116,9 @@ export interface Finding {
   message: string;
 }
 
-const FIBONACCI = new Set([1, 2, 3, 5, 8, 13, 21]);
-const VAGUE = /\b(fast|quick(ly)?|user[- ]friendly|easy|easily|intuitive|appropriate(ly)?|etc\.?|and so on|as needed|seamless(ly)?|robust)\b/i;
+const SCALE = new Set([1, 2, 3, 5, 8, 13]);
+// "quick" is not listed because Quick Actions are a Salesforce feature.
+const VAGUE = /\b(fast|user[- ]friendly|easy|easily|intuitive|appropriate(ly)?|etc\.?|and so on|as needed|seamless(ly)?|robust)\b/i;
 const GENERIC_PERSONA = /^(a |an |the )?(user|users|someone|customer|person)$/i;
 const SENSITIVE = /\b(security|secure|encrypt\w*|gdpr|hipaa|pci|sox|mfa|sso|privacy|personal data|pii|compliance|audit\w*|retention|consent)\b/i;
 
@@ -145,6 +146,7 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
   }
 
   const storyIds = new Set(allStories(backlog).map(({ story }) => story.id));
+  const wontIds = new Set(allStories(backlog).filter(({ epic, story }) => story.priority === "wont" || epic.priority === "wont").map(({ story }) => story.id));
   const docIds = new Set(contextDocs.map((d) => d.id));
   const referenced = new Set<string>();
   const checkSources = (where: string, sourceIds: string[] | undefined) => {
@@ -162,7 +164,7 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
       checkSources(where, s.sourceIds);
       if (!s.sourceIds?.length && !epic.sourceIds?.length) add("warning", where, "No source documents: the story cannot be traced to a requirement.");
       if (GENERIC_PERSONA.test(s.persona.trim())) add("warning", where, `Persona "${s.persona}" is generic; name the role, e.g. "Renewals agent".`);
-      if (s.storyPoints !== undefined && !FIBONACCI.has(s.storyPoints)) add("warning", where, `Story points ${s.storyPoints} is not on the 1, 2, 3, 5, 8, 13, 21 scale.`);
+      if (s.storyPoints !== undefined && !SCALE.has(s.storyPoints)) add("warning", where, `Story points ${s.storyPoints} is not on the 1, 2, 3, 5, 8, 13 scale.`);
       if (s.storyPoints !== undefined && s.storyPoints > 8) add("warning", where, `At ${s.storyPoints} points the story is likely too big for a sprint; consider splitting it.`);
       if (s.acceptanceCriteria.length > 8) add("warning", where, `${s.acceptanceCriteria.length} acceptance criteria suggest the story should be split.`);
       s.acceptanceCriteria.forEach((ac, i) => {
@@ -172,11 +174,18 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
       for (const dep of s.dependsOn ?? []) {
         if (dep === s.id) add("error", where, "A story cannot depend on itself.");
         else if (!storyIds.has(dep)) add("error", where, `Depends on ${dep}, which is not a story in this backlog.`);
+        else if (s.priority !== "wont" && epic.priority !== "wont" && wontIds.has(dep)) add("warning", where, `Depends on ${dep}, which is won't have and is not published to Jira.`);
+      }
+      if (epic.priority === "wont" && s.priority && s.priority !== "wont") {
+        add("warning", where, `Priority is ${s.priority} but epic ${epic.id} is won't have, so the story is not published to Jira.`);
       }
       if (s.type === "spike" && s.storyPoints && s.storyPoints > 5) add("info", where, "Spikes are usually time-boxed to a few days.");
     }
   }
   checkSources("open questions", backlog.openQuestions?.flatMap((q) => q.sourceIds ?? []));
+  for (const cycle of dependencyCycles(backlog)) {
+    add("error", cycle[0], `Circular dependency: ${cycle.join(" depends on ")}. None of these stories can start first.`);
+  }
 
   for (const doc of contextDocs) {
     const isInput = !(doc.metadata as { artifact?: boolean } | undefined)?.artifact && !["metadata", "org"].includes(doc.kind);
@@ -192,6 +201,29 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
     add("info", "open questions", "There are open questions but no spikes; consider a spike for any question that blocks estimation.");
   }
   return findings;
+}
+
+/** Each dependency cycle between stories, as the ids along it with the first repeated at the end. */
+function dependencyCycles(backlog: Backlog): string[][] {
+  // Self-dependencies are reported on their own, so they are left out here.
+  const edges = new Map(allStories(backlog).map(({ story }) => [story.id, (story.dependsOn ?? []).filter((d) => d !== story.id)]));
+  const state = new Map<string, "visiting" | "done">();
+  const stack: string[] = [];
+  const cycles: string[][] = [];
+  const visit = (id: string) => {
+    if (state.get(id) === "done") return;
+    if (state.get(id) === "visiting") {
+      cycles.push([...stack.slice(stack.indexOf(id)), id]);
+      return;
+    }
+    state.set(id, "visiting");
+    stack.push(id);
+    for (const dep of edges.get(id) ?? []) if (edges.has(dep)) visit(dep);
+    stack.pop();
+    state.set(id, "done");
+  };
+  for (const id of edges.keys()) visit(id);
+  return cycles;
 }
 
 export function findingsToText(findings: Finding[]): string {

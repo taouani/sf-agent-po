@@ -141,28 +141,30 @@ export function registerConfluenceTools(server: McpServer, deps: Deps): void {
       inputSchema: { ...targetSchema, approvalToken: z.string().describe("Token returned by confluence_publish_preview.") },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
-    guard(async ({ approvalToken: token, ...args }) => {
-      const { doc, client, title, storage, target, payload } = await plan(args);
-      checkApproval(deps.approvalSecret, payload, token);
-      await confirmWithUser(
-        server,
-        target.mode === "update" ? `Replace the content of Confluence page "${target.currentTitle}" with "${title}"?` : `Create Confluence page "${title}" in space ${target.spaceKey}?`,
-      );
-      const page =
-        target.mode === "update"
-          ? await client.updatePage({ pageId: target.pageId, expectedVersion: target.version, title, storage, message: `${doc.title} v${doc.metadata.version}` })
-          : await client.createPage({ spaceId: target.spaceId, parentId: target.parentId, title, storage });
-      // Only an artifact's own page is remembered; publishing into some other page does not re-point it.
-      const ownPage = target.mode === "create" || target.ownPage;
-      const publishedVersion = doc.metadata.version;
-      await updateArtifactMeta(deps.store, args.context, doc, (meta) => ({
-        // If the artifact was saved again while this ran, the new version is still unpublished.
-        status: meta.version === publishedVersion ? "published" : "changed",
-        ...(ownPage
-          ? { confluence: { pageId: page.pageId, url: page.url, pageVersion: page.version, artifactVersion: publishedVersion, publishedAt: new Date().toISOString() } }
-          : {}),
-      }));
-      return text(`${target.mode === "update" ? "Updated" : "Created"} Confluence page "${title}" (version ${page.version}): ${page.url}`);
-    }),
+    guard(({ approvalToken: token, ...args }) =>
+      deps.publishLock.run(`${args.context}:${args.artifactId}`, async () => {
+        const { doc, client, title, storage, target, payload } = await plan(args);
+        checkApproval(deps.approvalSecret, payload, token);
+        await confirmWithUser(
+          server,
+          target.mode === "update" ? `Replace the content of Confluence page "${target.currentTitle}" with "${title}"?` : `Create Confluence page "${title}" in space ${target.spaceKey}?`,
+        );
+        const page =
+          target.mode === "update"
+            ? await client.updatePage({ pageId: target.pageId, expectedVersion: target.version, title, storage, message: `${doc.title} v${doc.metadata.version}` })
+            : await client.createPage({ spaceId: target.spaceId, parentId: target.parentId, title, storage });
+        // Only an artifact's own page is remembered; publishing into some other page does not re-point it.
+        const ownPage = target.mode === "create" || target.ownPage;
+        const publishedVersion = doc.metadata.version;
+        await updateArtifactMeta(deps.store, args.context, doc, (meta) => ({
+          // If the artifact was saved again while this ran, the new version is still unpublished.
+          status: meta.version === publishedVersion ? "published" : "changed",
+          ...(ownPage
+            ? { confluence: { pageId: page.pageId, url: page.url, pageVersion: page.version, artifactVersion: publishedVersion, publishedAt: new Date().toISOString() } }
+            : {}),
+        }));
+        return text(`${target.mode === "update" ? "Updated" : "Created"} Confluence page "${title}" (version ${page.version}): ${page.url}`);
+      }),
+    ),
   );
 }

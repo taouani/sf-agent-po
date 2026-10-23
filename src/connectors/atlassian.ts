@@ -25,6 +25,13 @@ export class AtlassianError extends Error {
   }
 }
 
+export interface IssueState {
+  updated: string;
+  summary: string;
+  parentKey?: string;
+  labels: string[];
+}
+
 export interface PublishedPage {
   pageId: string;
   url: string;
@@ -97,10 +104,11 @@ export class AtlassianClient {
     return { key: r.key, url: `${this.config.siteUrl}/browse/${r.key}` };
   }
 
-  /** The issue's last-updated timestamp, used to detect edits made in Jira between publishes. */
-  async getIssueUpdated(key: string): Promise<string> {
-    const r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=updated`);
-    return String(r.fields?.updated ?? "");
+  /** What an issue looks like in Jira now: used to detect edits, show what an update replaces, and keep other teams' labels. */
+  async getIssueState(key: string): Promise<IssueState> {
+    const r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=updated,summary,parent,labels`);
+    const f = r.fields ?? {};
+    return { updated: String(f.updated ?? ""), summary: f.summary ?? "", parentKey: f.parent?.key, labels: f.labels ?? [] };
   }
 
   async updateIssue(key: string, fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
@@ -108,11 +116,15 @@ export class AtlassianClient {
     return { key, url: `${this.config.siteUrl}/browse/${key}` };
   }
 
-  /** Records that `blocker` blocks `blocked`, using Jira's default "Blocks" link type. */
+  /**
+   * Records that `blocker` blocks `blocked`, using Jira's default "Blocks" link type.
+   * In this endpoint the inward issue is the one that blocks and the outward
+   * issue the one that is blocked, the reverse of what the field names suggest.
+   */
   async linkBlocks(blocker: string, blocked: string): Promise<void> {
     await this.request("/rest/api/3/issueLink", {
       method: "POST",
-      body: JSON.stringify({ type: { name: "Blocks" }, outwardIssue: { key: blocker }, inwardIssue: { key: blocked } }),
+      body: JSON.stringify({ type: { name: "Blocks" }, inwardIssue: { key: blocker }, outwardIssue: { key: blocked } }),
     });
   }
 

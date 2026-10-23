@@ -4,6 +4,7 @@ import { ContextStore } from "./context/store.js";
 import { SalesforceOrg } from "./connectors/salesforce.js";
 import { AtlassianClient, atlassianConfigFromEnv } from "./connectors/atlassian.js";
 import type { Deps } from "./tools/shared.js";
+import { KeyedLock } from "./util/lock.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerDesignTools } from "./tools/design.js";
 import { registerConfluenceTools } from "./tools/confluence.js";
@@ -31,6 +32,7 @@ export function createServer(opts: ServerOptions): McpServer {
       return new AtlassianClient(config);
     },
     approvalSecret: randomBytes(32),
+    publishLock: new KeyedLock(),
   };
 
   registerContextTools(server, deps);
