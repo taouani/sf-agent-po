@@ -1,0 +1,14 @@
+From: Head of Personal Lines <personal.lines@example-insurer.com>
+To: Product Manager <pm@example-insurer.com>
+Cc: Solution Architect <architect@example-insurer.com>
+Subject: Re: Renewal portal scope
+Date: Mon, 20 Oct 2026 08:30:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Thanks for the summary. Two points:
+
+- Mid-term changes are out of scope for phase 1. Let's not lose focus.
+- If a renewal premium goes up by more than 20%, I want an agent to call the customer before they can renew online. Retention matters more than self-service in that case.
+
+We need phase 1 live before 1 November next year, ahead of the peak.

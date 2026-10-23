@@ -6,7 +6,7 @@ import { poBacklogPrompt, poReviewStoriesPrompt } from "../agents/product-owner.
 import { AtlassianError, type IssueState } from "../connectors/atlassian.js";
 import { approvalToken, checkApproval } from "../publish/approval.js";
 import { epicDescription, storyDescription } from "../publish/adf.js";
-import { type Deps, confirmWithUser, contextName, guard, text } from "./shared.js";
+import { type Deps, confirmWithUser, contextName, guard, industryArg, text } from "./shared.js";
 import { userPrompt } from "./design.js";
 
 /** Where each backlog item was published in Jira, so republishing updates instead of duplicating. */
@@ -426,9 +426,9 @@ export function registerBacklogTools(server: McpServer, deps: Deps): void {
     {
       title: "Product Owner: build the backlog",
       description: "Turn the inputs in a requirement context (and the SA's design, if any) into epics and user stories with acceptance criteria.",
-      argsSchema: { context: contextArg, scope: z.string().optional().describe("Optional scope, e.g. a capability or release.") },
+      argsSchema: { context: contextArg, scope: z.string().optional().describe("Optional scope, e.g. a capability or release."), industry: industryArg },
     },
-    ({ context, scope }) => userPrompt(poBacklogPrompt({ context: context || "default", scope })),
+    ({ context, scope, industry }) => userPrompt(poBacklogPrompt({ context, scope, industry: industry || undefined })),
   );
 
   server.registerPrompt(
@@ -436,8 +436,8 @@ export function registerBacklogTools(server: McpServer, deps: Deps): void {
     {
       title: "Product Owner: review Jira stories",
       description: "Review the Jira stories in a requirement context for readiness and propose rewrites and splits.",
-      argsSchema: { context: contextArg, scope: z.string().optional().describe("Optional subset, e.g. Jira keys or an epic.") },
+      argsSchema: { context: contextArg, scope: z.string().optional().describe("Optional subset, e.g. Jira keys or an epic."), industry: industryArg },
     },
-    ({ context, scope }) => userPrompt(poReviewStoriesPrompt({ context: context || "default", scope })),
+    ({ context, scope, industry }) => userPrompt(poReviewStoriesPrompt({ context, scope, industry: industry || undefined })),
   );
 }

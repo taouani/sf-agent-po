@@ -1,4 +1,5 @@
-import { EVIDENCE_RULES, PUBLISH_RULES, contextLine } from "./common.js";
+import { EVIDENCE_RULES, PUBLISH_RULES, type PromptArgs, contextText } from "./common.js";
+import { industryBlock } from "./industries.js";
 
 export const SA_ROLE = `You are an experienced Salesforce Solution Architect. You turn business needs into designs that a delivery team can build and that fit the org that already exists. You favour standard and declarative capabilities, and you choose code when it is the better engineering answer, saying why. You think about data volumes, governor limits, sharing and security, integration patterns, licensing and the cost of change, and you are explicit about trade-offs.`;
 
@@ -90,10 +91,10 @@ Metadata components to deploy (in package.xml or source format terms), pre and p
 
 ## 9. Open questions and risks`;
 
-export function saHighLevelDesignPrompt(args: { context: string; focus?: string }): string {
+export function saHighLevelDesignPrompt(args: PromptArgs & { focus?: string }): string {
   return `${SA_ROLE}
 
-${contextLine(args.context)}
+${contextText(args)}
 
 Your task: produce a **high-level design** from the inputs in the context. This is often the first deliverable, made from raw inputs such as meeting notes, emails, PI planning output and high-level Jira or Confluence requirements, and the Product Owner will turn it into epics and stories.${args.focus ? `\n\nFocus on: ${args.focus}` : ""}
 
@@ -105,7 +106,7 @@ Your task: produce a **high-level design** from the inputs in the context. This 
 4. Save it with \`design_save\` (designType "high-level").
 5. Give the user a short summary: the main decisions, the top risks, and the open questions that need an answer before delivery. Offer to publish it to Confluence.
 
-${EVIDENCE_RULES}
+${industryBlock(args.industry)}${EVIDENCE_RULES}
 
 ${SA_PRINCIPLES}
 
@@ -118,10 +119,10 @@ The save tool is \`design_save\`. The preview and publish tools are \`confluence
 ${HIGH_LEVEL_DESIGN_TEMPLATE}`;
 }
 
-export function saDetailedDesignPrompt(args: { context: string; scope?: string }): string {
+export function saDetailedDesignPrompt(args: PromptArgs & { scope?: string }): string {
   return `${SA_ROLE}
 
-${contextLine(args.context)}
+${contextText(args)}
 
 Your task: produce a **detailed design** that a developer and an admin can build from. Base it on the stories or epics in the context (Jira documents or a backlog artifact) and on the high-level design if there is one. It must fit the existing metadata exactly.${args.scope ? `\n\nScope: ${args.scope}` : ""}
 
@@ -133,7 +134,7 @@ Your task: produce a **detailed design** that a developer and an admin can build
 4. Save it with \`design_save\` (designType "detailed").
 5. Summarise the components to build, the risks, and the open questions, and offer to publish it to Confluence.
 
-${EVIDENCE_RULES}
+${industryBlock(args.industry)}${EVIDENCE_RULES}
 
 ${SA_PRINCIPLES}
 

@@ -16,7 +16,7 @@ The host's own model does the reasoning. This server supplies:
 | 1 | Shared core: requirement context, input loaders, metadata sources, org/Jira/Confluence readers | Done |
 | 2 | SA agent: high-level design from raw inputs, detailed design from stories, published to Confluence | Done |
 | 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Done |
-| 4 | Per-host packaging (Claude Code, Cursor, Copilot), test set, industry templates | Next |
+| 4 | Per-host packaging (Claude Code, Cursor, Copilot), sample scenarios, industry templates | Done |
 
 ## Tools
 
@@ -37,6 +37,8 @@ The host's own model does the reasoning. This server supplies:
 | `backlog_get` / `backlog_check` | Returns a backlog as JSON for revision, or re-runs the quality check |
 | `jira_publish_preview` | Lists every epic and story that would be created or updated in a Jira project, and returns an approval token |
 | `jira_publish` | Creates epics, stories under them and "Blocks" links for dependencies; updates only what changed since the last publish |
+| `industry_guidance` | Returns guidance for an industry: Salesforce products, data model, regulation, integrations and pitfalls |
+| `agent_workflow` | Returns the full method and template of an SA or PO workflow (the same text as the MCP prompts), for agents in hosts where the model cannot start a prompt |
 
 Every tool takes a `context` name (default `default`), so you can keep one context per feature or epic. Contexts are saved as JSON under the workspace folder, so they persist between sessions and are shared by every host pointed at the same workspace. Re-adding a source replaces the earlier copy.
 
@@ -49,7 +51,11 @@ Every tool takes a `context` name (default `default`), so you can keep one conte
 | `po_backlog` | Product Owner | Builds epics and INVEST user stories from the inputs and the SA's design, with Given/When/Then criteria, NFRs traced to security and compliance inputs, spikes for open questions |
 | `po_review_stories` | Product Owner | Reviews existing Jira stories for readiness and proposes rewrites and splits, which can be published back to the same issues |
 
-Each prompt takes a `context` argument. In Claude Code they appear as `/mcp__sf-agent-po__sa_high_level_design`; in VS Code Copilot Chat as `/mcp.sf-agent-po.sa_high_level_design`. Step 4 adds native agent files for each host as well.
+Each prompt takes a `context` argument and an optional `industry` (with completion). In Claude Code they appear as `/mcp__sf-agent-po__sa_high_level_design`; in VS Code Copilot Chat as `/mcp.sf-agent-po.sa_high_level_design`. For hosts or teams that prefer native agent files, see [Agent files for your tool](#agent-files-for-your-tool).
+
+### Industry templates
+
+`financial-services`, `insurance`, `health`, `manufacturing`, `automotive`, `energy-utilities`, `public-sector`, `nonprofit`, `education`, `retail-consumer-goods` and `communications`. Each one points the agents at the relevant Salesforce industry products and data model, the regulations to trace (for example HIPAA, PCI DSS, KYC/AML, FedRAMP), the usual integration landscape and common pitfalls. The agents are told to confirm industry objects and features against the org before relying on them, since names differ between releases and licences. Common names such as "banking", "healthcare" or "Energy & Utilities" are accepted too.
 
 ### Publishing and approval
 
@@ -148,6 +154,26 @@ claude mcp add sf-agent-po \
   }
 }
 ```
+
+## Agent files for your tool
+
+The MCP prompts work in any host that supports them. To also get native agents and slash commands, generate them into your project. The commands contain the same text as the prompts; the agents call the `agent_workflow` tool to get the full method and templates, since a model cannot start an MCP prompt itself.
+
+```bash
+node /absolute/path/to/sf-agent-po/dist/index.js init --host all --dir /path/to/your/project
+```
+
+| Host | Files | How to use |
+| --- | --- | --- |
+| Claude Code | `.claude/agents/salesforce-{solution-architect,product-owner}.md`, `.claude/commands/{sa-hld,sa-detailed,po-backlog,po-review}.md` | Subagents, plus `/sa-hld renewal integrations` etc. (the first word is the context) |
+| Cursor | `.cursor/rules/salesforce-*.mdc` (agent-requested rules), `.cursor/commands/*.md` | `/sa-hld` etc. in Agent chat; name the context in your message, or the agent asks |
+| GitHub Copilot (VS Code) | `.github/agents/salesforce-*.agent.md` (custom agents), `.github/prompts/*.prompt.md` | Pick the agent, or run `/sa-hld context=renewal` etc. |
+
+`--host` takes `claude-code`, `cursor`, `copilot` or `all` (the default); repeat it or separate hosts with commas. Existing files are skipped unless you pass `--force`, symbolic links are never followed out of the project, and `--dry-run` lists what would be written. VS Code also loads Claude Code agents from `.claude/agents`, so when those are present the Copilot agent files are left out to avoid listing each agent twice. The Copilot agents are marked for VS Code, because the Copilot agent on github.com cannot reach a local MCP server.
+
+## Sample scenarios
+
+[`examples/`](examples/) has realistic input sets (an insurance renewal portal with existing metadata, and a business banking onboarding without any) with a rubric of what good SA and PO output contains. Use them to try the agents, compare models or prompt changes, and as a regression set; the tests check that a reference backlog passes the quality check and covers each of the security team's six requirements.
 
 ## Example
 

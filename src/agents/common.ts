@@ -17,6 +17,17 @@ export const PUBLISH_RULES = `## Saving and publishing
 - Never publish without the user's explicit go-ahead in this conversation. To publish, call the preview tool, show the user the target and title and summarise what will be written, and wait for them to approve. Only then call the publish tool with the approval token from the preview.
 - If the user asks for changes after a preview, save the new version and preview again; an old token will not work.`;
 
-export function contextLine(context: string): string {
+export interface PromptArgs {
+  /** Requirement context name, for MCP prompts. */
+  context?: string;
+  /** Replaces the context sentence, for host files where the user names the context when invoking. */
+  contextText?: string;
+  /** Industry template id, see industries.ts. */
+  industry?: string;
+}
+
+export function contextText(args: PromptArgs): string {
+  if (args.contextText) return args.contextText;
+  const context = args.context || "default";
   return `The requirement context to work from is "${context}". Pass \`context: "${context}"\` to every tool call.`;
 }

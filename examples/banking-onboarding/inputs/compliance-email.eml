@@ -1,0 +1,11 @@
+From: Financial Crime Compliance <fcc@example-bank.com>
+To: Onboarding Programme <onboarding@example-bank.com>
+Subject: Non-negotiables for the onboarding redesign
+Date: Wed, 22 Oct 2026 15:40:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+1. Every director and beneficial owner above 25% ownership must pass identity verification and sanctions/PEP screening before an account is opened.
+2. Screening results and the evidence used must be retained for 5 years after the relationship ends.
+3. Only the onboarding operations team may approve a case; RMs may not approve their own clients.
+4. Customer data must stay in the EU.
