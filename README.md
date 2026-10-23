@@ -7,7 +7,7 @@ The host's own model does the reasoning. This server supplies:
 - a **requirement context** assembled from meeting notes, emails, PI planning output, Jira, Confluence, a metadata repository and a Salesforce org;
 - the **agent workflows** as MCP prompts, with Salesforce architecture and product practice built in;
 - **artifacts** (designs, backlogs) saved as versioned drafts in the same context, so the agents can run in either order: the Solution Architect's high-level design feeds the Product Owner, or the PO's stories feed the SA's detailed design;
-- **publishing** to Confluence (and Jira, in step 3) that only runs after the user approves a preview.
+- **publishing** to Confluence and Jira that only runs after the user approves a preview.
 
 ## Status
 
@@ -15,8 +15,8 @@ The host's own model does the reasoning. This server supplies:
 | --- | --- | --- |
 | 1 | Shared core: requirement context, input loaders, metadata sources, org/Jira/Confluence readers | Done |
 | 2 | SA agent: high-level design from raw inputs, detailed design from stories, published to Confluence | Done |
-| 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Next |
-| 4 | Per-host packaging (Claude Code, Cursor, Copilot), test set, industry templates | Planned |
+| 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Done |
+| 4 | Per-host packaging (Claude Code, Cursor, Copilot), test set, industry templates | Next |
 
 ## Tools
 
@@ -33,6 +33,10 @@ The host's own model does the reasoning. This server supplies:
 | `design_save` | Saves a high-level or detailed design (Markdown) as a versioned artifact in the context |
 | `confluence_publish_preview` | Shows what would be written to Confluence for an artifact and returns an approval token |
 | `confluence_publish` | Creates or updates the page, only with a token from a matching preview |
+| `backlog_save` | Saves a backlog (epics, stories, Given/When/Then acceptance criteria, NFRs, priorities, points, dependencies, sources) as a versioned artifact and runs the quality check |
+| `backlog_get` / `backlog_check` | Returns a backlog as JSON for revision, or re-runs the quality check |
+| `jira_publish_preview` | Lists every epic and story that would be created or updated in a Jira project, and returns an approval token |
+| `jira_publish` | Creates epics, stories under them and "Blocks" links for dependencies; updates only what changed since the last publish |
 
 Every tool takes a `context` name (default `default`), so you can keep one context per feature or epic. Contexts are saved as JSON under the workspace folder, so they persist between sessions and are shared by every host pointed at the same workspace. Re-adding a source replaces the earlier copy.
 
@@ -42,6 +46,8 @@ Every tool takes a `context` name (default `default`), so you can keep one conte
 | --- | --- | --- |
 | `sa_high_level_design` | Solution Architect | Drafts a high-level design from raw inputs: scope, personas and licences, current state, data model, Flow vs Apex decisions, integrations, security and compliance, impact on the existing org, decisions, risks, open questions and traceability |
 | `sa_detailed_design` | Solution Architect | Drafts a build-ready design for stories or epics, fitted to the existing metadata, with every acceptance criterion mapped to components and tests |
+| `po_backlog` | Product Owner | Builds epics and INVEST user stories from the inputs and the SA's design, with Given/When/Then criteria, NFRs traced to security and compliance inputs, spikes for open questions |
+| `po_review_stories` | Product Owner | Reviews existing Jira stories for readiness and proposes rewrites and splits, which can be published back to the same issues |
 
 Each prompt takes a `context` argument. In Claude Code they appear as `/mcp__sf-agent-po__sa_high_level_design`; in VS Code Copilot Chat as `/mcp.sf-agent-po.sa_high_level_design`. Step 4 adds native agent files for each host as well.
 
@@ -52,6 +58,12 @@ Nothing is written to Confluence or Jira without a preview. The preview tool ret
 The agents are instructed to show the preview and wait for your explicit approval. On top of that, the publish tools ask you directly through MCP elicitation when your host supports it (a confirmation prompt from the server, not from the model), and they are marked as destructive so hosts do not auto-approve them.
 
 An artifact remembers the page it was published to, so publishing again updates that page (Confluence keeps the history), and the preview warns if the page was edited in Confluence since the last publish. Editing a published artifact marks it as `changed` until it is republished. Artifacts are identified by kind, type and title, so a high-level and a detailed design with the same title stay separate, and titles in any script work.
+
+For Jira, each epic and story keeps a stable id (E1, S1, ...) mapped to its issue key. Republishing creates only new items and updates only items whose content changed. An update overwrites the summary and description (and story points, when set) and replaces the labels this backlog set, while labels added in Jira, status, assignee and comments are kept. The preview shows each issue's current summary when it differs, flags issues edited in Jira since the last publish, and shows stories that move to another epic, for example because their epic was deleted in Jira and is created again. An issue edited after the preview invalidates the approval token. Items marked won't have are left out of Jira, and issues whose ids are no longer in the backlog are listed and left as they are. Only one publish runs at a time per artifact, and progress is saved after every issue, so if a publish fails part-way, running the preview again continues without duplicates. Stories get the labels `sf-agent-po`, `moscow-<priority>` and `spike` where relevant; pass `storyPointsField` (for example `customfield_10016`) to fill story points, which are only ever set, never cleared.
+
+### Quality check
+
+`backlog_save` runs a deterministic check and the PO agent fixes what it finds before showing you the backlog: duplicate ids and Jira keys, broken or circular dependencies, dependencies on won't-have stories, generic personas, story points off the 1, 2, 3, 5, 8, 13 scale or over 8, untestable wording in acceptance criteria ("fast", "user-friendly"), stories without sources, and context inputs that no story cites, with security and compliance inputs flagged as warnings. Errors block publishing to Jira.
 
 ### Metadata sources
 

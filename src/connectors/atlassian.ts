@@ -25,6 +25,13 @@ export class AtlassianError extends Error {
   }
 }
 
+export interface IssueState {
+  updated: string;
+  summary: string;
+  parentKey?: string;
+  labels: string[];
+}
+
 export interface PublishedPage {
   pageId: string;
   url: string;
@@ -50,7 +57,9 @@ export class AtlassianClient {
     if (!res.ok) {
       throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
     }
-    return res.json();
+    // Updates and links answer 204 or 201 with an empty body.
+    const body = await res.text();
+    return body ? JSON.parse(body) : undefined;
   }
 
   /** Follows nextPageToken until maxResults issues are collected or Jira reports the last page. */
@@ -83,6 +92,40 @@ export class AtlassianClient {
       content: htmlToText(r.body?.storage?.value ?? ""),
       metadata: { pageId: id, spaceId: r.spaceId, version: r.version?.number },
     };
+  }
+
+  async getProject(projectKey: string): Promise<{ key: string; name: string; issueTypes: string[] }> {
+    const r = await this.request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+    return { key: r.key, name: r.name, issueTypes: (r.issueTypes ?? []).filter((t: any) => !t.subtask).map((t: any) => t.name) };
+  }
+
+  async createIssue(fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
+    const r = await this.request("/rest/api/3/issue", { method: "POST", body: JSON.stringify({ fields }) });
+    return { key: r.key, url: `${this.config.siteUrl}/browse/${r.key}` };
+  }
+
+  /** What an issue looks like in Jira now: used to detect edits, show what an update replaces, and keep other teams' labels. */
+  async getIssueState(key: string): Promise<IssueState> {
+    const r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=updated,summary,parent,labels`);
+    const f = r.fields ?? {};
+    return { updated: String(f.updated ?? ""), summary: f.summary ?? "", parentKey: f.parent?.key, labels: f.labels ?? [] };
+  }
+
+  async updateIssue(key: string, fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
+    await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { method: "PUT", body: JSON.stringify({ fields }) });
+    return { key, url: `${this.config.siteUrl}/browse/${key}` };
+  }
+
+  /**
+   * Records that `blocker` blocks `blocked`, using Jira's default "Blocks" link type.
+   * In this endpoint the inward issue is the one that blocks and the outward
+   * issue the one that is blocked, the reverse of what the field names suggest.
+   */
+  async linkBlocks(blocker: string, blocked: string): Promise<void> {
+    await this.request("/rest/api/3/issueLink", {
+      method: "POST",
+      body: JSON.stringify({ type: { name: "Blocks" }, inwardIssue: { key: blocker }, outwardIssue: { key: blocked } }),
+    });
   }
 
   async getSpaceId(spaceKey: string): Promise<string> {

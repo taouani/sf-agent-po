@@ -18,6 +18,8 @@ export interface ArtifactMeta {
   /** Context document ids the artifact was derived from, for traceability. */
   sourceIds?: string[];
   confluence?: { pageId: string; url: string; pageVersion: number; artifactVersion: number; publishedAt: string };
+  /** Identifies the saved version; see SaveArtifactInput.fingerprint. */
+  fingerprint?: string;
   [key: string]: unknown;
 }
 
@@ -29,6 +31,12 @@ export interface SaveArtifactInput {
   sourceIds?: string[];
   /** Extra metadata to store, e.g. the structured backlog. */
   extra?: Record<string, unknown>;
+  /**
+   * What decides whether this is a new version. Defaults to a hash of the
+   * content; a backlog passes a hash of its structured form, because labels
+   * and Jira keys change what is published without changing the Markdown.
+   */
+  fingerprint?: string;
 }
 
 /**
@@ -52,7 +60,8 @@ export function saveArtifact(store: ContextStore, context: string, input: SaveAr
   const source = artifactSource(input.kind, input.title, input.artifactType);
   return store.upsertDocument(context, source, (existing) => {
     const prev = existing?.metadata as ArtifactMeta | undefined;
-    const changed = !existing || hash(existing.content) !== hash(input.content);
+    const fingerprint = input.fingerprint ?? hash(input.content);
+    const changed = !existing || (prev?.fingerprint ?? hash(existing.content)) !== fingerprint;
     const version = prev ? prev.version + (changed ? 1 : 0) : 1;
     const status: ArtifactMeta["status"] = !prev?.confluence && !prev?.jira ? "draft" : changed ? "changed" : prev.status;
     const metadata: ArtifactMeta = {
@@ -63,6 +72,7 @@ export function saveArtifact(store: ContextStore, context: string, input: SaveAr
       version,
       status,
       sourceIds: input.sourceIds ?? prev?.sourceIds,
+      fingerprint,
     };
     return { kind: input.kind, title: input.title, source, content: input.content, metadata };
   });

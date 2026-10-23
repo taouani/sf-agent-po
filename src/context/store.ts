@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { RequirementContext, SourceDocument } from "./types.js";
+import { KeyedLock } from "../util/lock.js";
 
 export type NewDocument = Omit<SourceDocument, "id" | "addedAt">;
 
@@ -12,19 +13,12 @@ export type NewDocument = Omit<SourceDocument, "id" | "addedAt">;
  */
 export class ContextStore {
   /** Serialises read-modify-write operations per context, since hosts may run tool calls in parallel. */
-  private readonly queues = new Map<string, Promise<unknown>>();
+  private readonly lock = new KeyedLock();
 
   constructor(private readonly workspaceDir: string) {}
 
   private exclusive<T>(name: string, op: () => Promise<T>): Promise<T> {
-    const prev = this.queues.get(name) ?? Promise.resolve();
-    const next = prev.then(op, op);
-    const settled = next.catch(() => undefined);
-    this.queues.set(name, settled);
-    void settled.then(() => {
-      if (this.queues.get(name) === settled) this.queues.delete(name);
-    });
-    return next;
+    return this.lock.run(name, op);
   }
 
   private fileFor(name: string): string {

@@ -13,6 +13,7 @@ export const DOCUMENT_KINDS = [
   "metadata",
   "org",
   "design",
+  "backlog",
   "other",
 ] as const;
 

@@ -4,9 +4,11 @@ import { ContextStore } from "./context/store.js";
 import { SalesforceOrg } from "./connectors/salesforce.js";
 import { AtlassianClient, atlassianConfigFromEnv } from "./connectors/atlassian.js";
 import type { Deps } from "./tools/shared.js";
+import { KeyedLock } from "./util/lock.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerDesignTools } from "./tools/design.js";
 import { registerConfluenceTools } from "./tools/confluence.js";
+import { registerBacklogTools } from "./tools/backlog.js";
 
 export interface ServerOptions {
   workspaceDir: string;
@@ -16,7 +18,7 @@ export interface ServerOptions {
 }
 
 export function createServer(opts: ServerOptions): McpServer {
-  const server = new McpServer({ name: "sf-agent-po", version: "0.2.0" });
+  const server = new McpServer({ name: "sf-agent-po", version: "0.3.0" });
   const deps: Deps = {
     workspaceDir: opts.workspaceDir,
     store: new ContextStore(opts.workspaceDir),
@@ -30,10 +32,12 @@ export function createServer(opts: ServerOptions): McpServer {
       return new AtlassianClient(config);
     },
     approvalSecret: randomBytes(32),
+    publishLock: new KeyedLock(),
   };
 
   registerContextTools(server, deps);
   registerDesignTools(server, deps);
   registerConfluenceTools(server, deps);
+  registerBacklogTools(server, deps);
   return server;
 }
