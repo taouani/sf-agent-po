@@ -1,0 +1,38 @@
+{
+  "name": "sf-agent-po",
+  "version": "0.1.0",
+  "description": "MCP server providing Salesforce Solution Architect and Product Owner agent workflows",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/taouani/sf-agent-po.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/taouani/sf-agent-po/issues"
+  },
+  "homepage": "https://github.com/taouani/sf-agent-po#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "fast-xml-parser": "^5.11.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "type": "module",
+  "bin": {
+    "sf-agent-po": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
