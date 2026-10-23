@@ -19,7 +19,7 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "financial-services",
     name: "Financial services (banking, wealth, lending)",
-    products: "Financial Services Cloud, Experience Cloud for client portals, OmniStudio for guided processes, Data Cloud for a unified client profile, Marketing Cloud, Agentforce for service.",
+    products: "Financial Services Cloud, Experience Cloud for client portals, OmniStudio for guided processes, Data 360 (formerly Data Cloud) for a unified client profile, Marketing Cloud, Agentforce for service.",
     dataModel:
       "Person Accounts, households and relationship groups, financial accounts and holdings, financial goals, account-contact relationships, action plans for onboarding. Check whether the org uses the managed-package (FinServ namespace) or the newer core standard objects.",
     regulations: "KYC and AML, GDPR or CCPA, PCI DSS for card data, SOX, and local regulators (for example FINRA and SEC, FCA, MiFID II, DORA in the EU). Expect audit, data retention and segregation-of-duties requirements.",
@@ -30,7 +30,7 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "insurance",
     name: "Insurance (P&C, life, health insurers, brokers)",
-    products: "Financial Services Cloud with its insurance data model, OmniStudio for quoting and claims intake, Experience Cloud for policyholder and agent/broker portals, Data Cloud.",
+    products: "Financial Services Cloud with its insurance data model, OmniStudio for quoting and claims intake, Experience Cloud for policyholder and agent/broker portals, Data 360 (formerly Data Cloud).",
     dataModel:
       "Insurance policies with participants, coverages and assets, claims, producers (agents and brokers), quotes. Confirm the insurance objects licensed in the org; policy administration often stays in an external system of record.",
     regulations: "GDPR or local privacy law, Solvency II (EU) or state insurance regulation (US, NAIC), IFRS 17 reporting (finance systems, not Salesforce), fair-treatment and complaints-handling rules, record retention.",
@@ -41,7 +41,7 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "health",
     name: "Healthcare and life sciences",
-    products: "Health Cloud (patient and member management, care management, utilization management), Life Sciences Cloud for pharma and medtech, Experience Cloud for patient portals, Data Cloud.",
+    products: "Health Cloud (patient and member management, care management, utilization management), Life Sciences Cloud for pharma and medtech, Experience Cloud for patient portals, Data 360 (formerly Data Cloud).",
     dataModel:
       "Person Accounts for patients and members, care plans and care programs with enrollees, clinical objects aligned to FHIR R4 (conditions, observations, medications, procedures), providers and payers. Verify the clinical data model version in the org.",
     regulations: "HIPAA in the US (a signed BAA with Salesforce and only covered services for PHI), GDPR special-category health data in the EU, consent management, and for life sciences GxP and 21 CFR Part 11 for validated processes.",
@@ -52,7 +52,7 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "manufacturing",
     name: "Manufacturing",
-    products: "Manufacturing Cloud (sales agreements, account-based forecasting, rebates, warranty), Sales and Service Cloud, Field Service, Experience Cloud for partner and distributor portals, Data Cloud for connected products.",
+    products: "Manufacturing Cloud (sales agreements, account-based forecasting, rebates, warranty), Sales and Service Cloud, Field Service, Experience Cloud for partner and distributor portals, Data 360 (formerly Data Cloud) for connected products.",
     dataModel: "Sales agreements and their schedules, account forecasts, rebate programs, assets and warranty terms, partner accounts. ERP remains the system of record for products, prices and orders.",
     regulations: "Export control and sanctions screening, product safety and recall traceability, GDPR for contacts, industry quality standards (for example ISO 9001) for service processes.",
     integrations: "ERP (SAP, Oracle) for products, pricing, orders and invoices, PLM, IoT platforms for connected assets, distributor and channel data feeds.",
@@ -62,11 +62,11 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "automotive",
     name: "Automotive",
-    products: "Automotive Cloud, Sales and Service Cloud, Experience Cloud for dealer portals, Data Cloud for vehicle and driver data, Marketing Cloud.",
+    products: "Automotive Cloud, Sales and Service Cloud, Experience Cloud for dealer portals, Data 360 (formerly Data Cloud) for vehicle and driver data, Marketing Cloud.",
     dataModel: "Vehicles and vehicle definitions, ownership and driver relationships, dealers as partner accounts, leads and test drives, service and warranty history.",
     regulations: "Privacy for connected-vehicle and driver data (GDPR, CCPA), consumer finance rules for captive finance, recall obligations.",
     integrations: "Dealer management systems, OEM order and allocation systems, telematics, captive finance platforms.",
-    watchFor: "Dealer versus OEM data ownership and sharing, volumes of vehicle telemetry (keep it in Data Cloud or off-platform), recall campaign scale.",
+    watchFor: "Dealer versus OEM data ownership and sharing, volumes of vehicle telemetry (keep it in Data 360 or off-platform), recall campaign scale.",
   },
   {
     id: "energy-utilities",
@@ -90,7 +90,7 @@ export const INDUSTRIES: IndustryTemplate[] = [
   {
     id: "nonprofit",
     name: "Nonprofit",
-    products: "Nonprofit Cloud (fundraising, programs and case management, grantmaking, volunteer management) or the older Nonprofit Success Pack, Experience Cloud, Marketing Cloud, Data Cloud.",
+    products: "Nonprofit Cloud (fundraising, programs and case management, grantmaking, volunteer management) or the older Nonprofit Success Pack, Experience Cloud, Marketing Cloud, Data 360 (formerly Data Cloud).",
     dataModel:
       "Donors as Person Accounts and households, gift commitments and gift transactions, campaigns, programs, enrolments and benefits, volunteers. NPSP uses a different, package-based model: confirm which one the org runs before designing.",
     regulations: "GDPR and consent, fundraising regulation, tax relief rules (for example Gift Aid in the UK), PCI DSS for online donations.",
@@ -103,17 +103,17 @@ export const INDUSTRIES: IndustryTemplate[] = [
     products: "Education Cloud (recruitment and admissions, student success, advancement) or the older Education Data Architecture, Experience Cloud for student portals, Marketing Cloud.",
     dataModel: "Learners and contacts, academic programs and terms, applications, enrolments, advising and success plans, alumni and advancement.",
     regulations: "FERPA in the US, GDPR, safeguarding for minors, accessibility.",
-    integrations: "Student information systems (for example Banner, Ellucian, SITS), learning management systems, identity providers.",
+    integrations: "Student information systems (for example Ellucian Banner or Colleague, Tribal SITS, Workday Student), learning management systems, identity providers.",
     watchFor: "The SIS is usually the system of record for academic data; agree data ownership. Confirm whether the org is on Education Cloud or EDA.",
   },
   {
     id: "retail-consumer-goods",
     name: "Retail and consumer goods",
-    products: "Commerce Cloud (B2C and B2B), Consumer Goods Cloud for retail execution, Loyalty Management, Service Cloud, Marketing Cloud, Data Cloud for a unified customer profile, Order Management.",
+    products: "Commerce Cloud (B2C and B2B), Consumer Goods Cloud for retail execution, Loyalty Management, Service Cloud, Marketing Cloud, Data 360 (formerly Data Cloud) for a unified customer profile, Order Management.",
     dataModel: "Person Accounts or contacts for shoppers, orders and order items, loyalty programs and members, store visits and audits for field reps, products and price books.",
     regulations: "PCI DSS for payments, GDPR and CCPA, consent and preference management, consumer protection.",
     integrations: "ERP and order management, POS, e-commerce platforms, payment providers, logistics and returns, product information management.",
-    watchFor: "Peak-season volumes, identity resolution across channels, and keeping transactional history in Data Cloud or the data platform rather than CRM records.",
+    watchFor: "Peak-season volumes, identity resolution across channels, and keeping transactional history in Data 360 or the data platform rather than CRM records.",
   },
   {
     id: "communications",
@@ -128,10 +128,44 @@ export const INDUSTRIES: IndustryTemplate[] = [
 
 export const INDUSTRY_IDS = INDUSTRIES.map((i) => i.id);
 
-export function industryGuidance(id: string | undefined): string {
-  if (!id) return "";
-  const t = INDUSTRIES.find((i) => i.id === id);
-  if (!t) throw new Error(`Unknown industry "${id}". Use one of: ${INDUSTRY_IDS.join(", ")}.`);
+/** Other names people type for an industry. */
+const ALIASES: Record<string, string> = {
+  banking: "financial-services",
+  "wealth-management": "financial-services",
+  fsi: "financial-services",
+  healthcare: "health",
+  "life-sciences": "health",
+  pharma: "health",
+  energy: "energy-utilities",
+  utilities: "energy-utilities",
+  government: "public-sector",
+  "higher-education": "education",
+  "k-12": "education",
+  retail: "retail-consumer-goods",
+  "consumer-goods": "retail-consumer-goods",
+  cpg: "retail-consumer-goods",
+  telecommunications: "communications",
+  telco: "communications",
+  media: "communications",
+};
+
+/** Normalises what a user typed ("Insurance", "energy & utilities", "banking") to a template id, if there is one. */
+export function resolveIndustry(value: string | undefined): string | undefined {
+  const key = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s*(&|\band\b)\s*/g, "-")
+    .replace(/[\s_]+/g, "-");
+  if (!key) return undefined;
+  return INDUSTRY_IDS.includes(key) ? key : ALIASES[key];
+}
+
+export function industryGuidance(value: string | undefined): string {
+  if (!value?.trim()) return "";
+  const t = INDUSTRIES.find((i) => i.id === resolveIndustry(value));
+  if (!t) {
+    return `## Industry\n\n"${value}" is not one of the industry templates (${INDUSTRY_IDS.join(", ")}). Ask the user whether one of them fits; otherwise work without industry guidance.`;
+  }
   return `## Industry: ${t.name}
 
 - **Salesforce products to consider:** ${t.products}

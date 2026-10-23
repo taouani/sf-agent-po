@@ -26,9 +26,10 @@ Load the scenario with `context_add_file` on `inputs/` and `context_add_metadata
 
 ## Backlog (po_backlog)
 
-- [ ] Epics follow the committed PI objectives 1 to 3; objective 4 (mid-term adjustments) is out of scope.
+- [ ] The backlog covers the committed PI objectives 1 to 3, as epics or as stories within them; objective 4 (mid-term adjustments) is out of scope.
 - [ ] Stories cover: view the renewal quote, accept it, pay the first instalment through the hosted payment page, the broker-managed message, the more-than-20% rule, the abandonment task, the agent worklist.
-- [ ] Every InfoSec requirement (MFA, own data only, no card data, encryption, 7-year audit, penetration test) is traced to at least one story or acceptance criterion.
+- [ ] Every InfoSec requirement (MFA, own data only, no card data, encryption, 7-year audit of both logins and renewal acceptances, penetration test) is traced to at least one story or acceptance criterion.
+- [ ] Details the inputs do not give (for example when a renewal counts as abandoned) are recorded as assumptions or open questions.
 - [ ] Acceptance criteria are Given/When/Then, testable, and include permission and error paths (for example a broker-managed policy, an expired quote, a failed payment).
 - [ ] Personas are specific (Policyholder, Renewals agent, Security officer), not "user".
 - [ ] A spike covers PAS API performance at peak, or the quote caching approach.

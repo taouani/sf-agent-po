@@ -15,4 +15,4 @@ In Claude Code, Cursor or Copilot with the sf-agent-po server configured:
 2. Run the Solution Architect's high-level design, then the Product Owner's backlog, with the scenario's industry.
 3. Score the output against `rubric.md`, by hand or with a model as judge.
 
-`insurance-renewal/reference-backlog.json` is a hand-written backlog that meets the rubric. The automated tests load it to check that the quality check accepts a good backlog and that the scenario's security inputs are all traced. In it, `{{inputs/<file>}}` stands for the id of that input document, which depends on where the scenario is stored.
+`insurance-renewal/reference-backlog.json` is a hand-written backlog that meets the rubric. The automated tests load it to check that the quality check accepts a good backlog and that each of the security team's six requirements is covered by a story citing their email. In it, `{{inputs/<file>}}` stands for the id of that input document, which depends on where the scenario is stored.

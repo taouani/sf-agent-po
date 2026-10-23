@@ -73,7 +73,7 @@ export async function confirmWithUser(server: McpServer, message: string): Promi
   }
 }
 
-const completeIndustry = (value: string | undefined) => INDUSTRY_IDS.filter((id) => id.startsWith(value ?? ""));
+const completeIndustry = (value: string | undefined) => INDUSTRY_IDS.filter((id) => id.startsWith((value ?? "").trim().toLowerCase()));
 
 /**
  * Prompt argument for an industry template, with completion of the known ids.

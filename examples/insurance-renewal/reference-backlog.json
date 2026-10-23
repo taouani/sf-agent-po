@@ -138,11 +138,25 @@
           "want": "portal logins and renewal acceptances recorded and kept for 7 years",
           "benefit": "we can prove who accepted what and when",
           "acceptanceCriteria": [
-            { "given": "a renewal accepted online", "when": "an auditor queries it 7 years later", "then": "the policyholder, time and quote accepted are retrievable" }
+            { "given": "a renewal accepted online", "when": "an auditor queries it 7 years later", "then": "the policyholder, time and quote accepted are retrievable" },
+            { "given": "a policyholder who logs in to the portal", "when": "an auditor queries the login 7 years later", "then": "the user, time, source IP and whether MFA succeeded are retrievable" }
           ],
-          "nonFunctional": ["Personal data encrypted at rest, confirm with InfoSec whether platform encryption is sufficient"],
           "priority": "must",
           "storyPoints": 5,
+          "sourceIds": ["{{inputs/security-requirements.eml}}"]
+        },
+        {
+          "id": "S11",
+          "summary": "Encrypt personal data in the portal at rest",
+          "persona": "Security officer",
+          "want": "the personal data the portal stores to be encrypted at rest to the standard InfoSec sets",
+          "benefit": "the portal meets our data protection policy",
+          "acceptanceCriteria": [
+            { "given": "the encryption approach agreed with InfoSec (platform encryption, or Shield Platform Encryption with customer-managed keys)", "when": "the security review checks each personal data field the portal uses", "then": "every field is encrypted at rest as agreed and the evidence is attached to the review" }
+          ],
+          "nonFunctional": ["Personal data encrypted at rest; confirm with InfoSec whether the platform's standard encryption is sufficient"],
+          "priority": "must",
+          "storyPoints": 3,
           "sourceIds": ["{{inputs/security-requirements.eml}}"]
         },
         {
@@ -184,7 +198,10 @@
       ]
     }
   ],
-  "assumptions": ["Policies continue to sync nightly from the PAS into Policy__c."],
+  "assumptions": [
+    "Policies continue to sync nightly from the PAS into Policy__c.",
+    "An online renewal counts as abandoned when it is not accepted within 2 days of being opened; to confirm with the renewals team lead."
+  ],
   "openQuestions": [
     { "question": "Does InfoSec require customer-managed keys or field-level encryption beyond the platform's encryption at rest?", "owner": "Information Security", "sourceIds": ["{{inputs/security-requirements.eml}}"] }
   ]

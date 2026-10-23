@@ -1,12 +1,13 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HOSTS, type Host, hostFiles } from "./files.js";
 
-const USAGE = `Usage: sf-agent-po init [--host claude-code|cursor|copilot|all] [--dir <project folder>] [--force] [--dry-run]
+export const USAGE = `Usage: sf-agent-po init [--host claude-code|cursor|copilot|all] [--dir <project folder>] [--force] [--dry-run]
 
 Writes Salesforce Solution Architect and Product Owner agent files for your
 AI coding tool into a project. The files use the sf-agent-po MCP server, which
-you configure separately (see the README).`;
+you configure separately (see the README). Repeat --host, or separate hosts
+with commas, to write files for several tools; the default is all of them.`;
 
 export interface InitOptions {
   hosts: Host[];
@@ -16,7 +17,7 @@ export interface InitOptions {
 }
 
 export function parseInitArgs(argv: string[]): InitOptions | { help: string } {
-  const opts: InitOptions = { hosts: [...HOSTS], dir: process.cwd(), force: false, dryRun: false };
+  const opts: InitOptions = { hosts: [], dir: process.cwd(), force: false, dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return { help: USAGE };
@@ -24,12 +25,15 @@ export function parseInitArgs(argv: string[]): InitOptions | { help: string } {
     else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--dir") opts.dir = path.resolve(requireValue(argv, ++i, arg));
     else if (arg === "--host") {
-      const value = requireValue(argv, ++i, arg);
-      if (value === "all") opts.hosts = [...HOSTS];
-      else if ((HOSTS as readonly string[]).includes(value)) opts.hosts = [value as Host];
-      else throw new Error(`Unknown host "${value}". Use one of: ${HOSTS.join(", ")}, all.`);
+      for (const value of requireValue(argv, ++i, arg).split(",")) {
+        if (value === "all") opts.hosts.push(...HOSTS);
+        else if ((HOSTS as readonly string[]).includes(value)) opts.hosts.push(value as Host);
+        else throw new Error(`Unknown host "${value}". Use one of: ${HOSTS.join(", ")}, all.`);
+      }
     } else throw new Error(`Unknown option "${arg}".\n\n${USAGE}`);
   }
+  // Keep the canonical order: Claude Code files first, so Copilot can tell when VS Code would load them too.
+  opts.hosts = opts.hosts.length ? HOSTS.filter((h) => opts.hosts.includes(h)) : [...HOSTS];
   return opts;
 }
 
@@ -39,25 +43,62 @@ function requireValue(argv: string[], i: number, flag: string): string {
   return value;
 }
 
-/** Writes the host files, never overwriting an existing file unless forced. Returns one line per file. */
+/** Whether `dir`, or the nearest part of it that exists, resolves inside `root` once symbolic links are followed. */
+async function staysInside(root: string, dir: string): Promise<boolean> {
+  for (let current = dir; ; current = path.dirname(current)) {
+    try {
+      const real = await realpath(current);
+      return real === root || real.startsWith(root + path.sep);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT" || path.dirname(current) === current) throw err;
+    }
+  }
+}
+
+/**
+ * Writes the host files, never overwriting an existing file unless forced, and
+ * never following a symbolic link out of the project. Returns one line per
+ * file; a file that cannot be written gets a "failed" line and the rest are
+ * still written.
+ */
 export async function runInit(opts: InitOptions): Promise<string[]> {
   const report: string[] = [];
+  if (!opts.dryRun) await mkdir(opts.dir, { recursive: true });
+  const root = await realpath(opts.dir).catch(() => path.resolve(opts.dir));
+  const planned = new Set<string>();
+  const present = async (rel: string) => planned.has(rel) || !!(await lstat(path.join(opts.dir, rel)).catch(() => undefined));
+
   for (const host of opts.hosts) {
     for (const file of hostFiles(host)) {
       const target = path.join(opts.dir, file.path);
-      const exists = await access(target).then(
-        () => true,
-        () => false,
-      );
-      if (exists && !opts.force) {
-        report.push(`skipped  ${file.path} (exists; use --force to overwrite)`);
-        continue;
+      try {
+        if (file.unlessPresent && (await present(file.unlessPresent.path))) {
+          report.push(`skipped  ${file.path} (${file.unlessPresent.reason})`);
+          continue;
+        }
+        const existing = await lstat(target).catch(() => undefined);
+        if (existing?.isSymbolicLink()) {
+          report.push(`skipped  ${file.path} (a symbolic link; remove it to write the file)`);
+          continue;
+        }
+        if (existing && !opts.force) {
+          report.push(`skipped  ${file.path} (exists; use --force to overwrite)`);
+          continue;
+        }
+        if (!(await staysInside(root, path.dirname(target)))) {
+          report.push(`skipped  ${file.path} (its folder is a link to outside ${opts.dir})`);
+          continue;
+        }
+        if (!opts.dryRun) {
+          await mkdir(path.dirname(target), { recursive: true });
+          // "wx" fails rather than follow a link that appeared since the check.
+          await writeFile(target, file.content, { encoding: "utf8", flag: existing ? "w" : "wx" });
+        }
+        planned.add(file.path);
+        report.push(`${opts.dryRun ? "would write" : existing ? "replaced" : "created"}  ${file.path}`);
+      } catch (err) {
+        report.push(`failed   ${file.path} (${(err as Error).message})`);
       }
-      if (!opts.dryRun) {
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, file.content, "utf8");
-      }
-      report.push(`${opts.dryRun ? "would write" : exists ? "replaced" : "created"}  ${file.path}`);
     }
   }
   return report;

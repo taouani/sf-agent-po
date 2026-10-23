@@ -14,6 +14,8 @@ export type Host = (typeof HOSTS)[number];
 export interface HostFile {
   path: string;
   content: string;
+  /** Not written when this other file is present or written in the same run, because the host would load both. */
+  unlessPresent?: { path: string; reason: string };
 }
 
 interface Workflow {
@@ -44,7 +46,7 @@ const SA_AGENT: AgentDef = {
 
 You work through the sf-agent-po MCP server. Inputs live in a named requirement context (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools to add notes, emails, Jira issues, Confluence pages, a metadata repository or an org). You save designs with \`design_save\` and publish them with \`confluence_publish_preview\` and \`confluence_publish\`.
 
-You produce two kinds of design: a **high-level design** from raw inputs (often the first deliverable, which the Product Owner then turns into a backlog), and a **detailed design** for stories or epics, fitted exactly to the existing metadata. Use the \`sa_high_level_design\` or \`sa_detailed_design\` MCP prompt for the full method and template when your host offers MCP prompts.
+You produce two kinds of design: a **high-level design** from raw inputs (often the first deliverable, which the Product Owner then turns into a backlog), and a **detailed design** for stories or epics, fitted exactly to the existing metadata. Before you draft either, call the \`agent_workflow\` tool with \`workflow: "sa_high_level_design"\` or \`workflow: "sa_detailed_design"\`, the context name and the industry if one applies, and follow the steps and the template it returns.
 
 ${EVIDENCE_RULES}
 
@@ -64,7 +66,7 @@ const PO_AGENT: AgentDef = {
 
 You work through the sf-agent-po MCP server. Inputs live in a named requirement context (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools). When the Solution Architect has saved a design in the context, it is one of your inputs. You save backlogs with \`backlog_save\` (which runs a quality check), revise them with \`backlog_get\`, and publish with \`jira_publish_preview\` / \`jira_publish\` and \`confluence_publish_preview\` / \`confluence_publish\`.
 
-Use the \`po_backlog\` or \`po_review_stories\` MCP prompt for the full method when your host offers MCP prompts.
+Before you build a backlog or review stories, call the \`agent_workflow\` tool with \`workflow: "po_backlog"\` or \`workflow: "po_review_stories"\`, the context name and the industry if one applies, and follow the steps it returns.
 
 ${EVIDENCE_RULES}
 
@@ -130,7 +132,7 @@ export function hostFiles(host: Host): HostFile[] {
       ];
     }
     case "cursor": {
-      const contextText = `The requirement context to work from is the one the user named with this command (use "default" if none); any further text is extra scope or focus. Pass \`context: "<that name>"\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
+      const contextText = `The requirement context to work from is the one the user named with this command or in their message; any further text is extra scope or focus. If they named none, call \`context_list\` and ask which to use (use "default" when it is the only one). Pass \`context: "<that name>"\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
       return [
         ...AGENTS.map((a) => ({
           path: `.cursor/rules/${a.id}.mdc`,
@@ -140,12 +142,20 @@ export function hostFiles(host: Host): HostFile[] {
       ];
     }
     case "copilot": {
-      const contextText = `The requirement context to work from is "\${input:context:default}". Pass that name as \`context\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
+      const contextText = `The requirement context to work from is "\${input:context:default}" (if the user wrote context=<name> with the command, use that name); any further text is extra scope or focus. Pass that name as \`context\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
       return [
-        ...AGENTS.map((a) => ({ path: `.github/agents/${a.id}.agent.md`, content: frontmatter({ name: a.name, description: a.description }) + a.body + "\n" })),
+        ...AGENTS.map((a) => ({
+          path: `.github/agents/${a.id}.agent.md`,
+          // vscode: the Copilot agent on github.com also reads .github/agents, but cannot reach a local MCP server.
+          content: frontmatter({ name: a.name, description: a.description, target: "vscode" }) + a.body + "\n",
+          unlessPresent: {
+            path: `.claude/agents/${a.id}.md`,
+            reason: "VS Code already loads the Claude Code agent file, so Copilot would list the agent twice",
+          },
+        })),
         ...WORKFLOWS.map((w) => ({
           path: `.github/prompts/${w.id}.prompt.md`,
-          content: frontmatter({ description: w.description, agent: "agent" }) + w.build(contextText) + "\n",
+          content: frontmatter({ description: w.description, "argument-hint": `context=<name> ${w.argumentHint.replace("[context] ", "")}`, agent: "agent" }) + w.build(contextText) + "\n",
         })),
       ];
     }
