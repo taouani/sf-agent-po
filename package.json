@@ -21,6 +21,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "fast-xml-parser": "^5.11.2",
+    "marked": "^18.1.1",
     "postal-mime": "^4.1.4",
     "zod": "^4.6.7"
   },

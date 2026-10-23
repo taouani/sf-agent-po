@@ -16,9 +16,24 @@ export function atlassianConfigFromEnv(env = process.env): AtlassianConfig | und
 
 const JIRA_FIELDS = ["summary", "description", "status", "issuetype", "priority", "labels", "parent", "fixVersions", "components"];
 
+export class AtlassianError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export interface PublishedPage {
+  pageId: string;
+  url: string;
+  version: number;
+}
+
 /**
- * Read access to Jira and Confluence Cloud over REST with an API token.
- * Writing (creating stories and pages) comes in later steps, behind a review gate.
+ * Jira and Confluence Cloud over REST with an API token. The write methods are
+ * only called from publish tools, after the user approved a preview.
  */
 export class AtlassianClient {
   constructor(
@@ -33,7 +48,7 @@ export class AtlassianClient {
       headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/json", ...init.headers },
     });
     if (!res.ok) {
-      throw new Error(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`);
+      throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
     }
     return res.json();
   }
@@ -68,6 +83,64 @@ export class AtlassianClient {
       content: htmlToText(r.body?.storage?.value ?? ""),
       metadata: { pageId: id, spaceId: r.spaceId, version: r.version?.number },
     };
+  }
+
+  async getSpaceId(spaceKey: string): Promise<string> {
+    const r = await this.request(`/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}`);
+    const id = r.results?.[0]?.id;
+    if (!id) throw new Error(`Confluence space "${spaceKey}" was not found or is not visible to this account.`);
+    return String(id);
+  }
+
+  async getPageSummary(idOrUrl: string): Promise<{ pageId: string; title: string; spaceId: string; version: number; url: string }> {
+    const id = confluencePageId(idOrUrl);
+    const r = await this.request(`/wiki/api/v2/pages/${id}`);
+    return { pageId: id, title: r.title, spaceId: String(r.spaceId), version: r.version?.number ?? 1, url: this.pageUrl(r, id) };
+  }
+
+  async createPage(input: { spaceId: string; parentId?: string; title: string; storage: string }): Promise<PublishedPage> {
+    const r = await this.request("/wiki/api/v2/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        spaceId: input.spaceId,
+        status: "current",
+        title: input.title,
+        ...(input.parentId ? { parentId: input.parentId } : {}),
+        body: { representation: "storage", value: input.storage },
+      }),
+    });
+    return { pageId: String(r.id), url: this.pageUrl(r, String(r.id)), version: r.version?.number ?? 1 };
+  }
+
+  /**
+   * Replaces a page's title and body. `expectedVersion` is the version the user
+   * saw in the preview; Confluence rejects the update with 409 if the page has
+   * moved on since, so edits made in between are never silently overwritten.
+   */
+  async updatePage(input: { pageId: string; expectedVersion: number; title: string; storage: string; message?: string }): Promise<PublishedPage> {
+    let r;
+    try {
+      r = await this.request(`/wiki/api/v2/pages/${input.pageId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          id: input.pageId,
+          status: "current",
+          title: input.title,
+          body: { representation: "storage", value: input.storage },
+          version: { number: input.expectedVersion + 1, message: input.message ?? "Updated by sf-agent-po" },
+        }),
+      });
+    } catch (err) {
+      if (err instanceof AtlassianError && err.status === 409) {
+        throw new Error(`The page changed in Confluence after the preview (it is no longer at version ${input.expectedVersion}). Nothing was written. Run the preview again.`);
+      }
+      throw err;
+    }
+    return { pageId: input.pageId, url: this.pageUrl(r, input.pageId), version: r.version?.number ?? input.expectedVersion + 1 };
+  }
+
+  private pageUrl(page: any, id: string): string {
+    return `${this.config.siteUrl}/wiki${page._links?.webui ?? `/pages/viewpage.action?pageId=${id}`}`;
   }
 
   private issueToDocument(issue: any): NewDocument {
