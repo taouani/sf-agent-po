@@ -20,7 +20,7 @@ The host's own model does the reasoning. This server supplies what it reasons ov
 | `context_add_file` | Adds local files or a whole folder: meeting notes, `.eml` emails, PI planning exports, Markdown, HTML, text |
 | `context_add_text` | Adds text pasted into the chat, such as an email or a high-level design |
 | `context_add_jira` | Adds Jira Cloud issues by key or JQL |
-| `context_add_confluence` | Adds Confluence Cloud pages by id or URL |
+| `context_add_confluence` | Adds Confluence Cloud pages by id or URL (short `/x/` links are not supported) |
 | `context_add_metadata` | Scans a Salesforce DX repo and adds an inventory of objects, fields, flows, Apex, triggers, LWC and permission sets |
 | `context_add_org` | Reads an org through the `sf` CLI: custom objects plus field detail for chosen objects (read-only) |
 | `context_show` / `context_read` | Lists a context's documents, or returns their full text filtered by id or kind |
@@ -37,10 +37,10 @@ Every tool takes a `context` name (default `default`), so you can keep one conte
 | `local` | A folder path, including a shared drive | Read in place |
 | `github` | `owner/repo` or URL | `gh repo clone` (uses your `gh auth`) |
 | `gitlab` | `group/repo` or URL | `glab repo clone` (uses your `glab auth`) |
-| `azure-devops` | Clone URL | `git clone` (uses Git Credential Manager or a PAT) |
+| `azure-devops` | Clone URL | `git clone` (uses Git Credential Manager; prefer it over a PAT in the URL) |
 | `git` | Any clone URL | `git clone` |
 
-Remote repos are shallow-cloned into `<workspace>/repos/` and fast-forwarded on later calls. Only the source format (`sfdx-project.json`) is analysed for now.
+Remote repos are shallow-cloned into `<workspace>/repos/` and fast-forwarded on later calls. Credentials embedded in a clone URL are stripped from titles, folder names, saved contexts and error messages. Only the source format (`sfdx-project.json`) is analysed for now.
 
 ## Setup
 

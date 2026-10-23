@@ -30,6 +30,11 @@ export async function resolveMetadataSource(spec: MetadataSourceSpec, workspaceD
     return dir;
   }
 
+  for (const [field, value] of [["location", spec.location], ["ref", spec.ref]] as const) {
+    // A leading "-" would be read by gh/glab/git as an option rather than a repository or branch.
+    if (value?.startsWith("-")) throw new Error(`Invalid ${field} "${value}": it must not start with "-".`);
+  }
+
   const dest = path.join(workspaceDir, "repos", slug(spec));
   if (await exists(path.join(dest, ".git"))) {
     await run("git", ["-C", dest, "pull", "--ff-only"]);
@@ -37,23 +42,44 @@ export async function resolveMetadataSource(spec: MetadataSourceSpec, workspaceD
   }
 
   const gitFlags = ["--depth", "1", ...(spec.ref ? ["--branch", spec.ref] : [])];
-  switch (spec.provider) {
-    case "github":
-      await run("gh", ["repo", "clone", spec.location, dest, "--", ...gitFlags]);
-      break;
-    case "gitlab":
-      await run("glab", ["repo", "clone", spec.location, dest, "--", ...gitFlags]);
-      break;
-    case "azure-devops":
-    case "git":
-      await run("git", ["clone", ...gitFlags, spec.location, dest]);
-      break;
+  try {
+    switch (spec.provider) {
+      case "github":
+        await run("gh", ["repo", "clone", spec.location, dest, "--", ...gitFlags]);
+        break;
+      case "gitlab":
+        await run("glab", ["repo", "clone", spec.location, dest, "--", ...gitFlags]);
+        break;
+      case "azure-devops":
+      case "git":
+        await run("git", ["clone", ...gitFlags, "--", spec.location, dest]);
+        break;
+    }
+  } catch (err) {
+    throw new Error((err as Error).message.split(spec.location).join(redactLocation(spec.location)));
   }
   return dest;
 }
 
+/**
+ * Removes credentials embedded in a clone URL (e.g. an Azure DevOps PAT in
+ * https://<PAT>@dev.azure.com/...) so they never reach titles, folder names,
+ * saved contexts or the model.
+ */
+export function redactLocation(location: string): string {
+  try {
+    const url = new URL(location);
+    if (!url.username && !url.password) return location;
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return location;
+  }
+}
+
 function slug(spec: MetadataSourceSpec): string {
-  const base = spec.location
+  const base = redactLocation(spec.location)
     .replace(/^https?:\/\//, "")
     .replace(/\.git$/, "")
     .replace(/[^\w.-]+/g, "_");

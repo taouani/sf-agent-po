@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ContextStore, type NewDocument } from "./context/store.js";
 import { DOCUMENT_KINDS, type SourceDocument } from "./context/types.js";
 import { loadLocalDocuments, textDocument } from "./loaders/documents.js";
-import { METADATA_PROVIDERS, resolveMetadataSource } from "./metadata/sources.js";
+import { METADATA_PROVIDERS, redactLocation, resolveMetadataSource } from "./metadata/sources.js";
 import { buildInventory, inventoryToMarkdown } from "./metadata/inventory.js";
 import { SalesforceOrg, orgToMarkdown } from "./connectors/salesforce.js";
 import { AtlassianClient, atlassianConfigFromEnv } from "./connectors/atlassian.js";
@@ -155,18 +155,22 @@ export function createServer(opts: ServerOptions): McpServer {
       inputSchema: {
         context: contextName,
         provider: z.enum(METADATA_PROVIDERS),
-        location: z.string().describe('Folder path, "owner/repo" for GitHub or GitLab, or a clone URL.'),
-        ref: z.string().optional().describe("Branch or tag."),
+        location: z
+          .string()
+          .regex(/^[^-]/, 'must not start with "-"')
+          .describe('Folder path, "owner/repo" for GitHub or GitLab, or a clone URL.'),
+        ref: z.string().regex(/^[^-]/, 'must not start with "-"').optional().describe("Branch or tag."),
       },
     },
     guard(async ({ context, provider, location, ref }) => {
       const root = await resolveMetadataSource({ provider, location, ref }, opts.workspaceDir);
       const inv = await buildInventory(root);
+      const label = `${redactLocation(location)}${ref ? `@${ref}` : ""}`;
       return added(context, [
         {
           kind: "metadata",
-          title: `Metadata inventory: ${location}${ref ? `@${ref}` : ""}`,
-          source: `${provider}:${location}${ref ? `@${ref}` : ""}`,
+          title: `Metadata inventory: ${label}`,
+          source: `${provider}:${label}`,
           content: inventoryToMarkdown(inv),
           metadata: {
             localPath: root,
@@ -189,8 +193,11 @@ export function createServer(opts: ServerOptions): McpServer {
         "plus field-level detail for the listed objects, to a context. Read-only.",
       inputSchema: {
         context: contextName,
-        targetOrg: z.string().describe("Org alias or username."),
-        objects: z.array(z.string()).default([]).describe("Objects to describe in detail, e.g. Account, Opportunity, Policy__c."),
+        targetOrg: z.string().regex(/^[\w.@+][\w.@+-]*$/, "must be an org alias or username").describe("Org alias or username."),
+        objects: z
+          .array(z.string().regex(/^\w+$/, "must be an API name"))
+          .default([])
+          .describe("Objects to describe in detail, e.g. Account, Opportunity, Policy__c."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

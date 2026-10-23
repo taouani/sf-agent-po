@@ -38,12 +38,19 @@ export class AtlassianClient {
     return res.json();
   }
 
+  /** Follows nextPageToken until maxResults issues are collected or Jira reports the last page. */
   async searchIssues(jql: string, maxResults = 50): Promise<NewDocument[]> {
-    const r = await this.request("/rest/api/3/search/jql", {
-      method: "POST",
-      body: JSON.stringify({ jql, fields: JIRA_FIELDS, maxResults }),
-    });
-    return (r.issues ?? []).map((i: any) => this.issueToDocument(i));
+    const docs: NewDocument[] = [];
+    let nextPageToken: string | undefined;
+    do {
+      const r = await this.request("/rest/api/3/search/jql", {
+        method: "POST",
+        body: JSON.stringify({ jql, fields: JIRA_FIELDS, maxResults: Math.min(maxResults - docs.length, 100), nextPageToken }),
+      });
+      docs.push(...(r.issues ?? []).map((i: any) => this.issueToDocument(i)));
+      nextPageToken = r.isLast ? undefined : r.nextPageToken;
+    } while (nextPageToken && docs.length < maxResults);
+    return docs.slice(0, maxResults);
   }
 
   async getIssue(key: string): Promise<NewDocument> {
@@ -85,8 +92,10 @@ export class AtlassianClient {
 
 export function confluencePageId(idOrUrl: string): string {
   if (/^\d+$/.test(idOrUrl)) return idOrUrl;
-  const m = idOrUrl.match(/\/pages\/(\d+)/) ?? idOrUrl.match(/[?&]pageId=(\d+)/);
-  if (!m) throw new Error(`Could not find a Confluence page id in "${idOrUrl}".`);
+  const m = idOrUrl.match(/\/pages\/(?:edit-v2\/|edit\/)?(\d+)/) ?? idOrUrl.match(/[?&]pageId=(\d+)/);
+  if (!m) {
+    throw new Error(`Could not find a Confluence page id in "${idOrUrl}". Use the page id or the full page URL (short /x/ links are not supported).`);
+  }
   return m[1];
 }
 
@@ -96,8 +105,10 @@ export function adfToText(node: any): string {
   if (typeof node === "string") return node;
   const children = (node.content ?? []).map(adfToText);
   switch (node.type) {
-    case "text":
-      return node.text ?? "";
+    case "text": {
+      const href = node.marks?.find((m: any) => m.type === "link")?.attrs?.href;
+      return href && href !== node.text ? `${node.text} (${href})` : (node.text ?? "");
+    }
     case "hardBreak":
       return "\n";
     case "paragraph":
@@ -109,6 +120,23 @@ export function adfToText(node: any): string {
       return children.join("") + "\n";
     case "listItem":
       return `- ${children.join("").trim()}\n`;
+    case "taskList":
+    case "decisionList":
+      return children.join("") + "\n";
+    case "taskItem":
+      return `- [${node.attrs?.state === "DONE" ? "x" : " "}] ${children.join("").trim()}\n`;
+    case "decisionItem":
+      return `- Decision: ${children.join("").trim()}\n`;
+    case "inlineCard":
+    case "blockCard":
+    case "embedCard":
+      return node.attrs?.url ?? "";
+    case "status":
+      return `[${node.attrs?.text ?? ""}]`;
+    case "date":
+      return node.attrs?.timestamp ? new Date(Number(node.attrs.timestamp)).toISOString().slice(0, 10) : "";
+    case "emoji":
+      return node.attrs?.text ?? node.attrs?.shortName ?? "";
     case "codeBlock":
       return "```\n" + children.join("") + "\n```\n\n";
     case "tableRow":

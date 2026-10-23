@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { RequirementContext, SourceDocument } from "./types.js";
@@ -11,7 +11,21 @@ export type NewDocument = Omit<SourceDocument, "id" | "addedAt">;
  * Copilot) pointing at the same workspace.
  */
 export class ContextStore {
+  /** Serialises read-modify-write operations per context, since hosts may run tool calls in parallel. */
+  private readonly queues = new Map<string, Promise<unknown>>();
+
   constructor(private readonly workspaceDir: string) {}
+
+  private exclusive<T>(name: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(name) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    const settled = next.catch(() => undefined);
+    this.queues.set(name, settled);
+    void settled.then(() => {
+      if (this.queues.get(name) === settled) this.queues.delete(name);
+    });
+    return next;
+  }
 
   private fileFor(name: string): string {
     if (!/^[\w.-]+$/.test(name)) {
@@ -30,32 +44,40 @@ export class ContextStore {
     }
   }
 
+  /** Writes to a temp file and renames it, so a crash or a concurrent reader never sees a half-written file. */
   async save(ctx: RequirementContext): Promise<void> {
     const file = this.fileFor(ctx.name);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify(ctx, null, 2), "utf8");
+    const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(tmp, JSON.stringify(ctx, null, 2), "utf8");
+    await rename(tmp, file);
   }
 
   /** Adds documents, replacing any existing document from the same source. */
-  async addDocuments(name: string, docs: NewDocument[]): Promise<SourceDocument[]> {
-    const ctx = await this.load(name);
-    const now = new Date().toISOString();
-    const added = docs.map((d) => ({ ...d, id: documentId(d.source), addedAt: now }));
-    const sources = new Set(added.map((d) => d.source));
-    ctx.documents = [...ctx.documents.filter((d) => !sources.has(d.source)), ...added];
-    ctx.updatedAt = now;
-    await this.save(ctx);
-    return added;
+  addDocuments(name: string, docs: NewDocument[]): Promise<SourceDocument[]> {
+    return this.exclusive(name, async () => {
+      const ctx = await this.load(name);
+      const now = new Date().toISOString();
+      // The same source can appear twice in one batch (e.g. a Jira key that the JQL also returns); keep the last.
+      const bySource = new Map(docs.map((d) => [d.source, { ...d, id: documentId(d.source), addedAt: now }]));
+      const added = [...bySource.values()];
+      ctx.documents = [...ctx.documents.filter((d) => !bySource.has(d.source)), ...added];
+      ctx.updatedAt = now;
+      await this.save(ctx);
+      return added;
+    });
   }
 
-  async removeDocument(name: string, id: string): Promise<boolean> {
-    const ctx = await this.load(name);
-    const before = ctx.documents.length;
-    ctx.documents = ctx.documents.filter((d) => d.id !== id);
-    if (ctx.documents.length === before) return false;
-    ctx.updatedAt = new Date().toISOString();
-    await this.save(ctx);
-    return true;
+  removeDocument(name: string, id: string): Promise<boolean> {
+    return this.exclusive(name, async () => {
+      const ctx = await this.load(name);
+      const before = ctx.documents.length;
+      ctx.documents = ctx.documents.filter((d) => d.id !== id);
+      if (ctx.documents.length === before) return false;
+      ctx.updatedAt = new Date().toISOString();
+      await this.save(ctx);
+      return true;
+    });
   }
 
   async list(): Promise<string[]> {
@@ -67,8 +89,8 @@ export class ContextStore {
     }
   }
 
-  async delete(name: string): Promise<void> {
-    await rm(this.fileFor(name), { force: true });
+  delete(name: string): Promise<void> {
+    return this.exclusive(name, () => rm(this.fileFor(name), { force: true }));
   }
 }
 

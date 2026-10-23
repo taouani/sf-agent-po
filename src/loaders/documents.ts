@@ -1,5 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import PostalMime, { type Address } from "postal-mime";
 import type { DocumentKind } from "../context/types.js";
 import type { NewDocument } from "../context/store.js";
 
@@ -16,17 +18,18 @@ export async function loadLocalDocuments(target: string, kind?: DocumentKind): P
   const docs: NewDocument[] = [];
   for (const file of files) {
     if (!TEXT_EXTENSIONS.has(path.extname(file).toLowerCase())) continue;
-    docs.push(parseDocument(file, await readFile(file, "utf8"), kind));
+    docs.push(await parseDocument(file, await readFile(file), kind));
   }
   return docs;
 }
 
-export function parseDocument(file: string, raw: string, kind?: DocumentKind): NewDocument {
+export async function parseDocument(file: string, raw: Buffer, kind?: DocumentKind): Promise<NewDocument> {
   const ext = path.extname(file).toLowerCase();
-  if (ext === ".eml" || (kind === "email" && looksLikeEmail(raw))) {
+  const text = raw.toString("utf8");
+  if (ext === ".eml" || (kind === "email" && looksLikeEmail(text))) {
     return parseEmail(file, raw, kind);
   }
-  const content = ext === ".html" || ext === ".htm" ? htmlToText(raw) : raw;
+  const content = ext === ".html" || ext === ".htm" ? htmlToText(text) : text;
   return {
     kind: kind ?? "other",
     title: firstHeading(content) ?? path.basename(file),
@@ -35,73 +38,71 @@ export function parseDocument(file: string, raw: string, kind?: DocumentKind): N
   };
 }
 
-/** Builds a document from text pasted directly into the conversation. */
+/**
+ * Builds a document from text pasted directly into the conversation. The
+ * source includes a content hash so two pastes with the same title are kept
+ * apart, while pasting identical text again replaces the earlier copy.
+ */
 export function textDocument(title: string, content: string, kind: DocumentKind): NewDocument {
-  return { kind, title, source: `inline:${title}`, content };
+  const hash = createHash("sha1").update(content).digest("hex").slice(0, 8);
+  return { kind, title, source: `inline:${title}#${hash}`, content };
 }
 
 function looksLikeEmail(raw: string): boolean {
   return /^(from|subject|to|date):/im.test(raw.slice(0, 2000));
 }
 
-/** Minimal RFC 822 parsing: headers we care about plus the plain-text body. */
-export function parseEmail(file: string, raw: string, kind?: DocumentKind): NewDocument {
-  const normalised = raw.replace(/\r\n/g, "\n");
-  const split = normalised.indexOf("\n\n");
-  const headerBlock = split === -1 ? normalised : normalised.slice(0, split);
-  const body = split === -1 ? "" : normalised.slice(split + 2);
-
-  const headers: Record<string, string> = {};
-  let last = "";
-  for (const line of headerBlock.split("\n")) {
-    if (/^\s/.test(line) && last) {
-      headers[last] += " " + line.trim();
-      continue;
-    }
-    const m = line.match(/^([\w-]+):\s*(.*)$/);
-    if (m) {
-      last = m[1].toLowerCase();
-      headers[last] = m[2];
-    }
-  }
-
-  const subject = headers["subject"] ?? path.basename(file);
+/**
+ * Parses an RFC 822 message, including multipart bodies, attachments,
+ * quoted-printable/base64 transfer encodings and encoded subjects.
+ */
+export async function parseEmail(file: string, raw: Buffer | string, kind?: DocumentKind): Promise<NewDocument> {
+  const email = await PostalMime.parse(raw);
+  const subject = email.subject ?? path.basename(file);
+  const body = email.text?.trim() || (email.html ? htmlToText(email.html) : "");
+  const attachments = email.attachments.map((a) => a.filename).filter((f): f is string => !!f);
   return {
     kind: kind ?? "email",
     title: subject,
     source: path.resolve(file),
-    content: extractPlainBody(body, headers["content-type"]),
-    metadata: { from: headers["from"], to: headers["to"], cc: headers["cc"], date: headers["date"], subject },
+    content: body,
+    metadata: {
+      from: formatAddresses(email.from ? [email.from] : undefined),
+      to: formatAddresses(email.to),
+      cc: formatAddresses(email.cc),
+      date: email.date,
+      subject,
+      ...(attachments.length ? { attachments } : {}),
+    },
   };
 }
 
-function extractPlainBody(body: string, contentType = ""): string {
-  const boundary = contentType.match(/boundary="?([^";]+)"?/i)?.[1];
-  if (!boundary) return /text\/html/i.test(contentType) ? htmlToText(body) : body.trim();
-  const parts = body.split(`--${boundary}`);
-  const plain = parts.find((p) => /content-type:\s*text\/plain/i.test(p));
-  const html = parts.find((p) => /content-type:\s*text\/html/i.test(p));
-  const pick = plain ?? html;
-  if (!pick) return body.trim();
-  const partBody = pick.replace(/\r\n/g, "\n").split("\n\n").slice(1).join("\n\n").trim();
-  return plain ? partBody : htmlToText(partBody);
+function formatAddresses(list: Address[] | undefined): string | undefined {
+  if (!list?.length) return undefined;
+  const mailboxes = list.flatMap((a) => (a.group ? a.group : [a]));
+  return mailboxes.map((m) => (m.name ? `${m.name} <${m.address}>` : m.address)).join(", ");
 }
 
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "- ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return (
+    html
+      // Confluence code macros wrap their body in CDATA; keep it verbatim.
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, code: string) => `\n${code}\n`.replace(/</g, "&lt;").replace(/>/g, "&gt;"))
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "- ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      // Decode &amp; last so "&amp;lt;" becomes "&lt;", not "<".
+      .replace(/&amp;/g, "&")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 function firstHeading(content: string): string | undefined {

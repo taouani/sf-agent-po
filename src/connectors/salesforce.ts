@@ -19,11 +19,26 @@ export interface SObjectDescribe {
 
 type SfRunner = (args: string[]) => Promise<any>;
 
+/** Characters allowed in org aliases, usernames and object names passed to the CLI. */
+const SAFE_ARG = /^[\w.@+-]+$/;
+
 /** Runs the Salesforce CLI with --json and returns its `result` payload. */
 const defaultRunner: SfRunner = async (args) => {
-  const { stdout } = await run("sf", [...args, "--json"]);
-  const parsed = JSON.parse(stdout);
-  if (parsed.status !== 0) throw new Error(parsed.message ?? "sf command failed");
+  // On Windows the CLI is sf.cmd, which only starts through a shell, so the
+  // arguments must be safe to pass unquoted.
+  const windows = process.platform === "win32";
+  if (windows && !args.every((a) => SAFE_ARG.test(a))) {
+    throw new Error(`Unsupported characters in sf arguments: ${args.join(" ")}`);
+  }
+  // sf exits non-zero on failure but still prints its JSON error, which has the useful message.
+  const { stdout } = await run("sf", [...args, "--json"], { shell: windows, parseFailureOutput: true });
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`sf ${args.slice(0, 2).join(" ")} returned unexpected output: ${stdout.slice(0, 300)}`);
+  }
+  if (parsed.status !== 0) throw new Error(`sf ${args.slice(0, 2).join(" ")} failed: ${parsed.message ?? "unknown error"}`);
   return parsed.result;
 };
 
