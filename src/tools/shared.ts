@@ -21,8 +21,12 @@ export function describeDoc(d: SourceDocument): string {
   return `- [${d.id}] ${d.kind}: ${d.title} (${d.source}, ${d.content.length} chars)`;
 }
 
+/** Metadata keys that duplicate the document content and would only bloat what the model reads. */
+const HIDDEN_METADATA = new Set(["backlog"]);
+
 export function renderDoc(d: SourceDocument): string {
-  const meta = d.metadata && Object.keys(d.metadata).length ? `\nMetadata: ${JSON.stringify(d.metadata)}` : "";
+  const visible = Object.fromEntries(Object.entries(d.metadata ?? {}).filter(([k]) => !HIDDEN_METADATA.has(k)));
+  const meta = Object.keys(visible).length ? `\nMetadata: ${JSON.stringify(visible)}` : "";
   return `## [${d.id}] ${d.kind}: ${d.title}\nSource: ${d.source}${meta}\n\n${d.content}`;
 }
 

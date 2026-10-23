@@ -50,7 +50,9 @@ export class AtlassianClient {
     if (!res.ok) {
       throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
     }
-    return res.json();
+    // Updates and links answer 204 or 201 with an empty body.
+    const body = await res.text();
+    return body ? JSON.parse(body) : undefined;
   }
 
   /** Follows nextPageToken until maxResults issues are collected or Jira reports the last page. */
@@ -83,6 +85,35 @@ export class AtlassianClient {
       content: htmlToText(r.body?.storage?.value ?? ""),
       metadata: { pageId: id, spaceId: r.spaceId, version: r.version?.number },
     };
+  }
+
+  async getProject(projectKey: string): Promise<{ key: string; name: string; issueTypes: string[] }> {
+    const r = await this.request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+    return { key: r.key, name: r.name, issueTypes: (r.issueTypes ?? []).filter((t: any) => !t.subtask).map((t: any) => t.name) };
+  }
+
+  async createIssue(fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
+    const r = await this.request("/rest/api/3/issue", { method: "POST", body: JSON.stringify({ fields }) });
+    return { key: r.key, url: `${this.config.siteUrl}/browse/${r.key}` };
+  }
+
+  /** The issue's last-updated timestamp, used to detect edits made in Jira between publishes. */
+  async getIssueUpdated(key: string): Promise<string> {
+    const r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=updated`);
+    return String(r.fields?.updated ?? "");
+  }
+
+  async updateIssue(key: string, fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
+    await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { method: "PUT", body: JSON.stringify({ fields }) });
+    return { key, url: `${this.config.siteUrl}/browse/${key}` };
+  }
+
+  /** Records that `blocker` blocks `blocked`, using Jira's default "Blocks" link type. */
+  async linkBlocks(blocker: string, blocked: string): Promise<void> {
+    await this.request("/rest/api/3/issueLink", {
+      method: "POST",
+      body: JSON.stringify({ type: { name: "Blocks" }, outwardIssue: { key: blocker }, inwardIssue: { key: blocked } }),
+    });
   }
 
   async getSpaceId(spaceKey: string): Promise<string> {
