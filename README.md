@@ -47,9 +47,11 @@ Each prompt takes a `context` argument. In Claude Code they appear as `/mcp__sf-
 
 ### Publishing and approval
 
-Nothing is written to Confluence or Jira without a preview. The preview tool returns the exact target and content plus an approval token. The token is signed by the server over that exact content and target, so the publish tool rejects it if the design was edited, the target changed, or the token came from somewhere else. The agents are instructed to show the preview and wait for your explicit approval, and your host's own tool-approval prompt adds a second check.
+Nothing is written to Confluence or Jira without a preview. The preview tool returns the exact target and content plus an approval token. The token is signed by the server over that exact content, title, target and the target page's current version, so the publish tool rejects it if the design was edited, the target changed, someone edited the page in Confluence after the preview, the token was already used, or it came from somewhere else. Confluence's own version check also stops an update if the page changes between the check and the write.
 
-An artifact remembers the page it was published to, so publishing again updates that page (Confluence keeps the history). Editing a published artifact marks it as `changed` until it is republished.
+The agents are instructed to show the preview and wait for your explicit approval. On top of that, the publish tools ask you directly through MCP elicitation when your host supports it (a confirmation prompt from the server, not from the model), and they are marked as destructive so hosts do not auto-approve them.
+
+An artifact remembers the page it was published to, so publishing again updates that page (Confluence keeps the history), and the preview warns if the page was edited in Confluence since the last publish. Editing a published artifact marks it as `changed` until it is republished. Artifacts are identified by kind, type and title, so a high-level and a detailed design with the same title stay separate, and titles in any script work.
 
 ### Metadata sources
 

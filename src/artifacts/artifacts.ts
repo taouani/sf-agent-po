@@ -31,19 +31,25 @@ export interface SaveArtifactInput {
   extra?: Record<string, unknown>;
 }
 
-export function artifactSource(kind: DocumentKind, title: string): string {
+/**
+ * The identity of an artifact: its kind, its type (so a high-level and a
+ * detailed design with the same title stay apart) and its title. Letters and
+ * digits of any script are kept, so non-Latin titles stay distinct.
+ */
+export function artifactSource(kind: DocumentKind, title: string, artifactType?: string): string {
   const slug = title
+    .normalize("NFKC")
     .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^\w\s-]/g, "")
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .trim()
     .replace(/[\s_-]+/g, "-");
-  return `artifact:${kind}:${slug || "untitled"}`;
+  const name = slug || `title-${hash(title).slice(0, 12)}`;
+  return `artifact:${kind}:${artifactType ? `${artifactType}:` : ""}${name}`;
 }
 
 /** Saves an artifact, bumping its version when the content changed and keeping where it was published. */
 export function saveArtifact(store: ContextStore, context: string, input: SaveArtifactInput): Promise<SourceDocument> {
-  const source = artifactSource(input.kind, input.title);
+  const source = artifactSource(input.kind, input.title, input.artifactType);
   return store.upsertDocument(context, source, (existing) => {
     const prev = existing?.metadata as ArtifactMeta | undefined;
     const changed = !existing || hash(existing.content) !== hash(input.content);

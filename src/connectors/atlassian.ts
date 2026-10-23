@@ -16,6 +16,15 @@ export function atlassianConfigFromEnv(env = process.env): AtlassianConfig | und
 
 const JIRA_FIELDS = ["summary", "description", "status", "issuetype", "priority", "labels", "parent", "fixVersions", "components"];
 
+export class AtlassianError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface PublishedPage {
   pageId: string;
   url: string;
@@ -39,7 +48,7 @@ export class AtlassianClient {
       headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/json", ...init.headers },
     });
     if (!res.ok) {
-      throw new Error(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`);
+      throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
     }
     return res.json();
   }
@@ -103,20 +112,31 @@ export class AtlassianClient {
     return { pageId: String(r.id), url: this.pageUrl(r, String(r.id)), version: r.version?.number ?? 1 };
   }
 
-  /** Replaces a page's title and body, bumping its version as Confluence requires. */
-  async updatePage(input: { pageId: string; title: string; storage: string; message?: string }): Promise<PublishedPage> {
-    const current = await this.getPageSummary(input.pageId);
-    const r = await this.request(`/wiki/api/v2/pages/${current.pageId}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        id: current.pageId,
-        status: "current",
-        title: input.title,
-        body: { representation: "storage", value: input.storage },
-        version: { number: current.version + 1, message: input.message ?? "Updated by sf-agent-po" },
-      }),
-    });
-    return { pageId: current.pageId, url: this.pageUrl(r, current.pageId), version: r.version?.number ?? current.version + 1 };
+  /**
+   * Replaces a page's title and body. `expectedVersion` is the version the user
+   * saw in the preview; Confluence rejects the update with 409 if the page has
+   * moved on since, so edits made in between are never silently overwritten.
+   */
+  async updatePage(input: { pageId: string; expectedVersion: number; title: string; storage: string; message?: string }): Promise<PublishedPage> {
+    let r;
+    try {
+      r = await this.request(`/wiki/api/v2/pages/${input.pageId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          id: input.pageId,
+          status: "current",
+          title: input.title,
+          body: { representation: "storage", value: input.storage },
+          version: { number: input.expectedVersion + 1, message: input.message ?? "Updated by sf-agent-po" },
+        }),
+      });
+    } catch (err) {
+      if (err instanceof AtlassianError && err.status === 409) {
+        throw new Error(`The page changed in Confluence after the preview (it is no longer at version ${input.expectedVersion}). Nothing was written. Run the preview again.`);
+      }
+      throw err;
+    }
+    return { pageId: input.pageId, url: this.pageUrl(r, input.pageId), version: r.version?.number ?? input.expectedVersion + 1 };
   }
 
   private pageUrl(page: any, id: string): string {

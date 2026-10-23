@@ -12,7 +12,8 @@ const marked = new Marked({
   gfm: true,
   renderer: {
     code({ text, lang }) {
-      const language = (lang ?? "").trim().toLowerCase();
+      // The info string can carry more than the language, e.g. "js title=x".
+      const language = (lang ?? "").trim().split(/\s+/)[0].toLowerCase();
       const param =
         language === "apex"
           ? "java" // Confluence has no Apex highlighter; Java is the closest.
@@ -36,10 +37,26 @@ const marked = new Marked({
   },
 });
 
+// Characters XML 1.0 does not allow anywhere, even in CDATA.
+const INVALID_XML_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+// An "&" that does not start one of the five XML entities or a numeric reference.
+const STRAY_AMPERSAND = /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g;
+
 export function markdownToStorage(markdown: string): string {
-  const html = marked.parse(markdown, { async: false });
-  // Self-close void elements so the result is XHTML.
-  return html.replace(/<(br|hr|img)((?:\s[^>]*?)?)\s*\/?>/g, "<$1$2 />");
+  const html = marked.parse(markdown.replace(INVALID_XML_CHARS, ""), { async: false });
+  // Fix up everything outside CDATA sections (code macros keep their text verbatim).
+  return html
+    .split(/(<!\[CDATA\[[\s\S]*?\]\]>)/)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part
+            // Self-close void elements so the result is XHTML.
+            .replace(/<(br|hr|img)((?:\s[^>]*?)?)\s*\/?>/g, "<$1$2 />")
+            // HTML named entities such as &nbsp; or a literal "AT&T;" are not defined in XML.
+            .replace(STRAY_AMPERSAND, "&amp;"),
+    )
+    .join("");
 }
 
 /** Wraps text in CDATA, splitting any "]]>" so it cannot end the section early. */

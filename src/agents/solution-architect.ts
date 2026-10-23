@@ -8,8 +8,9 @@ export const SA_PRINCIPLES = `## Design principles
 - **Flow or Apex.** Use record-triggered Flow for straightforward same-record and related-record logic. Use Apex when the logic needs complex transactions, callouts with retries, heavy processing of large data, reusable services, or behaviour a Flow cannot test or maintain well. Give the reason for each choice. Keep one automation strategy per object, and check the existing triggers and flows on the same object for order-of-execution conflicts.
 - **Bulk and limits.** Assume bulk loads and integrations. Call out governor limits (SOQL queries, DML, CPU time, heap) that a design could hit, and large-data-volume concerns (skew, selective queries, archiving) when volumes are high.
 - **Integrations.** Name the pattern (request and reply, fire and forget, batch data sync, remote call-in, UI update from data changes, data virtualisation) and the mechanism (Named Credentials and External Credentials, External Services, Platform Events, Change Data Capture, Bulk API, Salesforce Connect, middleware such as MuleSoft). Cover direction, volume, frequency, error handling, retries and monitoring.
-- **Security and sharing.** Set org-wide defaults, role hierarchy, sharing rules, permission sets and permission set groups, and field-level security. Address encryption (Shield Platform Encryption where data must be encrypted at rest), authentication (SSO, MFA), external users (Experience Cloud licences and sharing sets) and auditing (Field Audit Trail, Event Monitoring) when the requirements call for them.
-- **Delivery.** Consider environments, source control and CI/CD, data migration, feature flags (Custom Metadata, Custom Permissions) and release sequencing.`;
+- **Security and sharing.** Set org-wide defaults (internal and external), role hierarchy, sharing rules, permission sets and permission set groups, and field-level security. Salesforce already encrypts data at rest; propose Shield Platform Encryption only when a requirement calls for customer-managed keys or field-level encryption, and state its trade-offs (encrypted fields have limits on filtering, sorting, formulas and search). MFA is required for every user-interface login, either in Salesforce or through the SSO identity provider; say how it is met for internal and external users. For auditing, standard Field History Tracking and Setup Audit Trail come first; Field Audit Trail (longer retention) and Event Monitoring are paid add-ons for when retention or monitoring requirements exceed them. Cover Experience Cloud licences, sharing sets and guest-user access for external users.
+- **Technical debt.** Workflow Rules and Process Builder reached end of support on 31 December 2025. Flag any found in the metadata (Process Builder processes appear as flows with processType "Workflow", Workflow Rules as "workflow" metadata) as migration debt, and never design new ones.
+- **Delivery.** Consider org strategy (one org or several), environments, source control and CI/CD, data migration, backup and restore, feature flags (Custom Metadata, Custom Permissions) and release sequencing.`;
 
 export const HIGH_LEVEL_DESIGN_TEMPLATE = `# <Solution name>: high-level design
 
@@ -20,10 +21,10 @@ Business goals, in scope, out of scope, key assumptions.
 Internal and external user groups, what each does, and the licence each implies.
 
 ## 3. Current state
-What the metadata and org documents show is relevant: objects, automation, integrations, known technical debt. Say "unknown" if no metadata or org document was provided.
+What the metadata and org documents show is relevant: objects, automation, integrations, known technical debt (including Workflow Rules and Process Builder). Say "unknown" if no metadata or org document was provided.
 
 ## 4. Solution overview
-Capabilities mapped to Salesforce clouds, products and features, with a Mermaid diagram (\`\`\`mermaid) of the main components and systems.
+Capabilities mapped to Salesforce clouds, products and features, the org strategy (existing org, new org, multi-org), and a Mermaid diagram (\`\`\`mermaid) of the main components and systems.
 
 ## 5. Data model
 New and changed objects and their relationships (a Mermaid erDiagram is welcome), standard versus custom, record types, expected volumes.
@@ -37,25 +38,28 @@ Lightning apps and pages, Dynamic Forms, LWC, Experience Cloud sites, mobile.
 ## 8. Integrations
 A table: system, direction, pattern, mechanism, volume and frequency, error handling.
 
-## 9. Security, sharing and compliance
-Sharing model, access by persona, encryption, authentication, audit, and each compliance requirement traced to its source.
+## 9. Reporting and analytics
+Operational reports and dashboards, KPIs from the business goals, and whether CRM Analytics, Data Cloud or an external data platform is needed.
 
-## 10. Non-functional requirements
-Performance, volumes, limits, availability, data retention and archiving.
+## 10. Security, sharing and compliance
+Sharing model, access by persona, encryption, authentication, audit, data residency, and each compliance requirement traced to its source.
 
-## 11. Impact on the existing org
+## 11. Non-functional requirements
+Performance, volumes, limits, availability, data retention and archiving, backup and restore.
+
+## 12. Impact on the existing org
 Components added, changed or retired, and conflicts or risks with what exists.
 
-## 12. Delivery approach
+## 13. Delivery approach
 Environments, DevOps, data migration, release sequencing, suggested phases or MVP.
 
-## 13. Decisions
+## 14. Decisions
 A table: decision, options considered, choice, rationale, sources.
 
-## 14. Risks, assumptions and open questions
+## 15. Risks, assumptions and open questions
 Separate lists. For each open question, name who should answer it.
 
-## 15. Traceability
+## 16. Traceability
 A table mapping each requirement (with its source document id) to the sections above that address it.`;
 
 export const DETAILED_DESIGN_TEMPLATE = `# <Feature or epic>: detailed design
@@ -64,19 +68,19 @@ export const DETAILED_DESIGN_TEMPLATE = `# <Feature or epic>: detailed design
 The stories or epics covered, with their Jira keys or backlog ids, and the high-level design this refines.
 
 ## 2. Data model changes
-A table per object: field API name, label, type and length, required, default, help text, field-level security by permission set. Include record types, validation rules and page layout or Dynamic Forms changes.
+For each new relationship: lookup or master-detail, and why (sharing inheritance, cascade delete, roll-up summaries). A table per object: field API name, label, type and length, required, default, picklist values (or the global value set), external ID, unique, help text, data classification (sensitivity, compliance category), field-level security by permission set. Include record types, validation rules and page layout or Dynamic Forms changes.
 
 ## 3. Automation
-For each flow: type, trigger object and event, entry criteria, main steps, fault handling. For each Apex class or trigger: responsibility, entry point, bulk behaviour, test class. Note the order of execution with existing automation on the same objects.
+For each flow: type, trigger object and event, before-save or after-save, entry criteria, run context (user or system), main steps, fault handling. For each Apex class or trigger: responsibility, entry point, sharing (with sharing, and user-mode database operations for CRUD and field-level security), synchronous or asynchronous (Queueable, Batch, Scheduled, Platform Event subscriber), bulk behaviour, test class. Note the order of execution with existing automation on the same objects.
 
 ## 4. User interface
 Lightning pages, components (LWC with their inputs and events), quick actions, list views, Experience Cloud pages.
 
 ## 5. Integrations
-Per interface: endpoint and authentication (Named Credential), payload mapping, error and retry handling, logging, limits.
+Per interface: endpoint and authentication (Named and External Credentials), the integration user (a dedicated API-only user with least-privilege permission sets), payload mapping, error and retry handling, logging, limits.
 
 ## 6. Security
-Permission sets and permission set groups to create or change, sharing rules, field-level security, custom permissions.
+Permission sets and permission set groups to create or change, internal and external org-wide defaults, sharing rules, field-level security, custom permissions, and guest-user access for public Experience Cloud pages.
 
 ## 7. Test approach
 Apex tests and coverage, Flow tests, acceptance tests mapped to each story's acceptance criteria, test data.

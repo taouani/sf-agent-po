@@ -1,3 +1,4 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ContextStore } from "../context/store.js";
 import type { SourceDocument } from "../context/types.js";
@@ -38,4 +39,27 @@ export function guard<A extends unknown[]>(fn: (...args: A) => Promise<ReturnTyp
       return { ...text(`Error: ${(err as Error).message}`), isError: true };
     }
   };
+}
+
+/**
+ * Asks the user to confirm a publish through MCP elicitation when the host
+ * supports it, so approval comes from the user rather than from the model.
+ * Hosts without elicitation fall back to their own tool-approval prompt.
+ */
+export async function confirmWithUser(server: McpServer, message: string): Promise<void> {
+  const elicitation = server.server.getClientCapabilities()?.elicitation as Record<string, unknown> | undefined;
+  if (!elicitation) return;
+  // An empty object means form mode; a client that lists modes must include "form".
+  if (Object.keys(elicitation).length && !("form" in elicitation)) return;
+  const result = await server.server.elicitInput({
+    message,
+    requestedSchema: {
+      type: "object",
+      properties: { confirm: { type: "boolean", title: "Publish now", description: "Write this to the target system.", default: false } },
+      required: ["confirm"],
+    },
+  });
+  if (result.action !== "accept" || result.content?.confirm !== true) {
+    throw new Error("The user did not confirm the publish, so nothing was written.");
+  }
 }
