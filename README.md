@@ -2,15 +2,20 @@
 
 An MCP server that gives Claude Code, Cursor and GitHub Copilot a Salesforce **Solution Architect** and **Product Owner** workflow.
 
-The host's own model does the reasoning. This server supplies what it reasons over: a **requirement context** assembled from meeting notes, emails, PI planning output, Jira, Confluence, a metadata repository and a Salesforce org. Later steps add the SA and PO workflows themselves and publishing to Jira and Confluence after review.
+The host's own model does the reasoning. This server supplies:
+
+- a **requirement context** assembled from meeting notes, emails, PI planning output, Jira, Confluence, a metadata repository and a Salesforce org;
+- the **agent workflows** as MCP prompts, with Salesforce architecture and product practice built in;
+- **artifacts** (designs, backlogs) saved as versioned drafts in the same context, so the agents can run in either order: the Solution Architect's high-level design feeds the Product Owner, or the PO's stories feed the SA's detailed design;
+- **publishing** to Confluence (and Jira, in step 3) that only runs after the user approves a preview.
 
 ## Status
 
 | Step | Scope | State |
 | --- | --- | --- |
 | 1 | Shared core: requirement context, input loaders, metadata sources, org/Jira/Confluence readers | Done |
-| 2 | SA agent: high-level design from raw inputs, detailed design from stories, published to Confluence | Next |
-| 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Planned |
+| 2 | SA agent: high-level design from raw inputs, detailed design from stories, published to Confluence | Done |
+| 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Next |
 | 4 | Per-host packaging (Claude Code, Cursor, Copilot), test set, industry templates | Planned |
 
 ## Tools
@@ -25,8 +30,26 @@ The host's own model does the reasoning. This server supplies what it reasons ov
 | `context_add_org` | Reads an org through the `sf` CLI: custom objects plus field detail for chosen objects (read-only) |
 | `context_show` / `context_read` | Lists a context's documents, or returns their full text filtered by id or kind |
 | `context_list` / `context_remove_document` | Housekeeping |
+| `design_save` | Saves a high-level or detailed design (Markdown) as a versioned artifact in the context |
+| `confluence_publish_preview` | Shows what would be written to Confluence for an artifact and returns an approval token |
+| `confluence_publish` | Creates or updates the page, only with a token from a matching preview |
 
 Every tool takes a `context` name (default `default`), so you can keep one context per feature or epic. Contexts are saved as JSON under the workspace folder, so they persist between sessions and are shared by every host pointed at the same workspace. Re-adding a source replaces the earlier copy.
+
+## Agent workflows (MCP prompts)
+
+| Prompt | Agent | What it does |
+| --- | --- | --- |
+| `sa_high_level_design` | Solution Architect | Drafts a high-level design from raw inputs: scope, personas and licences, current state, data model, Flow vs Apex decisions, integrations, security and compliance, impact on the existing org, decisions, risks, open questions and traceability |
+| `sa_detailed_design` | Solution Architect | Drafts a build-ready design for stories or epics, fitted to the existing metadata, with every acceptance criterion mapped to components and tests |
+
+Each prompt takes a `context` argument. In Claude Code they appear as `/mcp__sf-agent-po__sa_high_level_design`; in VS Code Copilot Chat as `/mcp.sf-agent-po.sa_high_level_design`. Step 4 adds native agent files for each host as well.
+
+### Publishing and approval
+
+Nothing is written to Confluence or Jira without a preview. The preview tool returns the exact target and content plus an approval token. The token is signed by the server over that exact content and target, so the publish tool rejects it if the design was edited, the target changed, or the token came from somewhere else. The agents are instructed to show the preview and wait for your explicit approval, and your host's own tool-approval prompt adds a second check.
+
+An artifact remembers the page it was published to, so publishing again updates that page (Confluence keeps the history). Editing a published artifact marks it as `changed` until it is republished.
 
 ### Metadata sources
 

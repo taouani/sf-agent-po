@@ -68,6 +68,30 @@ export class ContextStore {
     });
   }
 
+  async getDocument(name: string, id: string): Promise<SourceDocument | undefined> {
+    return (await this.load(name)).documents.find((d) => d.id === id);
+  }
+
+  /**
+   * Atomically creates or replaces the document from `source`. The updater sees
+   * the current document (if any), so callers can carry over metadata such as
+   * an artifact's version or where it was published.
+   */
+  upsertDocument(name: string, source: string, update: (existing: SourceDocument | undefined) => NewDocument): Promise<SourceDocument> {
+    return this.exclusive(name, async () => {
+      const ctx = await this.load(name);
+      const existing = ctx.documents.find((d) => d.source === source);
+      const next = update(existing);
+      if (next.source !== source) throw new Error("upsertDocument cannot change a document's source.");
+      const now = new Date().toISOString();
+      const doc = { ...next, id: documentId(source), addedAt: existing?.addedAt ?? now };
+      ctx.documents = existing ? ctx.documents.map((d) => (d === existing ? doc : d)) : [...ctx.documents, doc];
+      ctx.updatedAt = now;
+      await this.save(ctx);
+      return doc;
+    });
+  }
+
   removeDocument(name: string, id: string): Promise<boolean> {
     return this.exclusive(name, async () => {
       const ctx = await this.load(name);

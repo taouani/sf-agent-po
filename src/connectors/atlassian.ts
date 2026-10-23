@@ -16,9 +16,15 @@ export function atlassianConfigFromEnv(env = process.env): AtlassianConfig | und
 
 const JIRA_FIELDS = ["summary", "description", "status", "issuetype", "priority", "labels", "parent", "fixVersions", "components"];
 
+export interface PublishedPage {
+  pageId: string;
+  url: string;
+  version: number;
+}
+
 /**
- * Read access to Jira and Confluence Cloud over REST with an API token.
- * Writing (creating stories and pages) comes in later steps, behind a review gate.
+ * Jira and Confluence Cloud over REST with an API token. The write methods are
+ * only called from publish tools, after the user approved a preview.
  */
 export class AtlassianClient {
   constructor(
@@ -68,6 +74,53 @@ export class AtlassianClient {
       content: htmlToText(r.body?.storage?.value ?? ""),
       metadata: { pageId: id, spaceId: r.spaceId, version: r.version?.number },
     };
+  }
+
+  async getSpaceId(spaceKey: string): Promise<string> {
+    const r = await this.request(`/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}`);
+    const id = r.results?.[0]?.id;
+    if (!id) throw new Error(`Confluence space "${spaceKey}" was not found or is not visible to this account.`);
+    return String(id);
+  }
+
+  async getPageSummary(idOrUrl: string): Promise<{ pageId: string; title: string; spaceId: string; version: number; url: string }> {
+    const id = confluencePageId(idOrUrl);
+    const r = await this.request(`/wiki/api/v2/pages/${id}`);
+    return { pageId: id, title: r.title, spaceId: String(r.spaceId), version: r.version?.number ?? 1, url: this.pageUrl(r, id) };
+  }
+
+  async createPage(input: { spaceId: string; parentId?: string; title: string; storage: string }): Promise<PublishedPage> {
+    const r = await this.request("/wiki/api/v2/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        spaceId: input.spaceId,
+        status: "current",
+        title: input.title,
+        ...(input.parentId ? { parentId: input.parentId } : {}),
+        body: { representation: "storage", value: input.storage },
+      }),
+    });
+    return { pageId: String(r.id), url: this.pageUrl(r, String(r.id)), version: r.version?.number ?? 1 };
+  }
+
+  /** Replaces a page's title and body, bumping its version as Confluence requires. */
+  async updatePage(input: { pageId: string; title: string; storage: string; message?: string }): Promise<PublishedPage> {
+    const current = await this.getPageSummary(input.pageId);
+    const r = await this.request(`/wiki/api/v2/pages/${current.pageId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        id: current.pageId,
+        status: "current",
+        title: input.title,
+        body: { representation: "storage", value: input.storage },
+        version: { number: current.version + 1, message: input.message ?? "Updated by sf-agent-po" },
+      }),
+    });
+    return { pageId: current.pageId, url: this.pageUrl(r, current.pageId), version: r.version?.number ?? current.version + 1 };
+  }
+
+  private pageUrl(page: any, id: string): string {
+    return `${this.config.siteUrl}/wiki${page._links?.webui ?? `/pages/viewpage.action?pageId=${id}`}`;
   }
 
   private issueToDocument(issue: any): NewDocument {
