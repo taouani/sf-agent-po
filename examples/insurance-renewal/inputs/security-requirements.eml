@@ -1,0 +1,20 @@
+From: Information Security <infosec@example-insurer.com>
+To: Renewal Portal Team <renewals-portal@example-insurer.com>
+Subject: Security requirements for the renewal portal
+Date: Thu, 16 Oct 2026 10:12:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hi team,
+
+Before go-live, the portal must meet the following:
+
+1. Multi-factor authentication for every policyholder login.
+2. Policyholders may only ever see their own policies and documents.
+3. Card data must never be stored or processed in Salesforce. Use the hosted payment page.
+4. Personal data in the portal must be encrypted at rest.
+5. All portal logins and renewal acceptances must be auditable for 7 years.
+6. A penetration test is required before go-live.
+
+Regards,
+Information Security

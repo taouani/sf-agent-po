@@ -1,0 +1,191 @@
+{
+  "title": "Insurance renewal portal: reference backlog",
+  "summary": "Phase 1: online renewal of home and motor policies, the agent worklist and online payment of the first instalment.",
+  "epics": [
+    {
+      "id": "E1",
+      "summary": "Policyholders renew home and motor policies online",
+      "outcome": "Policyholders view and accept their renewal quote in the portal, reducing renewal calls by 40% within 12 months.",
+      "successMetrics": ["40% fewer renewal calls within 12 months", "Share of renewals completed online"],
+      "scopeNotes": "Mid-term adjustments are out of scope for phase 1.",
+      "priority": "must",
+      "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/pi-planning.md}}", "{{inputs/business-owner-email.eml}}"],
+      "stories": [
+        {
+          "id": "S1",
+          "summary": "View my renewal quote in the portal",
+          "persona": "Policyholder",
+          "want": "to see the renewal quote for each of my policies before it arrives by post",
+          "benefit": "I can decide early whether to renew",
+          "acceptanceCriteria": [
+            { "given": "a policyholder with a policy expiring in 40 days and a quote issued by the PAS", "when": "they open the policy in the portal", "then": "the new premium, cover and start date from the PAS quote are shown" },
+            { "given": "a policyholder with two policies", "when": "they open the portal", "then": "both policies and their renewal status are listed" },
+            { "given": "the PAS quote service is unavailable", "when": "the policyholder opens the policy", "then": "a message asks them to try later and no stale premium is shown" }
+          ],
+          "dependsOn": ["S10"],
+          "priority": "must",
+          "storyPoints": 5,
+          "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/pi-planning.md}}"]
+        },
+        {
+          "id": "S2",
+          "summary": "Accept my renewal online",
+          "persona": "Policyholder",
+          "want": "to accept my renewal quote in the portal",
+          "benefit": "I stay covered without calling an agent",
+          "acceptanceCriteria": [
+            { "given": "a valid renewal quote", "when": "the policyholder accepts it", "then": "the acceptance is sent to the PAS and a confirmation is shown and emailed" },
+            { "given": "a broker-managed policy", "when": "the policyholder opens it", "then": "online renewal is not offered and they are told to contact their broker" },
+            { "given": "a renewal premium more than 20% above the current premium", "when": "the policyholder opens it", "then": "online renewal is not offered and a call-back task is created for a renewals agent" }
+          ],
+          "dependsOn": ["S1"],
+          "priority": "must",
+          "storyPoints": 5,
+          "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/business-owner-email.eml}}"]
+        },
+        {
+          "id": "S3",
+          "summary": "Pay the first instalment through the hosted payment page",
+          "persona": "Policyholder",
+          "want": "to pay my first instalment when I accept my renewal",
+          "benefit": "my renewal is complete in one visit",
+          "acceptanceCriteria": [
+            { "given": "an accepted renewal", "when": "the policyholder pays", "then": "they are sent to the provider's hosted payment page and no card data reaches Salesforce" },
+            { "given": "a failed payment", "when": "the policyholder returns to the portal", "then": "the renewal stays pending and they can retry" }
+          ],
+          "nonFunctional": ["Card data is never stored or processed in Salesforce (PCI DSS scope)"],
+          "dependsOn": ["S2"],
+          "priority": "must",
+          "storyPoints": 5,
+          "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/security-requirements.eml}}", "{{inputs/pi-planning.md}}"]
+        }
+      ]
+    },
+    {
+      "id": "E2",
+      "summary": "Renewals agents work a 30-day renewal list",
+      "outcome": "Renewals agents see which policies renew in the next 30 days and which customers need a call.",
+      "priority": "must",
+      "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/pi-planning.md}}"],
+      "stories": [
+        {
+          "id": "S4",
+          "summary": "See policies due for renewal in the next 30 days",
+          "persona": "Renewals agent",
+          "want": "a list of my policies renewing in the next 30 days and whether the customer has acted",
+          "benefit": "I call the right customers first",
+          "acceptanceCriteria": [
+            { "given": "policies expiring in 10, 25 and 45 days", "when": "the agent opens the renewal list", "then": "only the policies expiring in 10 and 25 days are shown, soonest first" },
+            { "given": "a customer who accepted online", "when": "the agent views the list", "then": "that policy is marked as renewed" }
+          ],
+          "priority": "must",
+          "storyPoints": 3,
+          "sourceIds": ["{{inputs/kickoff-notes.md}}", "{{inputs/pi-planning.md}}"]
+        },
+        {
+          "id": "S5",
+          "summary": "Get a task when a customer abandons an online renewal",
+          "persona": "Renewals agent",
+          "want": "a task when a policyholder starts but does not finish an online renewal",
+          "benefit": "I can help them before the policy lapses",
+          "acceptanceCriteria": [
+            { "given": "a policyholder who opened the renewal but did not accept within 2 days", "when": "the daily check runs", "then": "one task is created for the policy owner with the policy and quote details" }
+          ],
+          "dependsOn": ["S2"],
+          "priority": "should",
+          "storyPoints": 3,
+          "sourceIds": ["{{inputs/kickoff-notes.md}}"]
+        }
+      ]
+    },
+    {
+      "id": "E3",
+      "summary": "Secure and auditable portal",
+      "outcome": "The portal meets InfoSec's go-live requirements.",
+      "priority": "must",
+      "sourceIds": ["{{inputs/security-requirements.eml}}"],
+      "stories": [
+        {
+          "id": "S6",
+          "summary": "Require MFA for policyholder logins",
+          "persona": "Security officer",
+          "want": "every policyholder login to use multi-factor authentication",
+          "benefit": "accounts stay protected if a password leaks",
+          "acceptanceCriteria": [
+            { "given": "a registered policyholder", "when": "they log in with a correct password", "then": "they must complete a second factor before seeing any data" }
+          ],
+          "priority": "must",
+          "storyPoints": 3,
+          "sourceIds": ["{{inputs/security-requirements.eml}}"]
+        },
+        {
+          "id": "S7",
+          "summary": "Policyholders see only their own policies and documents",
+          "persona": "Security officer",
+          "want": "policyholders to access only their own policies and documents",
+          "benefit": "no customer can see another customer's data",
+          "acceptanceCriteria": [
+            { "given": "two policyholders", "when": "one requests the other's policy or document by URL or id", "then": "access is denied and nothing is shown" }
+          ],
+          "priority": "must",
+          "storyPoints": 3,
+          "sourceIds": ["{{inputs/security-requirements.eml}}"]
+        },
+        {
+          "id": "S8",
+          "summary": "Keep an audit trail of logins and renewal acceptances for 7 years",
+          "persona": "Compliance officer",
+          "want": "portal logins and renewal acceptances recorded and kept for 7 years",
+          "benefit": "we can prove who accepted what and when",
+          "acceptanceCriteria": [
+            { "given": "a renewal accepted online", "when": "an auditor queries it 7 years later", "then": "the policyholder, time and quote accepted are retrievable" }
+          ],
+          "nonFunctional": ["Personal data encrypted at rest, confirm with InfoSec whether platform encryption is sufficient"],
+          "priority": "must",
+          "storyPoints": 5,
+          "sourceIds": ["{{inputs/security-requirements.eml}}"]
+        },
+        {
+          "id": "S9",
+          "summary": "Pass a penetration test before go-live",
+          "persona": "Security officer",
+          "want": "the portal penetration-tested before go-live",
+          "benefit": "vulnerabilities are fixed before customers use it",
+          "acceptanceCriteria": [
+            { "given": "the release candidate", "when": "the penetration test completes", "then": "no critical or high findings remain open" }
+          ],
+          "priority": "must",
+          "storyPoints": 2,
+          "sourceIds": ["{{inputs/security-requirements.eml}}"]
+        }
+      ]
+    },
+    {
+      "id": "E4",
+      "summary": "Renewal quote integration with the PAS",
+      "outcome": "The portal shows reliable renewal quotes from the PAS during the December peak.",
+      "priority": "must",
+      "sourceIds": ["{{inputs/pi-planning.md}}"],
+      "stories": [
+        {
+          "id": "S10",
+          "type": "spike",
+          "summary": "Spike: PAS renewal quote API at peak load",
+          "persona": "Solution architect",
+          "want": "to measure the PAS quote API at 4,000 renewals a day and decide between live calls and a cached copy",
+          "benefit": "the portal stays responsive in December",
+          "acceptanceCriteria": [
+            { "given": "the PAS test API", "when": "it is load-tested at peak volume", "then": "the chosen approach and its measured response times are recorded in the design" }
+          ],
+          "priority": "must",
+          "storyPoints": 3,
+          "sourceIds": ["{{inputs/pi-planning.md}}"]
+        }
+      ]
+    }
+  ],
+  "assumptions": ["Policies continue to sync nightly from the PAS into Policy__c."],
+  "openQuestions": [
+    { "question": "Does InfoSec require customer-managed keys or field-level encryption beyond the platform's encryption at rest?", "owner": "Information Security", "sourceIds": ["{{inputs/security-requirements.eml}}"] }
+  ]
+}

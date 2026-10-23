@@ -9,6 +9,7 @@ import { registerContextTools } from "./tools/context.js";
 import { registerDesignTools } from "./tools/design.js";
 import { registerConfluenceTools } from "./tools/confluence.js";
 import { registerBacklogTools } from "./tools/backlog.js";
+import { registerIndustryTools } from "./tools/industry.js";
 
 export interface ServerOptions {
   workspaceDir: string;
@@ -18,7 +19,7 @@ export interface ServerOptions {
 }
 
 export function createServer(opts: ServerOptions): McpServer {
-  const server = new McpServer({ name: "sf-agent-po", version: "0.3.0" });
+  const server = new McpServer({ name: "sf-agent-po", version: "0.4.0" });
   const deps: Deps = {
     workspaceDir: opts.workspaceDir,
     store: new ContextStore(opts.workspaceDir),
@@ -39,5 +40,6 @@ export function createServer(opts: ServerOptions): McpServer {
   registerDesignTools(server, deps);
   registerConfluenceTools(server, deps);
   registerBacklogTools(server, deps);
+  registerIndustryTools(server);
   return server;
 }

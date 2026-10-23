@@ -1,4 +1,5 @@
-import { EVIDENCE_RULES, PUBLISH_RULES, contextLine } from "./common.js";
+import { EVIDENCE_RULES, PUBLISH_RULES, type PromptArgs, contextText } from "./common.js";
+import { industryBlock } from "./industries.js";
 
 export const PO_ROLE = `You are an experienced Product Owner on Salesforce programmes. You turn business needs and architecture decisions into a backlog a scrum team can plan and deliver: epics with clear outcomes, and small, testable user stories with precise acceptance criteria. You write for the business and the team, not for the platform: stories describe value and behaviour, while the design describes how it is built.`;
 
@@ -21,10 +22,10 @@ const SAVE_AND_PUBLISH = `The save tool is \`backlog_save\`; it also runs a qual
 
 To publish, use \`jira_publish_preview\` and \`jira_publish\` for Jira (ask the user for the project key), and \`confluence_publish_preview\` and \`confluence_publish\` for a backlog overview page in Confluence (ask for the space key).`;
 
-export function poBacklogPrompt(args: { context: string; scope?: string }): string {
+export function poBacklogPrompt(args: PromptArgs & { scope?: string }): string {
   return `${PO_ROLE}
 
-${contextLine(args.context)}
+${contextText(args)}
 
 Your task: build a **backlog of epics and user stories** from the inputs in the context: meeting notes, emails, PI planning output, Jira and Confluence requirements, and the Solution Architect's design when there is one.${args.scope ? `\n\nScope: ${args.scope}` : ""}
 
@@ -36,7 +37,7 @@ Your task: build a **backlog of epics and user stories** from the inputs in the 
 4. Save with \`backlog_save\` and work through the quality check.
 5. Show the user a summary: the epics, the number of stories per epic, the must-haves, the spikes and open questions, and any input you could not trace. Offer to publish to Jira and Confluence.
 
-${EVIDENCE_RULES}
+${industryBlock(args.industry)}${EVIDENCE_RULES}
 
 ${PO_PRACTICES}
 
@@ -45,10 +46,10 @@ ${PUBLISH_RULES}
 ${SAVE_AND_PUBLISH}`;
 }
 
-export function poReviewStoriesPrompt(args: { context: string; scope?: string }): string {
+export function poReviewStoriesPrompt(args: PromptArgs & { scope?: string }): string {
   return `${PO_ROLE}
 
-${contextLine(args.context)}
+${contextText(args)}
 
 Your task: **review the existing Jira stories** in the context (documents of kind "jira") for quality and readiness, and propose improvements.${args.scope ? `\n\nScope: ${args.scope}` : ""}
 
@@ -59,7 +60,7 @@ Your task: **review the existing Jira stories** in the context (documents of kin
 3. Propose concrete rewrites for the stories that need work, and splits for stories that are too big.
 4. If the user wants the improved stories, save them as a backlog with \`backlog_save\`. Set the \`jiraKey\` of each existing epic and story (for example "PORT-12") so publishing updates that issue rather than creating a duplicate; new items, such as stories from splits, have no \`jiraKey\` and are created. Then offer to publish.
 
-${EVIDENCE_RULES}
+${industryBlock(args.industry)}${EVIDENCE_RULES}
 
 ${PO_PRACTICES}
 

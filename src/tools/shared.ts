@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { completable } from "@modelcontextprotocol/sdk/server/completable.js";
+import { INDUSTRY_IDS } from "../agents/industries.js";
 import type { ContextStore } from "../context/store.js";
 import type { SourceDocument } from "../context/types.js";
 import type { AtlassianClient } from "../connectors/atlassian.js";
@@ -70,3 +72,18 @@ export async function confirmWithUser(server: McpServer, message: string): Promi
     throw new Error("The user did not confirm the publish, so nothing was written.");
   }
 }
+
+const completeIndustry = (value: string | undefined) => INDUSTRY_IDS.filter((id) => id.startsWith(value ?? ""));
+
+/**
+ * Prompt argument for an industry template, with completion of the known ids.
+ * The SDK looks for the completer inside the optional wrapper when it enables
+ * completions, but on the wrapper itself when it answers a completion request,
+ * so both carry it.
+ */
+export const industryArg = completable(
+  completable(z.string(), completeIndustry)
+    .optional()
+    .describe(`Optional industry template: ${INDUSTRY_IDS.join(", ")}.`),
+  completeIndustry,
+);

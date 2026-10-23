@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { type ArtifactMeta, saveArtifact } from "../artifacts/artifacts.js";
 import { saDetailedDesignPrompt, saHighLevelDesignPrompt } from "../agents/solution-architect.js";
-import { type Deps, contextName, guard, text } from "./shared.js";
+import { type Deps, contextName, guard, industryArg, text } from "./shared.js";
 
 /** The Solution Architect: design prompts and the tool that saves designs. */
 export function registerDesignTools(server: McpServer, deps: Deps): void {
@@ -36,9 +36,9 @@ export function registerDesignTools(server: McpServer, deps: Deps): void {
     {
       title: "Solution Architect: high-level design",
       description: "Draft a high-level Salesforce solution design from the inputs in a requirement context.",
-      argsSchema: { context: contextArg, focus: z.string().optional().describe("Optional area to focus on.") },
+      argsSchema: { context: contextArg, focus: z.string().optional().describe("Optional area to focus on."), industry: industryArg },
     },
-    ({ context, focus }) => userPrompt(saHighLevelDesignPrompt({ context: context || "default", focus })),
+    ({ context, focus, industry }) => userPrompt(saHighLevelDesignPrompt({ context, focus, industry: industry || undefined })),
   );
 
   server.registerPrompt(
@@ -46,9 +46,9 @@ export function registerDesignTools(server: McpServer, deps: Deps): void {
     {
       title: "Solution Architect: detailed design",
       description: "Draft a detailed design for stories or epics, fitted to the existing metadata.",
-      argsSchema: { context: contextArg, scope: z.string().optional().describe("Stories, epics or Jira keys in scope.") },
+      argsSchema: { context: contextArg, scope: z.string().optional().describe("Stories, epics or Jira keys in scope."), industry: industryArg },
     },
-    ({ context, scope }) => userPrompt(saDetailedDesignPrompt({ context: context || "default", scope })),
+    ({ context, scope, industry }) => userPrompt(saDetailedDesignPrompt({ context, scope, industry: industry || undefined })),
   );
 }
 
