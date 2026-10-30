@@ -43,16 +43,21 @@ function requireValue(argv: string[], i: number, flag: string): string {
   return value;
 }
 
-/** Whether `dir`, or the nearest part of it that exists, resolves inside `root` once symbolic links are followed. */
-async function staysInside(root: string, dir: string): Promise<boolean> {
-  for (let current = dir; ; current = path.dirname(current)) {
-    try {
-      const real = await realpath(current);
-      return real === root || real.startsWith(root + path.sep);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT" || path.dirname(current) === current) throw err;
-    }
+/** The real path of `p`: symbolic links in the part that exists are followed, and the part that does not is appended as is. */
+async function resolveReal(p: string): Promise<string> {
+  try {
+    return await realpath(p);
+  } catch (err) {
+    const parent = path.dirname(p);
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT" || parent === p) throw err;
+    return path.join(await resolveReal(parent), path.basename(p));
   }
+}
+
+/** Whether `dir` resolves inside `root` once symbolic links are followed. */
+async function staysInside(root: string, dir: string): Promise<boolean> {
+  const real = await resolveReal(dir);
+  return real === root || real.startsWith(root + path.sep);
 }
 
 /**
@@ -64,7 +69,8 @@ async function staysInside(root: string, dir: string): Promise<boolean> {
 export async function runInit(opts: InitOptions): Promise<string[]> {
   const report: string[] = [];
   if (!opts.dryRun) await mkdir(opts.dir, { recursive: true });
-  const root = await realpath(opts.dir).catch(() => path.resolve(opts.dir));
+  // On a dry run the folder may not exist yet; resolve it the same way as the targets so they compare.
+  const root = await resolveReal(opts.dir).catch(() => path.resolve(opts.dir));
   const planned = new Set<string>();
   const present = async (rel: string) => planned.has(rel) || !!(await lstat(path.join(opts.dir, rel)).catch(() => undefined));
 

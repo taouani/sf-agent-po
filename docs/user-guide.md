@@ -51,7 +51,7 @@ For a first test you only need Node.js, git and one of the three AI tools; every
 
 | What | Needed for | Check it with |
 | --- | --- | --- |
-| Node.js 20 or later | Running the server (required) | `node --version` |
+| Node.js 22 (20 also runs the server) | Running the server (required) | `node --version` |
 | git | Getting and building the server (required) | `git --version` |
 | Claude Code, Cursor, or VS Code with GitHub Copilot | Talking to the agents (one is required) | Copilot needs Agent mode in Chat |
 | Atlassian API token | Reading and publishing Jira and Confluence | Create one at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) |
@@ -76,7 +76,7 @@ npm run build
 pwd
 ```
 
-The server is `dist/index.js` inside the folder `pwd` printed. The configs below need its absolute path, for example `/Users/tarek/dev/sf-agent-po/dist/index.js`, or `C:/dev/sf-agent-po/dist/index.js` on Windows (forward slashes work in JSON). After each `git pull`, run `npm install` and `npm run build` again, then restart your tool.
+The server is `dist/index.js` inside the folder `pwd` printed. On Node 20, `npm install` prints `EBADENGINE` warnings for the test tools; they are harmless for running the server. The configs below need its absolute path, for example `/Users/tarek/dev/sf-agent-po/dist/index.js`, or `C:/dev/sf-agent-po/dist/index.js` on Windows (forward slashes work in JSON). After each `git pull`, run `npm install` and `npm run build` again, then restart your tool.
 
 ### 2. Choose one workspace folder
 
@@ -199,7 +199,7 @@ VS Code also reads the Claude Code agents in `.claude/agents`, so when those exi
 | Draft a detailed design for stories | `/sa-detailed renewal S1 S2` | `/sa-detailed` then name the context and stories | `/sa-detailed context=renewal S1 S2` |
 | Build a backlog | `/po-backlog renewal` | `/po-backlog` then name the context | `/po-backlog context=renewal` |
 | Review Jira stories | `/po-review renewal PORT-12 PORT-13` | `/po-review` then name the context and keys | `/po-review context=renewal PORT-12` |
-| Chat freely with an agent | Ask Claude to use the salesforce-product-owner agent | The rules are picked up from your request, or @-mention the rule | Pick Salesforce Product Owner in the agent picker |
+| Chat freely with an agent | Ask Claude to use the salesforce-product-owner agent | The rules are picked up from your request, or @-mention the rule | Pick Salesforce Product Owner in the agent picker (listed as salesforce-product-owner when the Claude Code files are there) |
 
 In Claude Code, the first word after the command is the context name and the rest is the focus. Industry: add "use the insurance industry template" to any request.
 
@@ -230,7 +230,7 @@ Each document gets an id such as `[doc-b24e7134f2]`. The agents cite these ids, 
 
 > /sa-hld insurance-renewal Use the insurance industry template.
 
-The Solution Architect reads all 5 documents, drafts a design in 16 sections, saves it as a draft ("version 1, status draft") and summarises its decisions and open questions. It takes a few minutes. Check that the design:
+The Solution Architect reads all 5 documents, drafts a design in 16 sections, saves it as version 1 and summarises its decisions and open questions. It takes a few minutes. Check that the design:
 
 - treats the policy administration system as the source of truth for quotes; Salesforce does not price
 - covers all six InfoSec requirements: MFA, own data only, no card data in Salesforce (hosted payment page), encryption at rest, 7-year audit of logins and acceptances, a penetration test
@@ -270,18 +270,18 @@ When you are done, keep the context to try publishing (see [Publish to Confluenc
 
 ## Build a context from your own inputs
 
-Create one context per feature or epic, named with letters, digits, dots, dashes or underscores (for example `renewal-portal`). You add inputs by asking in plain language; the assistant picks the right tool. Adding the same source again replaces the earlier copy, so re-add notes after you edit them.
+Create one context per feature or epic, named with letters, digits, dots, dashes or underscores (for example `renewal-portal`). You add inputs by asking in plain language; the assistant picks the right tool. Adding the same file, folder, Jira issue or page again replaces the earlier copy, so re-add notes after you edit them. Pasted text is different: an edited paste is kept next to the old one, so remove the old one.
 
 | Input | Ask for example | Good to know |
 | --- | --- | --- |
-| Meeting notes, PI planning, other documents | `Add the files in /Users/me/Shared/renewal-kickoff to the context renewal-portal as meeting notes.` | A folder is read with all its subfolders. Say the kind (meeting notes, PI planning) so the agents weigh it right. |
+| Meeting notes, PI planning, other documents | `Add the files in /Users/me/Shared/renewal-kickoff to the context renewal-portal as meeting notes.` | A folder is read with all its subfolders. Say the kind (meeting notes, PI planning) so the agents weigh it right. The kind applies to every file in the folder, so add emails on their own. |
 | Emails | `Add /Users/me/Mail/security-reqs.eml to renewal-portal.` | `.eml` files keep sender, date and subject. Or paste: `Add this email from InfoSec to renewal-portal as an email: …` |
 | Text from anywhere | `Add this to renewal-portal as meeting notes, titled "Steering call 28 Oct": …` | Works for Word or Teams content you copy and paste. |
 | Jira issues | `Add Jira issues PORT-12 and PORT-15 to renewal-portal.` or `Add the Jira issues matching project = PORT AND fixVersion = "R1".` | By key or JQL, 50 issues by default and up to 200. Needs the Atlassian variables. |
 | Confluence pages | `Add the Confluence page https://your-company.atlassian.net/wiki/spaces/ARCH/pages/123456/Renewal to renewal-portal.` | Full page URL or page id. Short `/x/` links do not work. |
 | Metadata repo, local or shared folder | `Add /Users/me/repos/salesforce-core as a local metadata repository to renewal-portal.` | Must be in Salesforce DX source format (files such as `Policy__c.object-meta.xml`). The older Metadata API format is not analysed yet. |
 | Metadata repo on GitHub, GitLab or Azure DevOps | `Add the GitHub metadata repo acme/salesforce-core, branch develop, to renewal-portal.` | Cloned with your own `gh`, `glab` or git login into the workspace's `repos` folder. For Azure DevOps, give the clone URL. |
-| Salesforce org | `Add the org my-org to renewal-portal, with details for Account, Opportunity and Policy__c.` | Read-only, through `sf`. Lists custom objects, and fields for the objects you name. |
+| Salesforce org | `Add the org my-org to renewal-portal, with details for Account, Opportunity and Policy__c.` | Read-only, through `sf`. Lists custom objects and, for the objects you name, their record types, custom fields and lookups. |
 
 To see what is in a context, ask `Show the context renewal-portal`. To drop something, ask `Remove document doc-… from renewal-portal`. `List my contexts` shows them all.
 
@@ -344,7 +344,7 @@ Publishing always takes two steps: a preview you read, then a publish you approv
 3. You read it and answer `Approve` (or ask for changes; the agent then saves a new version and previews again).
 4. The agent publishes. Your tool may ask you to allow the call, and some tools also show a confirmation from the server itself. Both are expected.
 
-A preview's approval is tied to exactly what it showed. If the design, the backlog, the target page or a Jira issue changes after the preview, the publish is refused and you preview again.
+A preview's approval is tied to exactly what it showed. If the design, the backlog, the target page or a Jira issue changes after the preview, the publish is refused and you preview again. The same happens if your tool or the server restarts in between.
 
 ### Confluence
 
@@ -364,7 +364,9 @@ Republishing after changes updates only what changed:
 
 | In Jira, this is | On republish |
 | --- | --- |
-| Summary, description, story points | Replaced by the backlog's version (the preview warns when someone edited the issue in Jira) |
+| Summary, description | Replaced by the backlog's version (the preview warns when someone edited the issue in Jira) |
+| Story points | Set to the backlog's estimate; an estimate made in Jira stays when the backlog has none |
+| A story's epic | Moved back under the backlog's epic if someone moved it in Jira; the preview lists each move |
 | Labels | The backlog's labels are updated; labels others added are kept |
 | Status, assignee, sprint, comments | Never touched |
 | Issues for items now marked "won't have" | Left as they are |
@@ -391,7 +393,7 @@ Most problems come from the server not starting, or from two tools using differe
 | "Atlassian request … failed with 401" or "403" | Wrong email or token, or no access to that project or space | Check the email matches the token's account, create a new token, and check your permissions in Jira or Confluence. |
 | "No supported text files found" | Word, PDF or `.msg` files | Save as text, Markdown or `.eml`, or paste the content into the chat. |
 | "Command gh was not found" (or `glab`, `git`, `sf`) | The CLI is not installed or not on the app's PATH | Install it; see the second row for the PATH fix. |
-| The approval token is refused | Something changed after the preview | Ask for the preview again; this is the safety net working. |
+| The approval token is refused | Something changed after the preview, or the tool or server restarted since | Ask for the preview again; this is the safety net working. |
 | Jira publish refused with "Fix the backlog errors" | The quality check found ERRORs | Ask the agent to fix them and save again. |
 | The design ignores your org | No metadata or org in the context | Add them (see [Build a context](#build-a-context-from-your-own-inputs)), then ask for a new version. |
 
@@ -433,8 +435,8 @@ You rarely call tools by name; ask in plain words and the assistant picks one. T
 | Cloned metadata repos | `<workspace>/repos/` |
 | Where each design and backlog was published | Inside the context file, so republishing updates the same page and issues |
 
-Everything stays on your machine until you publish. Back up the workspace folder, or keep it on a shared drive if a colleague needs your contexts.
+Nothing is written to Jira or Confluence until you publish. The contexts stay in this folder, but the agents send the inputs they read to your AI tool's model, as with anything you share in a chat. Back up the workspace folder, or keep it on a shared drive if a colleague needs your contexts.
 
 ### Document kinds
 
-`meeting-notes`, `email`, `pi-planning`, `jira`, `confluence`, `metadata`, `org`, `design`, `backlog`, `other`. Name the kind when adding a file so the agents weigh it right.
+`meeting-notes`, `email`, `pi-planning`, `jira`, `confluence`, `metadata`, `org`, `design`, `backlog`, `other`. Name the kind when adding a file so the agents weigh it right. `.eml` files are read as emails unless you name another kind.
