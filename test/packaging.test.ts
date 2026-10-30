@@ -100,6 +100,12 @@ describe("sf-agent-po init", () => {
     expect(forced.every((l) => l.startsWith("replaced"))).toBe(true);
   });
 
+  it("previews a project folder that does not exist yet", async () => {
+    const report = await runInit({ hosts: ["cursor"], dir: path.join(dir, "new-project"), force: false, dryRun: true });
+    expect(report.length).toBeGreaterThan(0);
+    expect(report.every((l) => l.startsWith("would write"))).toBe(true);
+  });
+
   it("does not follow symbolic links out of the project, and keeps going after a failed file", async () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), "sf-agent-outside-"));
     try {
