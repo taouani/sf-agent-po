@@ -9,6 +9,8 @@ The host's own model does the reasoning. This server supplies:
 - **artifacts** (designs, backlogs) saved as versioned drafts in the same context, so the agents can run in either order: the Solution Architect's high-level design feeds the Product Owner, or the PO's stories feed the SA's detailed design;
 - **publishing** to Confluence and Jira that only runs after the user approves a preview.
 
+New here? The [user guide](docs/user-guide.md) walks through installing the server, a first test run on the sample scenario, and day-to-day use of both agents.
+
 ## Status
 
 | Step | Scope | State |
