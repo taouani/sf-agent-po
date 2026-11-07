@@ -81,6 +81,44 @@ export interface ObjectSummary {
   linked: number;
 }
 
+/** A component the scope holds, besides its objects and their children. */
+export interface ScopeMember {
+  component: IndexedComponent;
+  /** 1: linked to an object of the scope or one of its children; 2: called by or calling one of those. */
+  hop: 1 | 2;
+  /** How it is linked, most telling first. */
+  kinds: EdgeKind[];
+}
+
+/** An object outside the scope that the scope's components touch: a candidate to add. */
+export interface ScopeNeighbour {
+  object: IndexedComponent;
+  /** The scope's components linked to it (or to its fields), first ones. */
+  via: { component: IndexedComponent; kinds: EdgeKind[] }[];
+  /** How many links in all. */
+  links: number;
+}
+
+/** What the server adds around the objects the user confirmed (decision SC). */
+export interface MetadataScope {
+  objects: IndexedComponent[];
+  /** Fields, rules and record types of the objects. */
+  children: IndexedComponent[];
+  members: ScopeMember[];
+  /** Busiest first. */
+  neighbours: ScopeNeighbour[];
+  /** Permission sets, profiles and groups that give access to the scope, counted by type (impact analysis looks closer). */
+  grantedBy: Record<string, number>;
+  /** Objects asked for that the index does not have. */
+  unknown: string[];
+}
+
+/** Types whose links lead further in the second hop: automation and code. */
+const AUTOMATION = new Set(["Flow", "ApexClass", "ApexTrigger"]);
+/** Neighbours kept, and links kept for each. */
+const MAX_NEIGHBOURS = 40;
+const MAX_VIA = 5;
+
 interface ComponentRow {
   id: number;
   type: string;
@@ -372,5 +410,148 @@ export class MetadataIndex {
       out.push({ component: toComponent(r), kind: kinds[0]!, kinds, direction: r.direction, depth: r.depth });
     }
     return out;
+  }
+
+  /** Components by id, in no particular order. */
+  private byIds(ids: readonly number[]): Map<number, IndexedComponent> {
+    if (!ids.length) return new Map();
+    const rows = this.db.prepare(`SELECT ${COLUMNS} FROM component c WHERE c.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as unknown as ComponentRow[];
+    return new Map(rows.map((r) => [r.id, toComponent(r)]));
+  }
+
+  /** The edges from or to any of these components. */
+  private edgesAround(ids: readonly number[]): { src: number; dst: number; kind: EdgeKind }[] {
+    if (!ids.length) return [];
+    const list = JSON.stringify(ids);
+    return this.db
+      .prepare(
+        `SELECT src, dst, kind FROM edge WHERE src IN (SELECT value FROM json_each(?))
+         UNION SELECT src, dst, kind FROM edge WHERE dst IN (SELECT value FROM json_each(?))`,
+      )
+      .all(list, list) as unknown as { src: number; dst: number; kind: EdgeKind }[];
+  }
+
+  /**
+   * The scope of a piece of work: the objects the user confirmed, their fields, rules and record
+   * types, and what is linked to them (the flows, triggers and code that run on, read or write
+   * them, the layouts that show them, lookups to them from other objects); with two hops, also
+   * what that automation calls or is called by. Objects outside the scope that it touches are
+   * neighbours: candidates to add. Grants are only counted, since a profile grants nearly
+   * everything.
+   */
+  scope(snapshot: number, objects: readonly string[], options: { hops?: 1 | 2 } = {}): MetadataScope {
+    const found: IndexedComponent[] = [];
+    const unknown: string[] = [];
+    for (const name of new Set(objects.map((o) => o.trim()).filter(Boolean))) {
+      const c = this.component(snapshot, "CustomObject", name);
+      if (c && !found.some((f) => f.id === c.id)) found.push(c);
+      else if (!c) unknown.push(name);
+    }
+    const inScope = new Set(found.map((o) => o.name.toLowerCase()));
+    const children = found.flatMap((o) => this.children(snapshot, o.name).filter((c) => !c.missing));
+    const core = new Set([...found, ...children].map((c) => c.id));
+
+    const members = new Map<number, { hop: 1 | 2; kinds: Set<EdgeKind> }>();
+    const touches = new Map<number, Map<number, Set<EdgeKind>>>(); // outside id -> scope component id -> kinds
+    const grantors = new Map<number, string>();
+    const note = (id: number, hop: 1 | 2, kind: EdgeKind) => {
+      const m = members.get(id) ?? { hop, kinds: new Set<EdgeKind>() };
+      m.kinds.add(kind);
+      members.set(id, m);
+    };
+
+    // Hop 1: whatever links to the objects and their children.
+    const first = this.edgesAround([...core]);
+    for (const e of first) {
+      const other = core.has(e.src) ? e.dst : e.src;
+      if (core.has(other)) continue;
+      if (e.kind === "grants" || e.kind === "includes") {
+        grantors.set(other, "");
+        continue;
+      }
+      if (e.kind === "part_of") continue;
+      note(other, 1, e.kind);
+    }
+    let found1 = this.byIds([...members.keys()]);
+    // Objects reached, and fields of other objects, point to neighbours; fields stay members (a lookup to the scope).
+    const touch = (outside: IndexedComponent, from: number, kind: EdgeKind) => {
+      const object = outside.type === "CustomObject" ? outside.name : outside.parentType === undefined || outside.parentType === "CustomObject" ? outside.parent : undefined;
+      if (!object || inScope.has(object.toLowerCase())) return;
+      const target = outside.type === "CustomObject" ? outside.id : (this.component(snapshot, "CustomObject", object)?.id ?? -1);
+      if (target < 0) return;
+      const byScope = touches.get(target) ?? new Map<number, Set<EdgeKind>>();
+      byScope.set(from, (byScope.get(from) ?? new Set<EdgeKind>()).add(kind));
+      touches.set(target, byScope);
+    };
+    for (const e of first) {
+      const other = core.has(e.src) ? e.dst : e.src;
+      const c = found1.get(other);
+      if (!c || e.kind === "grants" || e.kind === "includes" || e.kind === "part_of") continue;
+      const own = core.has(e.src) ? e.src : e.dst;
+      if (c.type === "CustomObject") {
+        members.delete(c.id);
+        touch(c, own, e.kind);
+      } else if (c.parent && !inScope.has(c.parent.toLowerCase())) touch(c, c.id, e.kind);
+    }
+    found1 = this.byIds([...members.keys()]);
+
+    // Automation of the first hop: the other objects it reads or writes are neighbours; with two
+    // hops, what it calls and what calls it join the scope.
+    const automation = [...found1.values()].filter((c) => AUTOMATION.has(c.type)).map((c) => c.id);
+    const auto = new Set(automation);
+    const second = this.edgesAround(automation);
+    const hop2: number[] = [];
+    for (const e of second) {
+      const from = auto.has(e.src) ? e.src : e.dst;
+      const other = from === e.src ? e.dst : e.src;
+      if (core.has(other) || members.has(other)) continue;
+      if (e.kind === "calls" || (e.kind === "references" && from === e.src)) {
+        if (options.hops === 2) {
+          note(other, 2, e.kind);
+          hop2.push(other);
+        }
+      } else if ((e.kind === "reads" || e.kind === "writes" || e.kind === "triggers_on") && from === e.src) hop2.push(other);
+    }
+    const reached = this.byIds(hop2);
+    for (const e of second) {
+      const from = auto.has(e.src) ? e.src : e.dst;
+      const other = from === e.src ? e.dst : e.src;
+      const c = reached.get(other);
+      if (c && from === e.src && (e.kind === "reads" || e.kind === "writes")) touch(c, from, e.kind);
+    }
+    const all = this.byIds([...members.keys()]);
+
+    const objectsById = this.byIds([...touches.keys()]);
+    const scopeParts = this.byIds([...new Set([...touches.values()].flatMap((m) => [...m.keys()]))]);
+    const local = new Map([...[...found, ...children].map((c) => [c.id, c] as const), ...all, ...scopeParts]);
+    const neighbours = [...touches]
+      .flatMap(([id, byScope]) => {
+        const object = objectsById.get(id);
+        if (!object) return [];
+        const via = [...byScope].flatMap(([from, kinds]) => {
+          const component = local.get(from);
+          return component ? [{ component, kinds: [...kinds].sort((a, b) => KIND_ORDER.indexOf(a) - KIND_ORDER.indexOf(b)) }] : [];
+        });
+        return [{ object, via: via.slice(0, MAX_VIA), links: via.length }];
+      })
+      .sort((a, b) => b.links - a.links || a.object.name.localeCompare(b.object.name))
+      .slice(0, MAX_NEIGHBOURS);
+
+    const grantedBy: Record<string, number> = {};
+    for (const g of this.byIds([...grantors.keys()]).values()) grantedBy[g.type] = (grantedBy[g.type] ?? 0) + 1;
+
+    return {
+      objects: found,
+      children,
+      members: [...members]
+        .flatMap(([id, m]) => {
+          const component = all.get(id);
+          return component ? [{ component, hop: m.hop, kinds: [...m.kinds].sort((a, b) => KIND_ORDER.indexOf(a) - KIND_ORDER.indexOf(b)) }] : [];
+        })
+        .sort((a, b) => a.hop - b.hop || a.component.type.localeCompare(b.component.type) || a.component.name.localeCompare(b.component.name)),
+      neighbours,
+      grantedBy,
+      unknown,
+    };
   }
 }

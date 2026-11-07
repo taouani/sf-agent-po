@@ -309,6 +309,11 @@ The new code lives in npm workspaces under `packages/`:
   `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,
   rules, flows and triggers that run on its records), `metadata_search` and `metadata_component` (one
   component, its children and what it reads, writes, calls or grants, one or two links away).
+  `scope_propose` puts the objects a piece of work touches in front of the user on the approval
+  page (they untick, tick linked objects or type others); the confirmed objects are kept with the
+  context, and `scope_show` gives them with their fields, rules, record types, the flows, triggers,
+  code and layouts linked to them, what that automation calls (two hops), who grants access, and
+  the objects outside the scope that it touches.
   API names are returned as they are; labels, descriptions, formulas, picklist values and the
   names of reports, dashboards, documents and email templates are masked before they are
   returned (masked names can be passed back), and long details are cut. `node scripts/pack-next.mjs --smoke` builds the

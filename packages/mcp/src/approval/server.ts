@@ -58,7 +58,32 @@ export interface InputRequest {
   counts?: Record<string, number>;
 }
 
-export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest;
+/**
+ * The scope of a piece of work to confirm (decision SC): the objects the agent proposed,
+ * ticked, and objects they touch, not ticked. Names and labels are the org's own, in clear:
+ * the page is only in the user's browser.
+ */
+export interface ScopeRequest {
+  kind: "scope";
+  /** The requirement context. */
+  title: string;
+  /** The indexed source, "org:00D..." or "repo:name#hash". */
+  source: string;
+  /** Why the agent proposes these objects, masked. */
+  reason?: string;
+  proposed: ScopeChoice[];
+  suggested: ScopeChoice[];
+}
+
+export interface ScopeChoice {
+  /** The object's API name. */
+  name: string;
+  label?: string;
+  /** What comes with it, or why it is suggested: "12 fields, 2 flows" or "written by Flow X". */
+  detail: string;
+}
+
+export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest | ScopeRequest;
 
 /**
  * What the user decided.
@@ -75,6 +100,10 @@ export interface Decision {
   choice?: "approved" | "rejected" | "text-only" | "redact-uncertain";
   missed: string[];
   comment?: string;
+  /** For a scope: the objects the user kept ticked, among those offered. */
+  selected?: string[];
+  /** For a scope: other objects the user typed, as API names (not checked against the index here). */
+  added?: string[];
   digest: string;
 }
 
@@ -103,7 +132,12 @@ const CHOICES: Record<ApprovalRequest["kind"], readonly NonNullable<Decision["ch
   publish: ["approved", "rejected"],
   image: ["approved", "text-only", "redact-uncertain", "rejected"],
   input: ["approved", "rejected"],
+  scope: ["approved", "rejected"],
 };
+
+/** Objects a user can type in on a scope page. */
+const MAX_ADDED = 50;
+const API_NAME = /^[A-Za-z][\w.]{0,120}$/;
 
 const MAX_FORM = 64 * 1024;
 const MAX_MISSED = 200;
@@ -305,6 +339,13 @@ export class ApprovalServer {
     if (!offered) return send(400, "Unknown decision.", "text/plain");
     const missed = [...new Set((form.get("missed") ?? "").split(/\r?\n/).map((v) => v.trim()).filter(Boolean))].slice(0, MAX_MISSED);
     const comment = form.get("comment")?.trim() || undefined;
+    if (entry.req.kind === "scope") {
+      const offered = new Set([...entry.req.proposed, ...entry.req.suggested].map((o) => o.name));
+      const selected = [...new Set(form.getAll("object"))].filter((o) => offered.has(o));
+      const added = [...new Set((form.get("added") ?? "").split(/[\s,;]+/).map((v) => v.trim()).filter((v) => API_NAME.test(v) && !offered.has(v)))].slice(0, MAX_ADDED);
+      entry.finish({ status: choice, choice, missed: [], selected, added, ...(comment ? { comment } : {}) });
+      return send(303, "", "text/plain", { location: action });
+    }
     // Values still in clear come first: unless the input is rejected, it is checked again once they are hidden.
     entry.finish({ status: missed.length && choice !== "rejected" ? "revise" : choice, choice, missed, ...(comment ? { comment } : {}) });
     // Post, then redirect: a reload does not send the form again.

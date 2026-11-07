@@ -100,7 +100,7 @@ Your task: produce a **high-level design** from the inputs in the context. This 
 
 ## Steps
 
-1. Read the context (see "Working from evidence"). Look at the existing org in the metadata index (\`metadata_summary\`, then \`metadata_component\` for the objects involved). If nothing is indexed and there are no org documents, say so: treat the current state as unknown, and list what must be checked against the org.
+1. Read the context (see "Working from evidence"). Look at the existing org in the metadata index (\`metadata_summary\`), and settle the scope with the user (\`scope_show\`, or \`scope_propose\` when there is none). If nothing is indexed and there are no org documents, say so: treat the current state as unknown, and list what must be checked against the org.
 2. List the requirements you found, each with its source document id, and the conflicts and gaps between them.
 3. Write the design using the template below. Keep it at architecture level: components, decisions and their reasons, not field-by-field detail.
 4. Save it with \`design_save\` (designType "high-level").

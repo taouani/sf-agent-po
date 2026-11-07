@@ -14,6 +14,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
+import { registerScopeTools } from "./scope-tools.js";
 import { registerMetadataTools } from "./metadata-tools.js";
 import { registerAgentPrompts } from "./prompts.js";
 import { registerPublishTools } from "./publish.js";
@@ -153,7 +154,10 @@ export function createServer(opts: ServerOptions): McpServer {
   registerPublishTools(server, publishKit);
   registerBacklogTools(server, publishKit);
   registerAgentPrompts(server, publishKit);
-  if (opts.metadata) registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
+  if (opts.metadata) {
+    registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
+    registerScopeTools(server, { index: opts.metadata.index, contexts, masker, reviewerFor, guard, contextName });
+  }
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
 
