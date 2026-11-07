@@ -202,6 +202,9 @@ The new code lives in npm workspaces under `packages/`:
   and changed without touching code.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
+- `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
+  the MCP server with Anthropic, OpenAI or xAI models and has a judge model score the result.
+  See [packages/eval/README.md](packages/eval/README.md).
 
 The connectors started as copies of the 0.x modules in `src/`, which stay as they are so the
 current server keeps working. A fix to one of them belongs in both places until v1 replaces 0.x.

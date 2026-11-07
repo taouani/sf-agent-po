@@ -1,0 +1,67 @@
+# @sf-agent-po/eval
+
+Measures how good the agents' output is. For each scenario and each model, the runner:
+
+1. starts the MCP server over stdio with an empty workspace,
+2. loads the scenario's inputs (and its local metadata, if any) into a context,
+3. runs each task in the rubric in order (the SA's high-level design, then the PO's backlog),
+   giving the model the server's own prompt and its tools, the way a client such as Claude
+   Desktop would,
+4. reads what the task saved, and has a judge model check it against the rubric.
+
+A task's score is 10 × the share of its criteria met. A run's score is the mean of its tasks.
+The target is at least 7/10 per model.
+
+The model works alone: publishing to Jira or Confluence and adding inputs are not offered,
+and the prompt says no one is there to answer questions, so the agent states its
+assumptions and finishes.
+
+## Running it
+
+It calls paid APIs. Build first (the default server is today's `dist/index.js`):
+
+```bash
+npm run build
+export ANTHROPIC_API_KEY=...   # and/or OPENAI_API_KEY, XAI_API_KEY
+node packages/eval/dist/cli.js --models anthropic:claude-opus-5-5,openai:<model>,xai:<model>
+```
+
+Options: `--judge` (default: the first model), `--scenarios` (ids, default: all), `--server`
+(a command that starts another MCP server, for example v1; split on spaces, or a JSON array
+when a path has spaces), `--out` (default `eval-results/<date>`), `--max-turns` (default 40),
+`--list`.
+
+By default the first model also judges, so it scores its own output. For a comparison between
+models, pick one fixed judge with `--judge` and keep it for later runs.
+
+It writes `report.md` (scores by model and scenario, then every missed criterion) and
+`results.json` (everything, including what was saved and each verdict's reason), and rewrites
+both after every run, so a run cut short keeps what it measured. Only the last artifact a task
+saves with its own save tool is judged. A task or judging failure scores that task 0 and is
+listed in the report.
+
+On GitHub, the **Eval** workflow does the same by hand (Actions, Eval, Run workflow), using the
+repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY`. The report appears
+in the run's summary.
+
+## Scenarios
+
+The runner finds every folder with a `scenario.json` in `examples/` and in
+`packages/eval/scenarios/`:
+
+| Id | Language | Industry | What it tests |
+| --- | --- | --- | --- |
+| `insurance-renewal` | en | insurance | Inputs plus local metadata |
+| `banking-onboarding` | en | financial services | Inputs only |
+| `luxury-clienteling` | en | luxury | Scope narrowed by a later email; privacy rules that need technical controls; China data |
+| `luxe-service-apres-vente` | fr | luxury | Output in French; scope narrowed by a later email; CITES for exotic leathers; health data in notes |
+
+A scenario folder holds:
+
+- `scenario.json`: `id`, `title`, `industry` (optional), `language` (default `en`), `inputs`
+  (default `inputs`) and `metadata` (optional, a local metadata folder);
+- `rubric.md`: one `## <title> (<task>)` section per task, with `- [ ]` criteria. Sections
+  without a task in brackets are notes for people. Tasks: `sa_high_level_design`, `po_backlog`.
+
+0.x has no luxury industry template and no output language setting, so its baseline on the
+luxury scenarios shows what v1 has to improve.

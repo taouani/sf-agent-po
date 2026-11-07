@@ -1,0 +1,24 @@
+{
+  "name": "@sf-agent-po/eval",
+  "version": "0.0.0",
+  "private": true,
+  "description": "sf-agent-po evaluation: runs scenarios against a server with several models and scores them against rubrics. Never published.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sf-agent-eval": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "eval": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "openai": "^7.53.0"
+  }
+}

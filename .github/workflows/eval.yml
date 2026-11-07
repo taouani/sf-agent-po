@@ -1,0 +1,66 @@
+name: Eval
+
+# Runs the evaluation scenarios against the MCP server with real models.
+# It calls paid APIs, so it only runs by hand. Keys come from the repository's
+# Actions secrets ANTHROPIC_API_KEY, OPENAI_API_KEY and XAI_API_KEY; a model whose
+# key is missing fails with a clear message.
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'Models as provider:model, separated by commas'
+        required: true
+        default: 'anthropic:claude-opus-5-5'
+      judge:
+        description: 'Judge model (empty for the first model)'
+        required: false
+        default: ''
+      scenarios:
+        description: 'Scenario ids, separated by commas (empty for all)'
+        required: false
+        default: ''
+      max_turns:
+        description: 'Turn limit per task'
+        required: false
+        default: '40'
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run the evaluation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          MODELS: ${{ inputs.models }}
+          JUDGE: ${{ inputs.judge }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          MAX_TURNS: ${{ inputs.max_turns }}
+        run: |
+          set -o pipefail
+          args=(--models "$MODELS" --out eval-results --max-turns "$MAX_TURNS")
+          if [ -n "$JUDGE" ]; then args+=(--judge "$JUDGE"); fi
+          if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
+          node packages/eval/dist/cli.js "${args[@]}"
+      - name: Write the report to the job summary
+        if: always()
+        run: if [ -f eval-results/report.md ]; then cat eval-results/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval-results/
+          if-no-files-found: ignore

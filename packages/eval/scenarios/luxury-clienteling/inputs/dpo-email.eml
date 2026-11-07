@@ -1,0 +1,20 @@
+From: Sophie Garnier <dpo@aurelle.example>
+To: Hugo Lambert <h.lambert@aurelle.example>
+Cc: Tom Reed <t.reed@aurelle.example>
+Subject: Clienteling: privacy requirements
+Date: Thu, 5 Nov 2026 09:12:00 +0100
+Content-Type: text/plain; charset=utf-8
+
+Hugo,
+
+Before any design is approved, these points are mandatory:
+
+1. Advisor notes must never contain health information, religion, political views or anything about sexual life. Today the notebooks are full of this ("allergic to nickel", "fasting during Ramadan"). We need a way to prevent it, not just a training session.
+2. Marketing consent is per channel (email, SMS, phone, WhatsApp) and per country. An advisor must not be able to contact a client on a channel without consent.
+3. Clients inactive for 3 years (no purchase, no appointment, no contact) are anonymised.
+4. Chinese clients: personal information collected in our Shanghai boutiques must be stored in China, and any transfer to Europe needs separate consent and the transfer filing with the CAC. Until Legal confirms the setup, no Chinese client data may leave China.
+5. Some clients are public figures. Their profiles must be visible only to their own advisor and the boutique manager.
+
+Thanks,
+Sophie Garnier
+Data Protection Officer

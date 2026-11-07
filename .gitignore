@@ -2,3 +2,4 @@ node_modules
 dist/
 .sf-agent/
 .env
+eval-results/

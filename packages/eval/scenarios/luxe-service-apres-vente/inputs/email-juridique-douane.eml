@@ -1,0 +1,20 @@
+From: Nathalie Roux <n.roux@veronne.example>
+To: Inès Haddad <i.haddad@veronne.example>
+Cc: Antoine Leroy <a.leroy@veronne.example>
+Subject: SAV : cuirs exotiques et données clients
+Date: Tue, 27 Oct 2026 16:40:00 +0100
+Content-Type: text/plain; charset=utf-8
+
+Bonjour Inès,
+
+Suite à l'atelier, quelques points bloquants côté juridique :
+
+1. Cuirs exotiques. Les peaux de crocodile, d'alligator et de lézard relèvent de la CITES. Un article qui part de France ou d'Italie vers Genève, puis revient, franchit une frontière douanière : il faut un certificat CITES de réexportation (ou un certificat pour objet personnel selon le cas) pour chaque mouvement, et le service douane doit le valider avant l'envoi. Un article sans certificat valide ne doit pas pouvoir être expédié. Les articles des boutiques suisses restent en Suisse jusqu'à Genève et n'ont pas besoin de certificat pour ce trajet ; il en faut un s'ils doivent ensuite passer par Pantin. Les articles exotiques venant du Japon ne partent pas en réparation hors du Japon tant que nous n'avons pas de procédure : la boutique doit refuser la prise en charge et orienter le client.
+2. Photos. Les photos prises en boutique montrent parfois le visage du client ou le contenu du sac (papiers, médicaments). Elles ne doivent montrer que l'article. Les photos sont supprimées 12 mois après la clôture de la réparation.
+3. Données. Les notes de réparation ne doivent contenir aucune donnée de santé (« sac abîmé pendant une chimio », « allergie au nickel » pour justifier un changement de fermoir). Il faut un garde-fou dans l'outil, pas seulement une consigne.
+4. Notifications. Les emails et SMS de suivi sont des messages de service, pas du marketing : ils ne doivent contenir aucune offre ni recommandation de produit, sinon il faut le consentement marketing.
+
+Merci de me confirmer que la conception intègre ces points.
+
+Nathalie Roux
+Direction juridique
