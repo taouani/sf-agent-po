@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MetadataIndex, packagePath, parseMetadataXml, readFlow, scanProject, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -22,7 +22,10 @@ describe("classify", () => {
     expect(classify("x/objects/Account/validationRules/V.validationRule-meta.xml")).toEqual({ kind: "validationRule", object: "Account", child: "V" });
     expect(classify("src/objects/Claim__c.object")).toEqual({ kind: "mdapiObject", object: "Claim__c" });
     expect(classify("x/objects/Account/listViews/All.listView-meta.xml")).toBeUndefined();
-    expect(classify("x/classes/Foo.cls")).toBeUndefined();
+    expect(classify("x/classes/Foo.cls")).toEqual({ kind: "apexClass", object: "Foo" });
+    expect(classify("x/classes/Foo.cls-meta.xml")).toBeUndefined();
+    expect(classify("x/profiles/Admin.profile")).toEqual({ kind: "profile", object: "Admin" });
+    expect(classify("x/layouts/Account-Account Layout.layout-meta.xml")).toEqual({ kind: "layout", object: "Account-Account Layout" });
   });
 });
 
@@ -112,7 +115,10 @@ describe("classifyFile (the metadata type registry)", () => {
     expect(what("x/settings/Case.settings-meta.xml")).toEqual({ type: "Settings", name: "Case" });
     expect(what("x/bots/Helper/Helper.bot-meta.xml")).toEqual({ type: "Bot", name: "Helper" });
     expect(what("README.md")).toBeUndefined();
-    expect(what("x/classes/nested/Foo.cls-meta.xml")).toBeUndefined();
+    // Source format lets a class sit in a subfolder, or any folder.
+    expect(classifyFile("x/classes/nested/Foo.cls-meta.xml")).toEqual({ type: "ApexClass", name: "Foo", home: "x/classes/nested" });
+    expect(what("x/services/Foo.cls")).toEqual({ type: "ApexClass", name: "Foo" });
+    expect(what("x/notes/Foo.txt")).toBeUndefined();
   });
 
   it("knows sites, documents, folders in metadata format, territories and top-level children", () => {
@@ -191,10 +197,14 @@ describe("flows", () => {
     const { components } = await scanProject(join(fixtures, "source"));
     const others = components.filter((c) => !["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"].includes(c.type) && !c.missing);
     expect(others.map((c) => `${c.type}:${c.name}`).sort()).toEqual([
+      "ApexClass:RenewalNotifier",
       "ApexClass:RenewalService",
+      "ApexTrigger:PolicyTrigger",
       "Layout:Policy__c-Policy Layout",
       "LightningComponentBundle:policyCard",
       "ListView:Policy__c.All",
+      "PermissionSet:Policy_Manager",
+      "PermissionSetGroup:Renewals",
       "Report:Sales/Pipeline",
       "ReportFolder:Sales",
     ]);
@@ -293,6 +303,171 @@ describe("flow references", () => {
   });
 });
 
+describe("Apex, permissions and layouts", () => {
+  const out = (edges: { from: { name: string }; to: { type: string; name: string }; kind: string }[], name: string) =>
+    edges
+      .filter((e) => e.from.name === name)
+      .map((e) => `${e.kind} ${e.to.type}:${e.to.name}`)
+      .sort();
+
+  it("reads what Apex queries, writes and calls, and what a trigger runs on", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const service = components.find((c) => c.name === "RenewalService")!;
+    expect(service).toMatchObject({ type: "ApexClass", attrs: { kind: "class", sharing: "with", queries: 2, dml: 4 }, text: "" });
+    // Comments are not read: they can name people, and what they mention is not used.
+    expect(JSON.stringify(service)).not.toContain("Dupont");
+    expect(out(edges, "RenewalService")).toEqual(
+      [
+        "calls ApexClass:RenewalNotifier",
+        "calls Flow:Policy_Renewal",
+        "reads CustomField:Account.Segment__c",
+        "reads CustomField:Policy__c.Holder__c",
+        "reads CustomField:Policy__c.Id",
+        "reads CustomField:Policy__c.Name",
+        "reads CustomField:Policy__c.Premium__c",
+        "reads CustomField:Policy__c.Status__c",
+        "reads CustomField:Task.ActivityDate",
+        "reads CustomField:Task.Id",
+        "reads CustomField:Task.WhatId",
+        "reads CustomLabel:Renewal_Segment",
+        "reads CustomObject:Policy__c",
+        "reads CustomObject:Task",
+        "writes CustomField:Account.Name",
+        "writes CustomField:Account.Segment__c",
+        "writes CustomField:Claim__c.Amount__c",
+        "writes CustomField:Claim__c.Policy__c",
+        "writes CustomField:Policy__c.Status__c",
+        "writes CustomObject:Account",
+        "writes CustomObject:Claim__c",
+        "writes CustomObject:Policy__c",
+        "writes CustomObject:Task",
+        "reads CustomField:Account.Industry",
+      ].sort(),
+    );
+    expect(components.find((c) => c.name === "PolicyTrigger")).toMatchObject({ type: "ApexTrigger", attrs: { object: "Policy__c", events: ["before insert", "after update"] } });
+    expect(out(edges, "PolicyTrigger")).toEqual([
+      "calls ApexClass:RenewalService",
+      "reads CustomField:Policy__c.Premium__c",
+      "triggers_on CustomObject:Policy__c",
+      "writes CustomField:Policy__c.Premium__c",
+      "writes CustomObject:Policy__c",
+    ]);
+  });
+
+  it("reads what permission sets grant, what groups include and what layouts show", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const ps = components.find((c) => c.name === "Policy_Manager")!;
+    expect(ps).toMatchObject({
+      type: "PermissionSet",
+      label: "Policy Manager",
+      attrs: { activationRequired: false, objects: { Policy__c: "CRE" }, fields: { "Policy__c.Status__c": "edit", "Policy__c.Premium__c": "read" }, userPermissions: ["RunReports"] },
+      text: "For the renewals team led by Jeanne Dupont",
+    });
+    expect(out(edges, "Policy_Manager")).toEqual([
+      "grants ApexClass:RenewalService",
+      "grants CustomField:Policy__c.Premium__c",
+      "grants CustomField:Policy__c.Status__c",
+      "grants CustomObject:Policy__c",
+      "grants Flow:Policy_Renewal",
+    ]);
+    expect(out(edges, "Renewals")).toEqual(["includes PermissionSet:Policy_Manager"]);
+    expect(components.find((c) => c.type === "Layout")).toMatchObject({ parent: "Policy__c", attrs: { object: "Policy__c", required: ["Name"], readonly: ["Premium__c"] } });
+    expect(out(edges, "Policy__c-Policy Layout")).toEqual([
+      "part_of CustomObject:Policy__c",
+      "shows CustomField:Claim__c.Policy__c",
+      "shows CustomField:Policy__c.Name",
+      "shows CustomField:Policy__c.Premium__c",
+      "shows CustomField:Policy__c.Status__c",
+    ]);
+  });
+
+  it("scans Apex queries and code without being misled by strings, comments or keywords", () => {
+    expect(soqlFields("SELECT Id, toLabel(Status), COUNT(Amount__c) total, (SELECT Id FROM Contacts) FROM Account WHERE Name LIKE :n AND CreatedDate = LAST_N_DAYS:7 ORDER BY Owner.Name DESC NULLS LAST")).toEqual({
+      object: "Account",
+      fields: ["Id", "Status", "Amount__c", "Name", "CreatedDate", "Owner.Name"],
+      joins: [],
+    });
+    expect(apexCode("a = 'it\\'s // not'; // x\n/* y */b")).toBe("a = '            '; // x\n/* y */b".replace("// x", "    ").replace("/* y */", "       "));
+    const c = readApex("ApexClass", "C", "public class C { void m(User u, Foo f) { return u; } void update(List<X> l) {} String s = 'insert acc;'; }", "classes/C.cls");
+    // Only classes the project might have are named, and only linked if it has them.
+    expect(c.refs!.every((r) => r.kind === "calls" && r.known)).toBe(true);
+    expect(linkObjects([c]).edges).toEqual([]);
+    const huge = readApex("ApexClass", "Big", "x".repeat(MAX_APEX_LENGTH + 1), "classes/Big.cls");
+    expect(huge).toMatchObject({ attrs: { tooLarge: true } });
+    expect(huge.refs).toBeUndefined();
+  });
+});
+
+describe("Apex scanning, hard cases", () => {
+  const edges = (src: string, others: ParsedComponent[] = []) =>
+    linkObjects([readApex("ApexClass", "X", src, "classes/X.cls"), ...others])
+      .edges.filter((e) => e.from.name === "X")
+      .map((e) => `${e.kind} ${e.to.type}:${e.to.name}`)
+      .sort();
+
+  it("stays fast on long runs of whitespace, comments and unclosed constructs", () => {
+    const started = Date.now();
+    readApex("ApexClass", "T", "@IsTest\n" + "// old code that was commented out\n".repeat(6000) + "private class T {}", "x");
+    readApex("ApexClass", "T", "@AuraEnabled\n/*" + " ".repeat(300_000) + "*/", "x");
+    readApex("ApexClass", "T", "return [SELECT " + "Name, ".repeat(10_000) + "Id FROM Account];", "x");
+    readApex("ApexClass", "T", "insert" + " ".repeat(100_000) + "as" + " ".repeat(100_000) + "x", "x");
+    readApex("ApexClass", "T", "Database" + " ".repeat(100_000) + "." + " ".repeat(100_000) + "insert (", "x");
+    readApex("ApexTrigger", "T", "trigger a on b (".repeat(20_000), "x");
+    readApex("ApexClass", "T", "new Account(".repeat(20_000) + "[SELECT Id FROM X WHERE A = :".repeat(5_000) + "TYPEOF ".repeat(5_000), "x");
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it("reads each use of a variable as the type it was declared with nearest before it", () => {
+    const e = edges("@IsTest class X { static void a(){ Contact c = new Contact(LastName='x'); insert c; } static void b(){ Case c = new Case(); c.Status='New'; c.Origin='Web'; insert c; } }");
+    expect(e).toContain("writes CustomObject:Case");
+    expect(e).toContain("writes CustomField:Case.Status");
+    expect(e).not.toContain("writes CustomField:Contact.Status");
+  });
+
+  it("does not take bind expressions, TYPEOF, FIELDS() or locators for fields or writes", () => {
+    expect(soqlFields("SELECT Id FROM Account WHERE Name = :String.escapeSingleQuotes(term) AND CreatedDate > :Date.newInstance(year, month, 1) AND Id = : byName.get(key).Id").fields).toEqual(["Id", "Name", "CreatedDate"]);
+    expect(soqlFields("SELECT Id, TYPEOF What WHEN Account THEN Phone ELSE Name END FROM Event").fields).toEqual(["Id"]);
+    expect(soqlFields("SELECT FIELDS(STANDARD) FROM Account USING SCOPE mine_and_my_groups").fields).toEqual([]);
+    expect(soqlFields("SELECT Id FROM Account WHERE Id NOT IN (SELECT AccountId FROM Opportunity WHERE IsWon = true)")).toEqual({
+      object: "Account",
+      fields: ["Id"],
+      joins: [{ object: "Opportunity", fields: ["AccountId", "IsWon"] }],
+    });
+    const batch = edges("class X { Database.QueryLocator start() { return Database.getQueryLocator([SELECT Id FROM Account]); } }");
+    expect(batch).toEqual(["reads CustomField:Account.Id", "reads CustomObject:Account"]);
+  });
+
+  it("knows map initialisers, compound assignments, describes, nested calls and static field tokens", () => {
+    expect(edges("class X { void m(Account acc) { Map<Id, Account> m = new Map<Id, Account>{ acc.Id => acc }; update m.values(); } }")).not.toContain("writes CustomField:Account.Id");
+    expect(edges("class X { void m(Opportunity o) { o.Amount += 10; o.Probability++; } }")).toEqual([
+      "writes CustomField:Opportunity.Amount",
+      "writes CustomField:Opportunity.Probability",
+      "writes CustomObject:Opportunity",
+    ]);
+    expect(edges("class X { String p = Schema.SObjectType.Account.keyPrefix; }")).toEqual(["reads CustomObject:Account"]);
+    expect(edges("class X { void m() { insert new Account(Name = 'x', OwnerId = UserInfo.getUserId()); } }")).toEqual([
+      "writes CustomField:Account.Name",
+      "writes CustomField:Account.OwnerId",
+      "writes CustomObject:Account",
+    ]);
+    expect(edges("class X { Account acc; void m(List<Account> accs) { this.acc.Name = 'x'; upsert accs Account.Fields.Ext_Id__c; switch on acc { when Account a { a.Rating = 'Hot'; } } } }")).toEqual([
+      "reads CustomField:Account.Ext_Id__c",
+      "writes CustomField:Account.Name",
+      "writes CustomField:Account.Rating",
+      "writes CustomObject:Account",
+    ]);
+    // A variable named label is not a custom label.
+    expect(edges("class X { void m(Wrapper label) { label.value = 'x'; } }")).toEqual([]);
+  });
+
+  it("does not crash on folders named after object properties, nor read Apex inside a static resource", async () => {
+    expect(classify("x/lwc/constructor/constructor.js")).toBeUndefined();
+    expect(classify("x/objects/A/constructor/B.field-meta.xml")).toBeUndefined();
+    expect(classify("x/staticresources/lib/classes/Foo.cls")).toBeUndefined();
+    expect(classify("x/classes/services/Foo.cls")).toEqual({ kind: "apexClass", object: "Foo" });
+  });
+});
+
 describe("formulaFields", () => {
   const fields = new Map<string, Map<string, ParsedComponent>>([
     ["case", new Map([["contract__c", { type: "CustomField", name: "Case.Contract__c", attrs: { referenceTo: ["Contract__c"] }, text: "" }]])],
@@ -364,8 +539,10 @@ describe("MetadataIndex", () => {
       "Policy__c.Holder__c",
       "Policy__c.Holder_Industry__c",
       "Policy__c.Id",
+      "Policy__c.Name",
       "Policy__c.Premium__c",
       "Policy__c.Status__c",
+      "Policy__c-Policy Layout",
       "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
@@ -373,7 +550,15 @@ describe("MetadataIndex", () => {
 
     const premium = index.component(snap.id, "CustomField", "Policy__c.Premium__c")!;
     const near = index.related(premium.id);
-    expect(near.map((r) => `${r.direction} ${r.kind} ${r.component.name}`)).toEqual(["out part_of Policy__c", "in reads Policy__c.Premium_Required"]);
+    expect(near.map((r) => `${r.direction} ${r.kinds.join("+")} ${r.component.name}`)).toEqual([
+      "out part_of Policy__c",
+      "in reads RenewalService",
+      "in writes+reads PolicyTrigger",
+      "in shows Policy__c-Policy Layout",
+      "in grants Policy_Manager",
+      "in reads Policy__c.Premium_Required",
+    ]);
+    expect(near.find((r) => r.component.name === "PolicyTrigger")?.kind).toBe("writes");
     // Two hops out from the formula field: through Account to its owner field and User.
     const formula = index.component(snap.id, "CustomField", "Policy__c.Holder_Industry__c")!;
     const deep = index.related(formula.id, { depth: 2 }).filter((r) => r.direction === "out");

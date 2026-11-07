@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Policy Manager</label>
+    <description>For the renewals team led by Jeanne Dupont</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <objectPermissions><object>Policy__c</object><allowCreate>true</allowCreate><allowRead>true</allowRead><allowEdit>true</allowEdit><allowDelete>false</allowDelete><viewAllRecords>false</viewAllRecords><modifyAllRecords>false</modifyAllRecords></objectPermissions>
+    <objectPermissions><object>Claim__c</object><allowCreate>false</allowCreate><allowRead>false</allowRead><allowEdit>false</allowEdit><allowDelete>false</allowDelete><viewAllRecords>false</viewAllRecords><modifyAllRecords>false</modifyAllRecords></objectPermissions>
+    <fieldPermissions><field>Policy__c.Status__c</field><editable>true</editable><readable>true</readable></fieldPermissions>
+    <fieldPermissions><field>Policy__c.Premium__c</field><editable>false</editable><readable>true</readable></fieldPermissions>
+    <fieldPermissions><field>Policy__c.Holder__c</field><editable>false</editable><readable>false</readable></fieldPermissions>
+    <classAccesses><apexClass>RenewalService</apexClass><enabled>true</enabled></classAccesses>
+    <flowAccesses><flow>Policy_Renewal</flow><enabled>true</enabled></flowAccesses>
+    <userPermissions><name>RunReports</name><enabled>true</enabled></userPermissions>
+    <userPermissions><name>ModifyAllData</name><enabled>false</enabled></userPermissions>
+</PermissionSet>

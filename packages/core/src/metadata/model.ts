@@ -4,7 +4,10 @@
  * Metadata types the readers understand in detail, named as in the Metadata API. Every other
  * type in the registry is indexed by name and file only.
  */
-export const COMPONENT_TYPES = ["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"] as const;
+export const COMPONENT_TYPES = [
+  "CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow", "ApexClass", "ApexTrigger",
+  "PermissionSet", "Profile", "PermissionSetGroup", "Layout",
+] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
 
@@ -15,13 +18,17 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
  *   an Apex-defined type;
  * - reads: a formula, rule or flow uses a field (or queries an object);
  * - writes: a flow sets a field (or creates, updates or deletes records of an object);
- * - triggers_on: a flow or process runs for records of an object: when they change
+ * - triggers_on: a flow, process or Apex trigger runs for records of an object: when they change
  *   (record-triggered) or on a schedule. Draft and obsolete flows have the edge too, since
  *   they would run once activated: their `status` attr says whether they do now;
  * - calls: a flow runs an Apex action, a subflow, an email alert, a quick action, an external
- *   service or a custom screen component.
+ *   service or a custom screen component; Apex uses another class or starts a flow;
+ * - grants: a permission set or profile gives access to an object, field, class, page, flow,
+ *   record type, app, custom permission or layout (how much is in its attrs);
+ * - includes: a permission set group holds a permission set;
+ * - shows: a layout puts a field, button, related list, page or action in front of users.
  */
-export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls"] as const;
+export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls", "grants", "includes", "shows"] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
 
 /**
@@ -30,10 +37,12 @@ export type EdgeKind = (typeof EDGE_KINDS)[number];
  * ("Account__r.Owner.Email"); a write writes the field at its end, and that field's object;
  * with `object` alone, the object; with `type` and `name`, that component. Several types are
  * alternatives, best first: the first the project has, or else the first.
+ * With `known`, the reference is dropped unless the project has the component: code names
+ * many things ("System.debug") that only might be a class or an object.
  */
 export type Ref =
-  | { kind: EdgeKind; object: string; path?: string }
-  | { kind: EdgeKind; type: ComponentType | readonly ComponentType[]; name: string };
+  | { kind: EdgeKind; object: string; path?: string; known?: boolean }
+  | { kind: EdgeKind; type: ComponentType | readonly ComponentType[]; name: string; known?: boolean };
 
 export interface ParsedComponent {
   type: ComponentType;

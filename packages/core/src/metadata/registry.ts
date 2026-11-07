@@ -77,6 +77,9 @@ function tables(): Lookups {
 
 export const registryTypeCount = () => Object.keys(REGISTRY_TYPES).length;
 
+/** Content files known by their suffix in any folder: Apex and Visualforce source. */
+const ANYWHERE_CONTENT = new Set(["cls", "trigger", "page", "component"]);
+
 /** Test folders, mocks and dotfiles: in a bundle's folder, but not part of the component. */
 const notPart = (segment: string) => segment.startsWith(".") || segment.startsWith("__");
 
@@ -151,7 +154,12 @@ export function classifyFile(rel: string): RegistryMatch | undefined {
   const pick = (t: RegistryType) => dirs.lastIndexOf(t.directoryName);
   const type = candidates?.length ? candidates.reduce((best, t) => (pick(t) > pick(best) ? t : best)) : undefined;
   const at = type ? pick(type) : -1;
+  // Source format lets a type that does not insist on its folder sit anywhere
+  // (force-app/main/default/services/Foo.cls), known by its suffix alone when no other type
+  // shares it: its metadata file, or one of the content files only Apex and Visualforce use.
+  const anywhere = (t: RegistryType | undefined) => !!t && candidates?.length === 1 && !t.strict && !t.inFolder && (meta || ANYWHERE_CONTENT.has(suffix));
   if (!type || at < 0) {
+    if (anywhere(type)) return { type: type!.name, name, home: dirs.join("/") };
     // A folder's file in metadata format has no suffix: reports/Sales-meta.xml,
     // reports/Sales/Sub-meta.xml are report folders.
     if (!meta || dot > 0) return undefined;
@@ -179,5 +187,7 @@ export function classifyFile(rel: string): RegistryMatch | undefined {
   // A metadata-only type must sit right in its folder, as a content file (Foo.cls) does;
   // a decomposed one sits in a folder of its own name (bots/MyBot/MyBot.bot-meta.xml).
   if (at === dirs.length - 1 || (at === dirs.length - 2 && dirs.at(-1) === name)) return { type: type.name, name, home };
+  // classes/services/Foo.cls: a subfolder of the type's own.
+  if (anywhere(type)) return { type: type.name, name, home: dirs.join("/") };
   return undefined;
 }

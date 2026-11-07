@@ -3,9 +3,11 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ParsedComponent, ParsedMetadata } from "./model.js";
+import { COMPONENT_TYPES, type ParsedComponent, type ParsedMetadata } from "./model.js";
 import { componentKey, isCustomName, linkObjects, readField, readObject, readRecordType, readValidationRule } from "./objects.js";
 import { readFlow } from "./flows.js";
+import { readApex } from "./apex.js";
+import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
 import { classifyFile } from "./registry.js";
 import { obj, parseMetadataXml } from "./xml.js";
 
@@ -21,20 +23,46 @@ export const MAX_FILES = 500_000;
 /** How many skipped files the snapshot lists; the count covers them all. */
 export const MAX_SKIPPED_LISTED = 200;
 
-type Kind = "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow";
+type Kind =
+  | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
+  | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout";
+
+/**
+ * Types read in detail that sit right in their folder: folder, the file's suffix, and the
+ * kind. Apex is read from its source file, the rest from their XML in either format
+ * (Foo.permissionset-meta.xml or Foo.permissionset).
+ */
+const TOP_LEVEL = new Map<string, [string, Kind, boolean]>([
+  ["flows", [".flow", "flow", true]],
+  ["classes", [".cls", "apexClass", false]],
+  ["triggers", [".trigger", "apexTrigger", false]],
+  ["permissionsets", [".permissionset", "permissionSet", true]],
+  ["profiles", [".profile", "profile", true]],
+  ["permissionsetgroups", [".permissionsetgroup", "permissionSetGroup", true]],
+  ["layouts", [".layout", "layout", true]],
+]);
+
+/** Types read in detail: every other one is indexed by name and file. */
+const DETAILED = new Set<string>(COMPONENT_TYPES);
 
 /** What a file is, from its name and the folders around it, or undefined. */
 export function classify(rel: string): { kind: Kind; object: string; child?: string } | undefined {
+  // A file in a folder another type owns (an expanded static resource's classes/Foo.cls) is
+  // that type's.
+  const owner = classifyFile(rel)?.type;
+  if (owner && !DETAILED.has(owner)) return undefined;
   const parts = rel.split("/");
   const base = parts.at(-1)!;
   const dir = parts.at(-2);
   const up = parts.at(-3);
   const upper = parts.at(-4);
-  // flows/Renewal.flow-meta.xml (source) or flows/Renewal.flow (metadata format); the name
-  // travels in `object`.
-  if (dir === "flows") {
-    const flow = base.endsWith(".flow-meta.xml") ? base.slice(0, -".flow-meta.xml".length) : base.endsWith(".flow") ? base.slice(0, -".flow".length) : "";
-    if (flow) return { kind: "flow", object: flow };
+  // flows/Renewal.flow-meta.xml (source) or flows/Renewal.flow (metadata format),
+  // classes/Foo.cls; the name travels in `object`. Source format lets these sit in any folder
+  // (classes/services/Foo.cls); metadata format keeps them right in their own.
+  for (const [folder, [suffix, kind, xml]] of TOP_LEVEL) {
+    const meta = `${suffix}-meta.xml`;
+    if (xml && base.endsWith(meta) && base.length > meta.length) return { kind, object: base.slice(0, -meta.length) };
+    if (base.endsWith(suffix) && base.length > suffix.length && (dir === folder || !xml)) return { kind, object: base.slice(0, -suffix.length) };
   }
   // metadata format: objects/Account.object
   if (dir === "objects" && base.endsWith(".object") && base.length > ".object".length) return { kind: "mdapiObject", object: base.slice(0, -".object".length) };
@@ -47,7 +75,7 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
       recordTypes: [".recordType-meta.xml", "recordType"],
       validationRules: [".validationRule-meta.xml", "validationRule"],
     };
-    const known = dir ? children[dir] : undefined;
+    const known = dir && Object.hasOwn(children, dir) ? children[dir] : undefined;
     if (known && base.endsWith(known[0]) && base.length > known[0].length) return { kind: known[1], object: up, child: base.slice(0, -known[0].length) };
   }
   return undefined;
@@ -153,6 +181,11 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
 
   /** Where each component found by the registry was found: its type's folder. */
   const homes = new Map<string, string>();
+  /** A file read in detail: its other files (Foo.cls-meta.xml) are the same component. */
+  const knownHome = (file: string) => {
+    const m = classifyFile(file);
+    if (m && !homes.has(componentKey(m.type, m.name))) homes.set(componentKey(m.type, m.name), m.home);
+  };
 
   const files = new Set<string>();
   for (const dir of await packageDirs(root)) {
@@ -189,7 +222,13 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
     try {
       const size = (await stat(path.join(root, file))).size;
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
-      const doc = parseMetadataXml(await readFile(path.join(root, file), "utf8"));
+      const content = await readFile(path.join(root, file), "utf8");
+      if (what.kind === "apexClass" || what.kind === "apexTrigger") {
+        add(readApex(what.kind === "apexClass" ? "ApexClass" : "ApexTrigger", what.object, content, file), file);
+        knownHome(file);
+        continue;
+      }
+      const doc = parseMetadataXml(content);
       const named = (el: Record<string, unknown>) => ({ ...el, fullName: el.fullName ?? what.child });
       switch (what.kind) {
         case "mdapiObject":
@@ -214,7 +253,20 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
         case "flow":
           add(readFlow(what.object, obj(doc.Flow), file), file);
           break;
+        case "permissionSet":
+          add(readPermissions("PermissionSet", what.object, obj(doc.PermissionSet), file), file);
+          break;
+        case "profile":
+          add(readPermissions("Profile", what.object, obj(doc.Profile), file), file);
+          break;
+        case "permissionSetGroup":
+          add(readPermissionSetGroup(what.object, obj(doc.PermissionSetGroup), file), file);
+          break;
+        case "layout":
+          add(readLayout(what.object, obj(doc.Layout), file), file);
+          break;
       }
+      knownHome(file);
       // A source-format object folder may hold only fields (a standard object the project
       // extends): the object is still part of the project.
       if (what.kind === "field" || what.kind === "recordType" || what.kind === "validationRule") standIn(what.object, file.split("/").slice(0, -2).join("/"));
