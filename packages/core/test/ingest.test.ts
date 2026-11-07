@@ -227,13 +227,16 @@ describe("values the user declares", () => {
       { type: "PERSON", value: "Al", caseSensitive: false },
       { type: "PRIVATE", value: "bluebird", caseSensitive: false },
     ]);
-    expect(ignored).toEqual(["x", "[PERSON_1]"]);
-    expect(vault.known("acme").map((k) => k.declared)).toEqual([true, true]);
+    expect(ignored).toBe(1); // "x"; the pseudonym is already hidden
+    expect(vault.declared("acme")).toEqual([
+      { type: "PERSON", value: "Al" },
+      { type: "PRIVATE", value: "bluebird" },
+    ]);
     // A learned value as short as "Al" is never looked for; a declared one is.
     expect((await masker.mask("acme", "AL and Al run Bluebird; also Alice.")).text).toBe("[PERSON_1] and [PERSON_1] run [PRIVATE_1]; also Alice.");
   });
 
-  it("picks up a known value declared later, even from another masker", async () => {
+  it("picks up a known value declared later, even from another masker, under its pseudonym", async () => {
     const { masker, vault } = setup(fakeModel(["al"]));
     await masker.mask("acme", "ask al"); // learned from the model, too short to look for again
     const other = new Masker({ vault });
@@ -243,5 +246,36 @@ describe("values the user declares", () => {
     // The same pseudonym, now declared: no second one under another type.
     expect(vault.version("acme")).toMatchObject({ count: before.count, declared: 1 });
     expect((await other.mask("acme", "ask al")).text).toBe("ask [PERSON_1]");
+  });
+
+  it("masks the spelling the user wrote, when the vault knows the value in another", async () => {
+    const { masker, vault } = setup(fakeModel(["O'Neil"]));
+    await masker.mask("acme", "ask O'Neil, call 0612345678");
+    masker.declare("acme", ["O\u2019Neil", "06/12/34/56/78"]);
+    const later = new Masker({ vault });
+    expect((await later.mask("acme", "ask O\u2019Neil, call 06/12/34/56/78")).text).toBe("ask [PERSON_1], call [PHONE_1]");
+  });
+
+  it("keeps declared secrets hidden, exactly as written", async () => {
+    const { masker, vault } = setup();
+    const secret = ["Tr0ub4", "dor&3x"].join("");
+    expect((await masker.mask("acme", `password: ${secret}`)).text).toBe("password: [SECRET_1]");
+    expect(masker.declare("acme", [secret]).entries).toEqual([{ type: "SECRET", value: secret, caseSensitive: true }]);
+    expect((await new Masker({ vault }).mask("acme", `the pw is ${secret} ok`)).text).toBe("the pw is [SECRET_1] ok");
+  });
+
+  it("takes the text around a copied pseudonym, without the punctuation", async () => {
+    const { masker } = setup();
+    const { entries, ignored } = masker.declare("acme", ["[PERSON_1] Benali,", "(Karim)", "[EMAIL_2] x"]);
+    expect(entries.map((e) => e.value)).toEqual(["Benali", "Karim"]);
+    expect(ignored).toBe(1);
+    expect((await masker.mask("acme", "Karim said Benali.")).text).toBe("[PERSON_2] said [PERSON_1].");
+  });
+
+  it("never takes a type that stays visible from an earlier value", async () => {
+    const { masker, vault } = setup();
+    vault.pseudonym("acme", "ORG", "Bluebird");
+    expect(masker.declare("acme", ["Bluebird"]).entries).toEqual([{ type: "PERSON", value: "Bluebird", caseSensitive: false }]);
+    expect((await masker.mask("acme", "project Bluebird")).text).toBe("project [PERSON_1]");
   });
 });

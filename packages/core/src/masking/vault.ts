@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { validateContextName } from "../store/contexts.js";
 import type { Database } from "../store/db.js";
-import { normaliseType, replaceSpans, type Span } from "./spans.js";
+import { normaliseType, replaceSpans, VISIBLE_TYPES, type Span } from "./spans.js";
 
 /** The vault key's length: 32 random bytes, kept in the OS keychain. */
 export const VAULT_KEY_BYTES = 32;
@@ -138,13 +138,14 @@ export class Vault {
       get: db.prepare("SELECT lookup, original FROM pseudonym WHERE context = ? AND type = ? AND n = ?"),
       counts: db.prepare("SELECT type, count(*) AS c FROM pseudonym WHERE context = ? GROUP BY type"),
       all: db.prepare(
-        `SELECT type, n, lookup, original, declared FROM pseudonym WHERE context = ? AND rowid > ? AND type NOT IN ('${LITERAL}', '${SOURCE}', 'SECRET') ORDER BY rowid`,
+        `SELECT type, n, lookup, original FROM pseudonym WHERE context = ? AND rowid > ? AND type NOT IN ('${LITERAL}', '${SOURCE}', 'SECRET') ORDER BY rowid`,
       ),
       after: db.prepare("SELECT count(*) AS c FROM pseudonym WHERE context = ? AND rowid > ?"),
-      declare: db.prepare("UPDATE pseudonym SET declared = 1 WHERE context = ? AND lookup = ?"),
+      declare: db.prepare("INSERT OR IGNORE INTO declared (context, type, n, lookup, value, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
+      declared: db.prepare("SELECT type, n, lookup, value FROM declared WHERE context = ? ORDER BY rowid"),
       version: db.prepare(
         `SELECT c.vault_generation AS generation, count(p.rowid) AS count, coalesce(max(p.rowid), 0) AS last,
-           coalesce(sum(p.declared), 0) AS declared
+           (SELECT count(*) FROM declared d WHERE d.context = c.name) AS declared
          FROM context c LEFT JOIN pseudonym p ON p.context = c.name WHERE c.name = ? GROUP BY c.name`,
       ),
       generation: db.prepare("UPDATE context SET vault_generation = ? WHERE name = ? AND vault_generation IS NULL"),
@@ -196,17 +197,28 @@ export class Vault {
 
   /**
    * The pseudonym of a value the user said must be hidden: like `pseudonym`, and the value is
-   * marked so that every later input of the context masks it (see `known`).
+   * kept as the user wrote it, so that every later input of the context masks that spelling
+   * (see `declared`). A value the context knows under another masked type keeps its label;
+   * one only known under a type that stays visible (a place) gets `type`.
    */
   declare(context: string, type: string, value: string): string {
     return this.database.write(() => {
-      // A value the context knows under another type keeps its pseudonym: one value, one label.
-      const types = (this.sql.counts.all(context) as { type: string }[]).map((r) => r.type).filter((t) => t !== LITERAL && t !== SOURCE);
+      const types = (this.sql.counts.all(context) as { type: string }[])
+        .map((r) => r.type)
+        .filter((t) => t !== LITERAL && t !== SOURCE && !VISIBLE_TYPES.has(t));
       const t = types.find((k) => this.sql.find.get(context, this.lookup(context, k, value))) ?? pseudonymType(type);
       const label = this.pseudonymIn(context, t, value);
-      this.sql.declare.run(context, this.lookup(context, t, value));
+      const n = Number(label.slice(label.lastIndexOf("_") + 1, -1));
+      const lookup = createHmac("sha256", this.macKey).update(`${context}\0declared\0${value}`).digest();
+      this.sql.declare.run(context, t, n, lookup, this.encrypt(this.aad(context, `declared ${label}`, lookup), value), new Date().toISOString());
       return label;
     });
+  }
+
+  /** The values the user declared (see `declare`), as they wrote them, with their pseudonym's type. */
+  declared(context: string): { type: string; value: string }[] {
+    const rows = this.sql.declared.all(context) as { type: string; n: number; lookup: Uint8Array; value: Uint8Array }[];
+    return rows.map((r) => ({ type: r.type, value: this.decrypt(this.aad(context, `declared ${pseudonymLabel(r.type, r.n)}`, r.lookup), r.value) }));
   }
 
   private pseudonymIn(context: string, type: string, value: string): string {
@@ -279,20 +291,16 @@ export class Vault {
    * where the rules and the model miss them; with `after`, only those added since that
    * version's `last`. Literals, sources and secrets are left out: the first two are not
    * personal data, and a short secret ("1234") would mask every number like it.
-   * `declared` marks values the user named (see `declare`).
+   * Values the user declared are in `declared`.
    */
-  known(context: string, after = 0): { type: string; value: string; declared: boolean }[] {
-    const rows = this.sql.all.all(context, after) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array; declared: number }[];
-    return rows.map((r) => ({
-      type: r.type,
-      value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original),
-      declared: r.declared === 1,
-    }));
+  known(context: string, after = 0): { type: string; value: string }[] {
+    const rows = this.sql.all.all(context, after) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array }[];
+    return rows.map((r) => ({ type: r.type, value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original) }));
   }
 
   /**
    * The context's vault version: a random id of the context's row, how many pseudonyms it
-   * has, the newest one's row and how many are declared. Any change gives another version,
+   * has, the newest one's row and how many values are declared. Any change gives another version,
    * including a context deleted and created again (row ids can be reused, the random id is not).
    */
   version(context: string): { generation: string; count: number; last: number; declared: number } {

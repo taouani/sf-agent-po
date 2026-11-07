@@ -87,9 +87,20 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 5,
     name: "confirmed images and declared values",
     sql: `
-      -- Values the user said must be hidden (on the approval page): masked in every later
-      -- input of the context, however short, where values the model found are left out.
-      ALTER TABLE pseudonym ADD COLUMN declared INTEGER NOT NULL DEFAULT 0;
+      -- Values the user said must be hidden (on the approval page), as they wrote them:
+      -- masked in every later input of the context, however short. Each stands for a
+      -- pseudonym (type, n), which may have been seen first in another spelling. The value
+      -- is encrypted like a pseudonym's original; lookup is a keyed hash of it, exactly.
+      CREATE TABLE declared (
+        context     TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        type        TEXT NOT NULL,
+        n           INTEGER NOT NULL,
+        lookup      BLOB NOT NULL,
+        value       BLOB NOT NULL,
+        created_at  TEXT NOT NULL,
+        PRIMARY KEY (context, lookup),
+        FOREIGN KEY (context, type, n) REFERENCES pseudonym(context, type, n) ON DELETE CASCADE
+      );
 
       -- A redacted image the user confirmed (FE4), next to the document holding its masked
       -- text. Replacing the document removes the image; a new one is stored only after the

@@ -257,8 +257,9 @@ The new code lives in npm workspaces under `packages/`:
   pass through the model. `Intake` adds inputs through it: each input is masked; while
   review is on, it is stored only once the user approved it as shown; an image is always
   confirmed, and stored as the redacted PNG the user saw (or as its masked text only).
-  Values the user names are hidden in that input and every later one of the context, in any
-  case and however short (two characters at least), and the user checks again, up to five
+  Values the user names, even alongside a reject, are hidden in that input and every later
+  one of the context, as they wrote them, in any case and however short (two characters at
+  least); a pseudonym copied with them is left out. The user then checks again, up to five
   times.
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
   the MCP server with Anthropic, OpenAI or xAI models and has a judge model score the result.

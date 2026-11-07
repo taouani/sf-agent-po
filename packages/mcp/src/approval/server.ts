@@ -62,7 +62,7 @@ export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest;
 
 /**
  * What the user decided.
- * - `revise`: the user listed values still in clear (`missed`). Hide them (Masker.remember),
+ * - `revise`: the user listed values still in clear (`missed`). Hide them (Masker.declare),
  *   mask the input again and ask again; `choice` is the button the user pressed.
  * - `text-only`: use an image's masked text, not the image.
  * - `redact-uncertain`: black out the words the OCR was unsure of too (maskImage's

@@ -1,8 +1,8 @@
-import { defaultServerConditions } from "vite";
 import { defineConfig } from "vitest/config";
 
 // Workspace packages resolve to their TypeScript sources, so a test never runs a stale build.
-const conditions = ["@sf-agent-po/source", ...defaultServerConditions];
+// The rest are Vite's own server conditions.
+const conditions = ["@sf-agent-po/source", "module", "node", "development|production"];
 
 export default defineConfig({
   resolve: { conditions },

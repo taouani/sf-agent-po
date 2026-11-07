@@ -59,8 +59,8 @@ export interface SetAside {
 export interface IntakeResult {
   added: SourceDocument[];
   setAside: SetAside[];
-  /** Values the user named that were not taken (one letter, or already a pseudonym). */
-  ignored: string[];
+  /** How many values the user named were not taken (one character, or no letter or digit). Never the values: the user wants them hidden. */
+  ignored: number;
   /** Documents whose image the user confirmed, by id. */
   images: string[];
 }
@@ -83,7 +83,7 @@ export function reviewText(doc: NewDocument): string {
 
 const reasonOf = (d: Decision): SetAside["reason"] => (d.status === "expired" ? "expired" : "rejected");
 
-const emptyResult = (): IntakeResult => ({ added: [], setAside: [], ignored: [], images: [] });
+const emptyResult = (): IntakeResult => ({ added: [], setAside: [], ignored: 0, images: [] });
 
 /** A review that failed partway (the browser could not be opened, say), with what was added before. */
 export class IntakeError extends Error {
@@ -131,11 +131,11 @@ export class Intake {
         result.added.push(...this.opts.contexts.addDocuments(context, [masked]));
         return;
       }
+      this.learn(context, decision, missed, result);
       if (decision.status !== "revise") {
         result.setAside.push({ title, reason: reasonOf(decision) });
         return;
       }
-      this.learn(context, decision, missed, result);
     }
     result.setAside.push({ title, reason: "too-many-rounds" });
   }
@@ -170,7 +170,10 @@ export class Intake {
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       const words = [...dictionary, ...missed];
       const masked = await masker.maskImage(context, input.raw, recognizer, { dictionary: words, redactUncertain });
-      title = (await masker.mask(context, input.title, words)).text;
+      const named = await masker.mask(context, input.title, words);
+      title = named.text;
+      const counts = { ...masked.report.counts };
+      for (const [type, n] of Object.entries(named.report.counts)) counts[type] = (counts[type] ?? 0) + n;
       const decision = await this.ask({
         kind: "image",
         title,
@@ -180,7 +183,7 @@ export class Intake {
         text: masked.text,
         trusted: masked.ocr.trusted,
         uncertain: masked.ocr.uncertain,
-        counts: masked.report.counts,
+        counts,
       } satisfies ImageRequest);
       switch (decision.status) {
         case "approved":
@@ -209,6 +212,7 @@ export class Intake {
           if (decision.choice === "redact-uncertain") redactUncertain = true;
           break;
         default:
+          this.learn(context, decision, missed, result);
           result.setAside.push({ title, reason: reasonOf(decision) });
           return;
       }
@@ -223,10 +227,11 @@ export class Intake {
     return decision;
   }
 
-  /** Hides the values the user named, in this input and every later one. */
+  /** Hides the values the user named, in this input and every later one, whatever they decided. */
   private learn(context: string, decision: Decision, missed: DictionaryEntry[], result: IntakeResult): void {
+    if (!decision.missed.length) return;
     const { entries, ignored } = this.opts.masker.declare(context, decision.missed);
-    result.ignored.push(...ignored);
+    result.ignored += ignored;
     missed.push(...entries);
   }
 }

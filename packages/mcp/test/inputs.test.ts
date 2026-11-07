@@ -75,7 +75,7 @@ describe("adding inputs with review", () => {
     expect(user.seen).toHaveLength(2);
     const again = user.seen[1]!;
     expect(again.kind === "input" && again.content).toContain("[PERSON_1] and [PERSON_2] agreed");
-    expect(first.ignored).toEqual(["x"]);
+    expect(first.ignored).toBe(1);
     expect(contexts.documents("acme")).toHaveLength(1);
 
     // A later input, with no model at all: the declared name is still hidden.
@@ -91,6 +91,14 @@ describe("adding inputs with review", () => {
     expect(result.setAside.map((s) => s.reason)).toEqual(["rejected", "expired", "too-many-rounds"]);
     expect(result.added).toEqual([]);
     expect(contexts.documents("acme")).toEqual([]);
+  });
+
+  it("hides the values named alongside a reject in later inputs", async () => {
+    const user = scripted({ status: "rejected", missed: ["Lea Martin"] }, { status: "approved" });
+    const { intake } = setup(user);
+    expect((await intake.addDocuments("acme", [notes])).setAside).toEqual([{ title: "Call with Karim Benali", reason: "rejected" }]);
+    await intake.addDocuments("acme", [{ kind: "email", title: "Re", source: "m", content: "Lea Martin said yes." }]);
+    expect((user.seen[1] as { content: string }).content).toContain("[PERSON_1] said yes.");
   });
 
   it("refuses a decision about anything but what was shown", async () => {
@@ -222,6 +230,42 @@ describe("reviewing on the approval page", () => {
     expect(pages[1]).toContain("<mark>[PERSON_2]</mark> agreed");
     expect(result.added).toHaveLength(1);
     expect(contexts.documents("acme")[0]!.content).toBe("[PERSON_1] and [PERSON_2] agreed on the VIP flag.");
+  });
+
+  it("stores the image exactly as the page showed it", async () => {
+    const server = new ApprovalServer();
+    servers.push(server);
+    let shown: Buffer | undefined;
+    const browser = async (link: string) => {
+      const r = await call(link);
+      const cookie = String(r.headers["set-cookie"]).split(";")[0]!;
+      const page = new URL(String(r.headers.location), link).toString();
+      setTimeout(async () => {
+        const html = (await call(page, { headers: { cookie } })).body;
+        const src = /<img src="([^"]+)"/.exec(html)![1]!.replace(/&#38;/g, "&");
+        shown = await new Promise<Buffer>((resolve, reject) =>
+          httpRequest(new URL(src, page), { headers: { cookie } }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+          })
+            .on("error", reject)
+            .end(),
+        );
+        const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+        await call(page, {
+          method: "POST",
+          body: new URLSearchParams({ csrf, decision: "approved" }).toString(),
+          headers: { origin: new URL(page).origin, cookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" },
+        });
+      });
+      return true;
+    };
+    const lines = [[{ text: "Karim", confidence: 95, box: { x0: 10, y0: 10, x1: 60, y1: 30 } }]];
+    const { intake, contexts } = setup(pageReviewer(server, browser), { model: fakeModel(["Karim"]), ocr: fakeOcr(lines) });
+    const result = await intake.addImage("acme", { title: "shot.png", source: "/shot.png", raw: blankPng(80, 40) });
+    const stored = contexts.getImage("acme", result.images[0]!)!;
+    expect(shown && Buffer.compare(stored.png, shown)).toBe(0);
   });
 
   it("withdraws the request and adds nothing when no browser opens", async () => {
