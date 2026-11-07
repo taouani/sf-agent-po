@@ -1,0 +1,28 @@
+{
+  "name": "@sf-agent-po/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "sf-agent-po v1 MCP server: the tools, prompts, approval page and host files users install",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@sf-agent-po/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "dependencies": {
+    "@sf-agent-po/core": "0.0.0"
+  }
+}

@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "playwright-core": "1.63.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
@@ -46,6 +47,7 @@
   "workspaces": [
     "packages/core",
     "packages/connectors",
+    "packages/mcp",
     "packages/eval"
   ]
 }
