@@ -4,10 +4,10 @@
   "description": "MCP server providing Salesforce Solution Architect and Product Owner agent workflows",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build --workspaces --if-present",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck --workspaces --if-present"
   },
   "repository": {
     "type": "git",
@@ -34,7 +34,15 @@
   "bin": {
     "sf-agent-po": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "docs",
+    "examples"
+  ],
   "engines": {
     "node": ">=20"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

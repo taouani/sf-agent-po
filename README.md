@@ -187,3 +187,13 @@ node /absolute/path/to/sf-agent-po/dist/index.js init --host all --dir /path/to/
 npm test          # vitest
 npm run typecheck
 ```
+
+### v1 rewrite
+
+v1 is being built next to the current server, which keeps working until v1 replaces it.
+The new code lives in npm workspaces under `packages/`:
+
+- `packages/core`: the workspace database (SQLite through `node:sqlite`, with migrations).
+  Later it also holds masking, the metadata index and the workflow engine. It needs Node 24.
+
+`npm test` and `npm run typecheck` cover both the current server and the packages.

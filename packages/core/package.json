@@ -1,0 +1,22 @@
+{
+  "name": "@sf-agent-po/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "sf-agent-po v1 core: the SQLite store, and later masking, the metadata index and the workflow engine",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
