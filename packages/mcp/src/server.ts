@@ -4,7 +4,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type ContextRepository, DOCUMENT_KINDS, imageFormat, type Masker, type NewDocument, type SourceDocument, type TextRecognizer } from "@sf-agent-po/core";
+import { type ContextRepository, decodeImage, DOCUMENT_KINDS, type Masker, type NewDocument, type SourceDocument, type TextRecognizer } from "@sf-agent-po/core";
 import type { AtlassianClient, LoadError } from "@sf-agent-po/connectors";
 import { loadLocalDocuments, MAX_FILE_BYTES, textDocument } from "@sf-agent-po/connectors";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import { requestDigest, type ApprovalServer, type PublishRequest } from "./appro
 import { describeCounts } from "./approval/page.js";
 import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
-import { callReviewer, type CallContext } from "./review.js";
+import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
 export interface ServerOptions {
   contexts: ContextRepository;
@@ -25,20 +25,29 @@ export interface ServerOptions {
   /** Jira and Confluence, created on first use. */
   atlassian?: () => AtlassianClient;
   /**
-   * Masks error messages when `masker` cannot (its model failed to load): the rules and
-   * known values only. Defaults to `masker`.
+   * Masks error messages while the detection model is not loaded (it may still have to be
+   * downloaded, or fail to load): the rules and known values only. Defaults to `masker`.
    */
   errorMasker?: Masker;
-  /** How a call opens the page when the host cannot, and how often it reports progress. */
-  review?: Parameters<typeof callReviewer>[3];
+  /** Whether the detection model is loaded, so error messages can be masked with it at once. */
+  modelReady?: () => boolean;
+  /** How a call opens the browser, and how often it reports progress. */
+  review?: { open?: (url: string) => Promise<boolean> | boolean; progressEveryMs?: number };
   /** Overrides how each call reaches the user, for tests. */
   reviewer?: (call: CallContext) => Reviewer;
 }
 
+/** Images taken from one folder in one call: each one is a page for the user to check. */
+export const MAX_IMAGES = 20;
+
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg"]);
 const isImage = (file: string) => IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase());
 
-const contextName = z.string().default("default").describe("Name of the requirement context, e.g. a feature or epic name.");
+const contextName = z
+  .string()
+  .regex(/^[\w.-]+$/, "use letters, digits, '.', '-' or '_'")
+  .default("default")
+  .describe("Name of the requirement context, e.g. a feature or epic name.");
 const kind = z.enum(DOCUMENT_KINDS);
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
@@ -81,13 +90,13 @@ function summary(context: string, result: IntakeResult, unread = 0): string {
   return lines.join("\n");
 }
 
-/** The images in a folder, recursively, or the file itself. */
+/** The images in a folder, recursively and outside hidden folders (.git), or the file itself. */
 async function imagesAt(target: string): Promise<string[]> {
   const info = await stat(target);
   if (!info.isDirectory()) return isImage(target) ? [target] : [];
   const entries = await readdir(target, { recursive: true, withFileTypes: true });
   return entries
-    .filter((e) => e.isFile() && isImage(e.name))
+    .filter((e) => (e.isFile() || e.isSymbolicLink()) && isImage(e.name) && !path.relative(target, e.parentPath).split(path.sep).some((p) => p.startsWith(".")))
     .map((e) => path.join(e.parentPath, e.name))
     .sort();
 }
@@ -95,27 +104,36 @@ async function imagesAt(target: string): Promise<string[]> {
 export function createServer(opts: ServerOptions): McpServer {
   const server = new McpServer({ name: "sf-agent-po", version: opts.version });
   const { contexts, masker, approval } = opts;
-  const reviewerFor = opts.reviewer ?? ((call: CallContext) => callReviewer(server, approval, call, opts.review));
+  const progressOf = new WeakMap<CallContext, Progress>();
+  const reviewerFor =
+    opts.reviewer ?? ((call: CallContext) => callReviewer(approval, call, { open: opts.review?.open, progress: progressOf.get(call) }));
   const intakeFor = (call: CallContext) => new Intake({ contexts, masker, recognizer: opts.recognizer, version: opts.version, reviewer: reviewerFor(call) });
 
   /**
-   * Runs a tool and turns errors into results the model can act on. An error message may
-   * quote an input (a file name, a value), so it is masked like one.
+   * Runs a tool, reporting progress while it works (the first input may wait for the model
+   * to download), and turns errors into results the model can act on. An error message may
+   * quote an input (a file name, a value), so it is masked like one; what was added before
+   * the error is told too, from masked fields.
    */
   const guard =
     <A extends { context?: string }>(fn: (args: A, call: CallContext) => Promise<ReturnType<typeof text>>) =>
     async (args: A, call: CallContext) => {
       const context = args.context ?? "default";
+      const progress = startProgress(call, opts.review?.progressEveryMs ?? PROGRESS_EVERY_MS);
+      progressOf.set(call, progress);
       try {
         return await fn(args, call);
       } catch (err) {
-        let message = (err as Error).message;
-        if (err instanceof IntakeError && err.partial.added.length) message += `\n${summary(context, err.partial)}`;
-        const masked = await masker
+        const message = (err as Error).message;
+        const full = opts.modelReady?.() ?? true;
+        const masked = await (full ? masker : (opts.errorMasker ?? masker))
           .mask(context, message)
           .catch(() => (opts.errorMasker ?? masker).mask(context, message))
           .catch(() => ({ text: "Something failed, and its message could not be shown safely." }));
-        return { ...text(`Error: ${masked.text}`), isError: true };
+        const partial = err instanceof IntakeError && (err.partial.added.length || err.partial.setAside.length) ? `\n${summary(context, err.partial)}` : "";
+        return { ...text(`Error: ${masked.text}${partial}`), isError: true };
+      } finally {
+        progress.stop();
       }
     };
 
@@ -138,11 +156,15 @@ export function createServer(opts: ServerOptions): McpServer {
       inputSchema: { context: contextName },
     },
     guard(async ({ context }) => {
-      const docs = contexts.documents(context);
-      if (!docs.length) return text(`Context "${context}" is empty.`);
+      const all = contexts.documents(context);
+      if (!all.length) return text(`Context "${context}" is empty.`);
+      // Inputs not masked yet (imported from 0.x) are counted, never shown: their titles and sources are in clear.
+      const docs = all.filter((d) => d.masked);
+      const unmasked = all.length - docs.length;
       const images = contexts.imageIds(context);
       const review = reviewsInputs(contexts.get(context)?.settings, opts.version);
-      return text(`Context "${context}" (${docs.length} inputs; input review ${review ? "on" : "off"}):\n${docs.map((d) => describeDoc(d, images.has(d.id))).join("\n")}`);
+      const pending = unmasked ? `\n${unmasked} input(s) are not masked yet, so they are not shown or read.` : "";
+      return text(`Context "${context}" (${docs.length} inputs; input review ${review ? "on" : "off"}):\n${docs.map((d) => describeDoc(d, images.has(d.id))).join("\n")}${pending}`);
     }),
   );
 
@@ -187,19 +209,20 @@ export function createServer(opts: ServerOptions): McpServer {
       },
     },
     guard(async ({ context, path: target, kind }, call) => {
+      const images = await imagesAt(target);
+      if (images.length > MAX_IMAGES) throw new Error(`That folder holds ${images.length} images, and each one is checked by the user: add at most ${MAX_IMAGES} at a time, from a smaller folder.`);
       const errors: LoadError[] = [];
       const docs = await loadLocalDocuments(target, kind, { errors });
-      const images = await imagesAt(target);
       if (!docs.length && !images.length) return text(errors.length ? `${errors.length} file(s) could not be read, and nothing was added.` : "No supported files found there.");
       const intake = intakeFor(call);
-      const result = docs.length ? await intake.addDocuments(context, docs) : { added: [], setAside: [], ignored: 0, images: [] };
+      const result: IntakeResult = docs.length ? await intake.addDocuments(context, docs) : { added: [], setAside: [], ignored: 0, images: [] };
       let unread = errors.length;
       for (const file of images) {
         let raw: Buffer;
         try {
           if ((await stat(file)).size > MAX_FILE_BYTES) throw new Error("too large");
           raw = await readFile(file);
-          if (!imageFormat(raw)) throw new Error("not an image");
+          decodeImage(raw); // a cut-off or oversized image is counted as unread, not an error for the whole folder
         } catch {
           unread++;
           continue;
@@ -208,7 +231,12 @@ export function createServer(opts: ServerOptions): McpServer {
         try {
           one = await intake.addImage(context, { title: path.basename(file), source: path.resolve(file), raw, kind });
         } catch (err) {
-          throw new IntakeError((err as Error).message, { ...result, added: [...result.added, ...(err instanceof IntakeError ? err.partial.added : [])] });
+          const partial = err instanceof IntakeError ? err.partial : undefined;
+          throw new IntakeError((err as Error).message, {
+            ...result,
+            added: [...result.added, ...(partial?.added ?? [])],
+            setAside: [...result.setAside, ...(partial?.setAside ?? [])],
+          });
         }
         result.added.push(...one.added);
         result.setAside.push(...one.setAside);

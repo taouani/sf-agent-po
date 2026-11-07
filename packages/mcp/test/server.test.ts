@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ContextRepository, Database, encodePng, Masker, newVaultKey, Vault, type EntityDetector, type Span, type TextRecognizer } from "@sf-agent-po/core";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer, lazyDetector, requestDigest, type ApprovalRequest, type Decision, type Reviewer } from "../src/index.js";
@@ -33,7 +32,7 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((c) => c()));
 });
 
-async function connect(opts: { answers?: Answer[]; version?: string; model?: EntityDetector; capabilities?: ConstructorParameters<typeof Client>[1] } = {}) {
+async function connect(opts: { answers?: Answer[]; version?: string; model?: EntityDetector; open?: (url: string) => boolean; modelReady?: () => boolean } = {}) {
   const db = new Database(":memory:");
   const vault = new Vault(db, newVaultKey());
   const contexts = new ContextRepository(db);
@@ -55,9 +54,10 @@ async function connect(opts: { answers?: Answer[]; version?: string; model?: Ent
     recognizer: async () => ocr,
     version: opts.version ?? "1.0.0-next.0",
     reviewer: reviewer && (() => reviewer),
-    review: { open: () => false, progressEveryMs: 20 },
+    modelReady: opts.modelReady,
+    review: { open: opts.open ?? (() => false), progressEveryMs: 20 },
   });
-  const client = new Client({ name: "test", version: "0" }, opts.capabilities);
+  const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
   cleanups.push(async () => {
@@ -135,6 +135,69 @@ describe("v1 context tools", () => {
     expect(r.text).toContain("could not be loaded");
   });
 
+  it("never shows inputs that are not masked yet", async () => {
+    const { call, contexts } = await connect({ answers: [] });
+    contexts.addDocuments("acme", [{ kind: "other", title: "Call with Karim Benali", source: "/home/kbenali/notes.txt", content: "x" }]);
+    const r = await call("context_show", { context: "acme" });
+    expect(r.text).toContain("1 input(s) are not masked yet");
+    expect(r.text).not.toMatch(/Karim|kbenali/);
+    expect((await call("context_read", { context: "acme" })).text).toBe("No matching inputs.");
+  });
+
+  it("tells what was added before a failure, with the same pseudonyms", async () => {
+    const folder = join(dir, "partial");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "a.txt"), "Karim agreed.");
+    writeFileSync(join(folder, "b.png"), png(80, 16));
+    const db = new Database(":memory:");
+    const vault = new Vault(db, newVaultKey());
+    const contexts = new ContextRepository(db);
+    const masker = new Masker({ vault, model: fakeModel(["Karim"]) });
+    let calls = 0;
+    const reviewer: Reviewer = {
+      async review(req) {
+        if (++calls > 1) throw new Error("browser gone");
+        return { status: "approved", missed: [], digest: requestDigest(req) };
+      },
+    };
+    const approval = new ApprovalServer();
+    const server = createServer({ contexts, masker, approval, recognizer: async () => ocr, version: "1.0.0-next.0", reviewer: () => reviewer });
+    const client = new Client({ name: "t", version: "0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    cleanups.push(async () => {
+      await client.close();
+      await approval.close();
+    });
+    const r = (await client.callTool({ name: "context_add_file", arguments: { context: "acme", path: folder } })) as { content: { text: string }[]; isError?: boolean };
+    const out = r.content[0]!.text;
+    expect(r.isError).toBe(true);
+    expect(out).toContain("browser gone");
+    expect(out).toContain("Added 1 input(s)");
+    expect(out).toContain("(" + contexts.documents("acme")[0]!.source + ",");
+    expect(out).not.toContain("LITERAL");
+  });
+
+  it("counts a cut-off image as unread and goes on with the others", async () => {
+    const folder = join(dir, "cut");
+    mkdirSync(folder, { recursive: true });
+    const whole = png(80, 16);
+    writeFileSync(join(folder, "a.png"), whole.subarray(0, 40));
+    writeFileSync(join(folder, "b.png"), whole);
+    const { call, contexts } = await connect({ answers: [{ status: "approved" }] });
+    const r = await call("context_add_file", { context: "acme", path: folder });
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain("1 file(s) could not be read");
+    expect(contexts.documents("acme")).toHaveLength(1);
+  });
+
+  it("refuses a context name it cannot store, before asking the user anything", async () => {
+    const { call, seen } = await connect({ answers: [{ status: "approved" }] });
+    const r = await call("context_review_inputs", { context: "Acme Feature", on: false });
+    expect(r.isError).toBe(true);
+    expect(seen).toEqual([]);
+  });
+
   it("turns input review off only once the user approved it", async () => {
     const { call, seen } = await connect({ answers: [{ status: "rejected" }, { status: "approved" }] });
     expect((await call("context_review_inputs", { context: "acme", on: false })).text).toContain("stays on");
@@ -175,31 +238,43 @@ async function decide(link: string, decision: string): Promise<void> {
 }
 
 describe("reaching the user from a tool call", () => {
-  it("has the host open the page when it can, and reports progress while the user decides", async () => {
-    const { call, client, contexts } = await connect({ capabilities: { capabilities: { elicitation: { url: {} } } } });
-    const asked: { message: string; url: string }[] = [];
-    client.setRequestHandler(ElicitRequestSchema, async (req) => {
-      const p = req.params as { message: string; url: string };
-      asked.push(p);
-      setTimeout(() => void decide(p.url, "approved"), 80);
-      return { action: "accept" };
+  it("opens the page in the browser, and reports progress while the user decides", async () => {
+    const opened: string[] = [];
+    const { call, contexts } = await connect({
+      open: (url) => {
+        opened.push(url);
+        setTimeout(() => void decide(url, "approved"), 80);
+        return true;
+      },
     });
     let progress = 0;
     const r = await call("context_add_text", { context: "acme", title: "t", content: "Karim agreed.", kind: "other" }, { onprogress: () => progress++, resetTimeoutOnProgress: true });
     expect(r.isError).toBeFalsy();
-    expect(asked).toHaveLength(1);
-    expect(asked[0]!.message).toContain("Check what the agent will see");
+    expect(opened).toHaveLength(1);
     expect(progress).toBeGreaterThan(0);
     expect(contexts.documents("acme")).toHaveLength(1);
     // The link is for the user only: it is never in what the model reads.
     expect(r.text).not.toContain("http");
   });
 
-  it("adds nothing when the user declines to open the page", async () => {
-    const { call, client, contexts } = await connect({ capabilities: { capabilities: { elicitation: { url: {} } } } });
-    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "decline" }));
-    const r = await call("context_add_text", { context: "acme", title: "t", content: "Karim agreed.", kind: "other" });
-    expect(r.text).toContain("the user did not check it in time, or closed the page");
+  it("withdraws the request when the call is cancelled", async () => {
+    let link = "";
+    const { call, contexts } = await connect({
+      open: (url) => {
+        link = url;
+        return true;
+      },
+    });
+    const controller = new AbortController();
+    const pending = call("context_add_text", { context: "acme", title: "t", content: "Karim agreed.", kind: "other" }, { signal: controller.signal }).catch((e: Error) => e);
+    while (!link) await new Promise((r) => setTimeout(r, 10));
+    controller.abort();
+    await pending;
+    await new Promise((r) => setTimeout(r, 50)); // the cancellation reaches the server
+    // Withdrawn: the page only says so.
+    const r = await http(link);
+    const page = await http(new URL(String(r.headers.location), link).toString(), { headers: { cookie: String(r.headers["set-cookie"]).split(";")[0]! } });
+    expect(page.body).toContain("This request expired.");
     expect(contexts.documents("acme")).toEqual([]);
   });
 

@@ -10,15 +10,20 @@ export const databaseFile = (workspace: string) => path.join(workspace, "sf-agen
  * The detection model, loaded on first use (it may download about 300 MB once). If it cannot
  * load, masking fails and nothing is added: without it, names are missed.
  */
-export function lazyDetector(load: () => Promise<DetectionModel> = () => loadDetectionModel()): EntityDetector & { release(): Promise<void> } {
+export function lazyDetector(load: () => Promise<DetectionModel> = () => loadDetectionModel()): EntityDetector & { release(): Promise<void>; ready(): boolean } {
   let model: Promise<DetectionModel> | undefined;
+  let loaded = false;
   const detect = (async (text: string) => {
-    model ??= load().catch((err: unknown) => {
-      model = undefined; // try again on the next input
-      throw new Error(`The name detection model could not be loaded, so nothing was masked or added: ${(err as Error).message}`);
-    });
+    model ??= load().then(
+      (m) => ((loaded = true), m),
+      (err: unknown) => {
+        model = undefined; // try again on the next input
+        throw new Error(`The name detection model could not be loaded, so nothing was masked or added: ${(err as Error).message}`);
+      },
+    );
     return (await model).detect(text);
-  }) as EntityDetector & { release(): Promise<void> };
+  }) as EntityDetector & { release(): Promise<void>; ready(): boolean };
+  detect.ready = () => loaded;
   detect.release = async () => {
     if (model) await (await model.catch(() => undefined))?.release();
   };
