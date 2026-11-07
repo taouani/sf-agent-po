@@ -16,14 +16,49 @@ const CJK = /[㐀-鿿]/u;
 /** Titles before a name, in English, French, German and Spanish. */
 const TITLE = /^(?:(?:M|MM|Mme|Mmes|Mlle|Mr|Mrs|Ms|Mx|Dr|Pr|Prof|Me|Sr|Sra|Srta)\.?|Sir|Dame|Lord|Lady|Madame|Mademoiselle|Monsieur|Docteur|Herr|Frau)\s+/u;
 
-/** Maps WordPiece, SentencePiece or byte-level tokens back to character offsets in `text`. */
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Where `piece` next appears in `text` from `cursor`: exactly, else ignoring case. The
+ * case-insensitive search runs on the text itself, since lowercasing can change a
+ * string's length ("İ") and shift every offset after it.
+ */
+function find(text: string, piece: string, cursor: number): { index: number; length: number } | null {
+  const exact = text.indexOf(piece, cursor);
+  if (exact >= 0) return { index: exact, length: piece.length };
+  const re = new RegExp(escapeRe(piece), "giu");
+  re.lastIndex = cursor;
+  const m = re.exec(text);
+  return m ? { index: m.index, length: m[0].length } : null;
+}
+
+/**
+ * Maps WordPiece, SentencePiece or byte-level tokens back to character offsets in `text`.
+ * An unknown token ([UNK], a word with a character the vocabulary lacks, such as "Sarah🙂")
+ * is placed on the text between its neighbours, so its label is not lost.
+ */
 export function alignTokens(text: string, tokens: readonly string[]): (TokenOffset | null)[] {
-  const lower = text.toLowerCase();
   const sentencePiece = tokens.some((t) => t.startsWith("▁"));
   const out: (TokenOffset | null)[] = [];
   let cursor = 0;
+  let unknown: number[] = [];
+  /** Gives the pending unknown tokens the non-blank text from the cursor to `end`. */
+  const placeUnknown = (end: number) => {
+    const gap = text.slice(cursor, end);
+    const start = cursor + (gap.length - gap.trimStart().length);
+    const stop = end - (gap.length - gap.trimEnd().length);
+    for (const i of unknown) out[i] = stop > start ? { start, end: stop, continuation: false } : null;
+    unknown = [];
+  };
   for (const tok of tokens) {
-    if (SPECIAL.test(tok) || UNKNOWN.test(tok)) {
+    if (UNKNOWN.test(tok)) {
+      unknown.push(out.length);
+      out.push(null);
+      continue;
+    }
+    if (SPECIAL.test(tok)) {
+      // A closing marker: the unknown tokens before it hold the rest of the text.
+      if (unknown.length && cursor > 0) placeUnknown(text.length);
       out.push(null);
       continue;
     }
@@ -34,18 +69,19 @@ export function alignTokens(text: string, tokens: readonly string[]): (TokenOffs
       out.push(null);
       continue;
     }
-    let idx = text.indexOf(piece, cursor);
-    if (idx < 0) idx = lower.indexOf(piece.toLowerCase(), cursor);
-    if (idx < 0 || idx - cursor > 64) {
+    const found = find(text, piece, cursor);
+    if (!found || (found.index - cursor > 64 && !unknown.length)) {
       out.push(null);
       continue;
     }
+    if (unknown.length) placeUnknown(found.index);
     // SentencePiece marks word starts; WordPiece marks continuations. CJK characters are always their own word.
-    const glued = idx === cursor && cursor > 0 && !/\s/.test(text[cursor - 1]!);
+    const glued = found.index === cursor && cursor > 0 && !/\s/.test(text[cursor - 1]!);
     const continuation = wordPieceCont || (!spStart && glued && /^[\p{L}\p{N}]/u.test(piece) && !CJK.test(piece) && sentencePiece);
-    out.push({ start: idx, end: idx + piece.length, continuation });
-    cursor = idx + piece.length;
+    out.push({ start: found.index, end: found.index + found.length, continuation });
+    cursor = found.index + found.length;
   }
+  if (unknown.length) placeUnknown(text.length);
   return out;
 }
 

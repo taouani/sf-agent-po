@@ -2,7 +2,6 @@
 // run on the WebAssembly build of ONNX Runtime that this package ships (decision RT1).
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type * as Ort from "onnxruntime-common";
@@ -18,11 +17,16 @@ export interface ModelOptions {
   /** Where model files are cached; defaults to defaultModelDir(). */
   dir?: string;
   manifest?: ModelManifest;
-  /** WebAssembly threads; defaults to up to 4. */
+  /**
+   * WebAssembly threads; defaults to up to 4. The runtime reads it once per process, when
+   * the first model loads, so later loads keep the first value.
+   */
   threads?: number;
   /** The runtime entry module; defaults to the vendored copy. */
   runtime?: string;
   fetch?: Fetch;
+  /** Gives up on a download after this long; 15 minutes by default. */
+  timeoutMs?: number;
 }
 
 /** A model input of at most this many tokens; the model's limit is 512, with room for its two markers. */
@@ -52,9 +56,14 @@ export interface DetectionModel {
   release(): Promise<void>;
 }
 
+/** Characters repeated at the start of a piece that was cut at a space, so a name across the cut is seen whole. */
+const OVERLAP = 64;
+
 /**
  * Cuts `text` into pieces of at most `max` characters, preferring line ends, then sentence
- * ends, then spaces, so a name is rarely cut. Returns [start, end) offsets that cover the text.
+ * ends, then commas, then spaces. A piece cut at a space starts again up to OVERLAP
+ * characters (whole words) before the cut, so a name is never only seen in halves; spans
+ * found twice are merged later. Returns [start, end) offsets that cover the text.
  */
 export function splitText(text: string, max = MAX_CHARS): [number, number][] {
   const out: [number, number][] = [];
@@ -62,17 +71,26 @@ export function splitText(text: string, max = MAX_CHARS): [number, number][] {
   while (text.length - start > max) {
     const window = text.slice(start, start + max);
     let cut = -1;
-    for (const re of [/\n/gu, /[.!?。！？](?=\s)|[。！？]/gu, /[；，;,]/gu, /\s/gu]) {
+    let atSpace = false;
+    for (const [i, re] of [/\n/gu, /[.!?。！？](?=\s)|[。！？]/gu, /[；，;,]/gu, /\s/gu].entries()) {
       let last = -1;
       for (const m of window.matchAll(re)) last = m.index;
       if (last > max / 4) {
         cut = last + 1;
+        atSpace = i === 3;
         break;
       }
     }
     if (cut < 0) cut = max;
     out.push([start, start + cut]);
-    start += cut;
+    let next = start + cut;
+    if (atSpace) {
+      // Back up to the start of a word at most OVERLAP characters before the cut.
+      const back = text.slice(next - OVERLAP, next - 1);
+      const space = back.search(/\s\S/u);
+      if (space >= 0) next = next - OVERLAP + space + 1;
+    }
+    start = next;
   }
   if (start < text.length || out.length === 0) out.push([start, text.length]);
   return out;
@@ -101,7 +119,7 @@ export function detectorFor(runner: ModelRunner, stats: DecodeStats = { tokens: 
   };
 }
 
-const json = async (path: string) => JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+const json = (bytes: Buffer) => JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
 
 /**
  * Loads the detection model: downloads and checks its files on first use (about 138 MB),
@@ -114,7 +132,7 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
   if (!existsSync(runtime)) throw new Error(`The model runtime is missing at ${runtime}; run "npm run vendor -w @sf-agent-po/core".`);
   const ort = (await import(pathToFileURL(runtime).href)) as typeof Ort;
   ort.env.wasm.numThreads = opts.threads ?? Math.min(4, availableParallelism());
-  const get = (f: ModelManifest["files"][keyof ModelManifest["files"]]) => modelFile(dir, manifest, f, opts.fetch);
+  const get = (f: ModelManifest["files"][keyof ModelManifest["files"]]) => modelFile(dir, manifest, f, { fetch: opts.fetch, timeoutMs: opts.timeoutMs });
   const [config, tokenizerJson, tokenizerConfig, onnx] = await Promise.all([
     get(manifest.files.config).then(json),
     get(manifest.files.tokenizer).then(json),
@@ -124,7 +142,8 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
   // Loaded here, so importing the core package does not load the tokenizer.
   const { Tokenizer } = await import("@huggingface/tokenizers");
   const tokenizer = new Tokenizer(tokenizerJson, tokenizerConfig);
-  const session = await ort.InferenceSession.create(new Uint8Array(await readFile(onnx)), { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  // The checked bytes go straight to the runtime: no second read, no copy.
+  const session = await ort.InferenceSession.create(onnx, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
   const runner: ModelRunner = {
     id2label: (config.id2label ?? {}) as Record<string, string>,
     encode: (text) => tokenizer.encode(text, { return_token_type_ids: true }) as Encoded,

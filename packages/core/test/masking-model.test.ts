@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -15,6 +15,7 @@ import {
   modelFile,
   splitText,
   VENDORED_RUNTIME,
+  type Fetch,
   type ModelManifest,
   type ModelRunner,
   type Span,
@@ -52,6 +53,22 @@ describe("decoding the model's output", () => {
     expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["Margaux"]);
   });
 
+  it("keeps the label of an unknown token by placing it between its neighbours", () => {
+    const text = "Thanks Sarah🙂 for the update!";
+    const tokens = ["[CLS]", "Thanks", "[UNK]", "for", "the", "update", "!", "[SEP]"];
+    expect(alignTokens(text, tokens)[2]).toEqual({ start: 7, end: 14, continuation: false });
+    const spans = decodeSpans(text, tokens, logitsFor([0, 0, 1, 0, 0, 0, 0, 0]), tokens.length, 5, id2label);
+    expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["Sarah🙂"]);
+    // At the end of the text too.
+    const end = "Merci Zoë🙂";
+    expect(alignTokens(end, ["[CLS]", "Merci", "[UNK]", "[SEP]"])[2]).toEqual({ start: 6, end: 11, continuation: false });
+  });
+
+  it("finds a token in another case without shifting offsets", () => {
+    const text = "İİ x Sarah";
+    expect(alignTokens(text, ["[CLS]", "SARAH", "[SEP]"])[1]).toEqual({ start: 5, end: 10, continuation: false });
+  });
+
   it("leaves a title before a name visible", () => {
     const text = "Appeler M. Karim Benali";
     const tokens = ["[CLS]", "Appeler", "M", ".", "Karim", "Ben", "##ali", "[SEP]"];
@@ -68,9 +85,20 @@ describe("cutting text for the model", () => {
     expect(pieces.at(-1)![1]).toBe(text.length);
     for (const [i, [start, end]] of pieces.entries()) {
       expect(end - start).toBeLessThanOrEqual(1000);
-      if (i) expect(start).toBe(pieces[i - 1]![1]);
+      if (i) expect(start).toBeLessThanOrEqual(pieces[i - 1]![1]);
     }
     expect(text[pieces[0]![1] - 1]).toBe("\n");
+  });
+
+  it("repeats the words before a cut made at a space, so a name is seen whole", () => {
+    const text = `${"word ".repeat(195)}Sarah Whitfield ${"word ".repeat(100)}`;
+    const pieces = splitText(text, 1000);
+    expect(pieces).toHaveLength(2);
+    const [[, firstEnd], [secondStart]] = pieces as [[number, number], [number, number]];
+    expect(secondStart).toBeLessThan(firstEnd);
+    expect(firstEnd - secondStart).toBeLessThanOrEqual(64);
+    expect(text.slice(secondStart)).toMatch(/^\S/u);
+    expect(text.slice(secondStart, secondStart + 200)).toContain("Sarah Whitfield");
   });
 
   it("returns one piece for short or empty text", () => {
@@ -105,57 +133,80 @@ describe("cutting text for the model", () => {
 describe("model files", () => {
   const body = Buffer.from('{"id2label":{"0":"O"}}');
   const sha = createHash("sha256").update(body).digest("hex");
-  const manifest = (sha256: string): ModelManifest => ({
-    id: "test/model",
-    revision: "abc123",
-    files: {
-      config: { path: "config.json", sha256 },
-      tokenizer: { path: "tokenizer.json", sha256 },
-      tokenizerConfig: { path: "tokenizer_config.json", sha256 },
-      onnx: { path: "onnx/model.onnx", sha256 },
-    },
-  });
-  const fakeFetch = (payload: Buffer, calls: string[] = []) =>
-    (async (url: string) => {
+  const file = (sha256 = sha, size = body.length) => ({ path: "config.json", sha256, size });
+  const manifest = (f = file()): ModelManifest => ({ id: "test/model", revision: "abc123", files: { config: f, tokenizer: f, tokenizerConfig: f, onnx: f } });
+  const fakeFetch = (payload: Buffer, calls: string[] = [], status = 200): Fetch =>
+    async (url: string) => {
       calls.push(url);
-      return new Response(new Uint8Array(payload));
-    }) as typeof fetch;
+      await new Promise((r) => setTimeout(r, 5));
+      return new Response(new Uint8Array(payload), { status });
+    };
+  const files = (dir: string) => readdirSync(join(dir, "test/model/abc123"));
 
   it("downloads a missing file from the pinned revision, checks it and caches it", async () => {
     const dir = join(tmp, "ok");
     const calls: string[] = [];
-    const m = manifest(sha);
-    const path = await modelFile(dir, m, m.files.config, fakeFetch(body, calls));
+    const bytes = await modelFile(dir, manifest(), file(), { fetch: fakeFetch(body, calls) });
+    expect(bytes.equals(body)).toBe(true);
     expect(calls).toEqual(["https://huggingface.co/test/model/resolve/abc123/config.json"]);
-    expect(existsSync(path)).toBe(true);
-    await modelFile(dir, m, m.files.config, fakeFetch(body, calls));
+    await modelFile(dir, manifest(), file(), { fetch: fakeFetch(body, calls) });
     expect(calls).toHaveLength(1);
+    expect(files(dir)).toEqual(["config.json"]);
   });
 
-  it("refuses a file that does not match its checksum and saves nothing", async () => {
+  it("shares one download between calls for the same file", async () => {
+    const dir = join(tmp, "together");
+    const calls: string[] = [];
+    const all = await Promise.all([0, 1, 2].map(() => modelFile(dir, manifest(), file(), { fetch: fakeFetch(body, calls) })));
+    expect(all.every((b) => b.equals(body))).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(files(dir)).toEqual(["config.json"]);
+  });
+
+  it("refuses a file that does not match its checksum and leaves nothing behind", async () => {
     const dir = join(tmp, "bad");
-    const m = manifest(sha);
-    await expect(modelFile(dir, m, m.files.config, fakeFetch(Buffer.from("tampered")))).rejects.toThrow(/checksum/);
-    expect(existsSync(join(dir, "test/model/abc123/config.json"))).toBe(false);
+    await expect(modelFile(dir, manifest(), file(), { fetch: fakeFetch(Buffer.from("tampered!!!!!!!!!!!!!!")) })).rejects.toThrow(/checksum/);
+    expect(files(dir)).toEqual([]);
+  });
+
+  it("stops a download that grows past the expected size", async () => {
+    const dir = join(tmp, "big");
+    await expect(modelFile(dir, manifest(), file(sha, 4), { fetch: fakeFetch(body) })).rejects.toThrow(/larger than expected/);
+    expect(files(dir)).toEqual([]);
+  });
+
+  it("reports a failed download", async () => {
+    await expect(modelFile(join(tmp, "404"), manifest(), file(), { fetch: fakeFetch(body, [], 404) })).rejects.toThrow(/404/);
+    const offline: Fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await expect(modelFile(join(tmp, "offline"), manifest(), file(), { fetch: offline })).rejects.toThrow(/fetch failed/);
   });
 
   it("downloads a cached file again when it was changed", async () => {
     const dir = join(tmp, "changed");
-    const m = manifest(sha);
-    const cached = join(dir, "test/model/abc123/config.json");
     mkdirSync(join(dir, "test/model/abc123"), { recursive: true });
-    writeFileSync(cached, "changed");
+    writeFileSync(join(dir, "test/model/abc123/config.json"), "changed");
     const calls: string[] = [];
-    await modelFile(dir, m, m.files.config, fakeFetch(body, calls));
+    const bytes = await modelFile(dir, manifest(), file(), { fetch: fakeFetch(body, calls) });
+    expect(bytes.equals(body)).toBe(true);
     expect(calls).toHaveLength(1);
-    expect(readdirSync(join(dir, "test/model/abc123"))).toEqual(["config.json"]);
+    expect(files(dir)).toEqual(["config.json"]);
   });
 
   it("caches in the user's cache folder for each OS, or where SF_AGENT_PO_MODEL_DIR says", () => {
-    expect(defaultModelDir({ SF_AGENT_PO_MODEL_DIR: "/x" }, "linux")).toBe("/x");
-    expect(defaultModelDir({ XDG_CACHE_HOME: "/c" }, "linux")).toBe(join("/c", "sf-agent-po", "models"));
-    expect(defaultModelDir({ LOCALAPPDATA: "C:\\L" }, "win32")).toBe(join("C:\\L", "sf-agent-po", "models"));
+    const abs = resolve("/x");
+    expect(defaultModelDir({ SF_AGENT_PO_MODEL_DIR: abs }, "linux")).toBe(abs);
+    expect(defaultModelDir({ XDG_CACHE_HOME: resolve("/c") }, "linux")).toBe(join(resolve("/c"), "sf-agent-po", "models"));
+    expect(defaultModelDir({ LOCALAPPDATA: resolve("/L") }, "win32")).toBe(join(resolve("/L"), "sf-agent-po", "models"));
     expect(defaultModelDir({}, "darwin")).toMatch(/Library[\\/]Caches[\\/]sf-agent-po[\\/]models$/);
+  });
+
+  it("ignores empty or relative cache settings, so the cache never lands in the working folder", () => {
+    for (const env of [{ XDG_CACHE_HOME: "" }, { XDG_CACHE_HOME: "cache" }, { SF_AGENT_PO_MODEL_DIR: "" }]) {
+      expect(isAbsolute(defaultModelDir(env, "linux"))).toBe(true);
+    }
+    expect(isAbsolute(defaultModelDir({ LOCALAPPDATA: "" }, "win32"))).toBe(true);
   });
 });
 
@@ -179,7 +230,7 @@ describe("the vendored runtime", () => {
 // possible and wanted: in CI's model job, or locally with SF_AGENT_PO_MODEL_TEST=1.
 describe.runIf(process.env.SF_AGENT_PO_MODEL_TEST === "1")("the detection model", () => {
   it("finds every person in the samples, and masks nothing outside a labelled value", { timeout: 600_000 }, async () => {
-    const model = await loadDetectionModel({ threads: 1 });
+    const model = await loadDetectionModel();
     try {
       const misses: string[] = [];
       const extra: string[] = [];

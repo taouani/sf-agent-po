@@ -43,10 +43,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The cache key is the pinned revision, so only a model change downloads it again.
+      - id: model
+        shell: bash
+        run: echo "revision=$(grep -o 'revision: "[0-9a-f]*"' packages/core/src/masking/model/files.ts | grep -o '[0-9a-f]\{40\}')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: .model-cache
-          key: detection-model-${{ hashFiles('packages/core/src/masking/model/files.ts') }}
-      - run: npm run model:manifest -w @sf-agent-po/core
-        if: matrix.os == 'ubuntu-latest'
+          key: detection-model-${{ steps.model.outputs.revision }}
       - run: npm test -- packages/core/test/masking-model.test.ts
