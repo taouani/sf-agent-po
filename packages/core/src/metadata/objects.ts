@@ -265,12 +265,18 @@ export function linkObjects(components: readonly ParsedComponent[]): {
       if (typeof c.attrs.controllingField === "string" && c.parent) readsField(from, `${c.parent}.${c.attrs.controllingField}`);
     }
     for (const ref of c.refs ?? []) {
-      if ("type" in ref) edges.push({ from, to: need(ref.type, ref.name), kind: ref.kind });
-      else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
+      if ("type" in ref) {
+        const types = typeof ref.type === "string" ? [ref.type] : ref.type;
+        const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? types[0];
+        if (type) edges.push({ from, to: need(type, ref.name), kind: ref.kind });
+      } else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
       else {
         const fields = formulaFields(ref.path, objectNamed(ref.object) ?? ref.object, fieldsOf, objectNamed);
-        // A path through relationships reads each lookup; only the field at its end is written.
+        // A path through relationships reads each lookup; only the field at its end is
+        // written, and with it a record of that field's object.
         fields.forEach((field, i) => readsField(from, field, ref.kind === "writes" && i === fields.length - 1 ? "writes" : "reads"));
+        const last = fields.at(-1);
+        if (ref.kind === "writes" && last && last.lastIndexOf(".") > 0) edges.push({ from, to: need("CustomObject", last.slice(0, last.lastIndexOf("."))), kind: "writes" });
       }
     }
     const formula = c.attrs.formula;

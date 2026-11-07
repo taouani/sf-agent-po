@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { classify, classifyFile, Database, formulaCode, formulaFields, MetadataIndex, packagePath, parseMetadataXml, scanProject, type ParsedComponent } from "../src/index.js";
+import { classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MetadataIndex, packagePath, parseMetadataXml, readFlow, scanProject, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -88,21 +88,67 @@ describe("scanProject", () => {
 });
 
 describe("classifyFile (the metadata type registry)", () => {
+  /** What a file holds, without the folder it was found in. */
+  const what = (rel: string) => {
+    const m = classifyFile(rel);
+    if (!m) return m;
+    const { home: _, ...rest } = m;
+    return rest;
+  };
   it("knows types in both formats, bundles, folders and children", () => {
-    expect(classifyFile("force-app/main/default/classes/Foo.cls-meta.xml")).toEqual({ type: "ApexClass", name: "Foo" });
-    expect(classifyFile("src/classes/Foo.cls")).toEqual({ type: "ApexClass", name: "Foo" });
-    expect(classifyFile("x/lwc/policyCard/policyCard.html")).toEqual({ type: "LightningComponentBundle", name: "policyCard" });
-    expect(classifyFile("x/lwc/policyCard/__tests__/a.test.js")).toEqual({ type: "LightningComponentBundle", name: "policyCard" });
-    expect(classifyFile("x/lwc/jsconfig.json")).toBeUndefined();
-    expect(classifyFile("x/lwc/__mocks__/m.js")).toBeUndefined();
-    expect(classifyFile("x/reports/Sales/Q1/Pipeline.report-meta.xml")).toEqual({ type: "Report", name: "Sales/Q1/Pipeline" });
-    expect(classifyFile("x/reports/Sales.reportFolder-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales" });
-    expect(classifyFile("x/objects/Account/listViews/All.listView-meta.xml")).toEqual({ type: "ListView", name: "Account.All", parent: "Account", parentType: "CustomObject" });
-    expect(classifyFile("x/layouts/Account-Account Layout.layout-meta.xml")).toEqual({ type: "Layout", name: "Account-Account Layout" });
-    expect(classifyFile("x/settings/Case.settings-meta.xml")).toEqual({ type: "Settings", name: "Case" });
-    expect(classifyFile("x/bots/Helper/Helper.bot-meta.xml")).toEqual({ type: "Bot", name: "Helper" });
-    expect(classifyFile("README.md")).toBeUndefined();
-    expect(classifyFile("x/classes/nested/Foo.cls-meta.xml")).toBeUndefined();
+    expect(classifyFile("force-app/main/default/classes/Foo.cls-meta.xml")).toEqual({ type: "ApexClass", name: "Foo", home: "force-app/main/default/classes" });
+    expect(what("src/classes/Foo.cls")).toEqual({ type: "ApexClass", name: "Foo" });
+    expect(what("x/lwc/policyCard/policyCard.html")).toEqual({ type: "LightningComponentBundle", name: "policyCard" });
+    expect(classifyFile("x/lwc/policyCard/policyCard.html")?.home).toBe("x/lwc");
+    // Tests and mocks sit in a bundle's folder but are not part of it.
+    expect(what("x/lwc/policyCard/__tests__/a.test.js")).toBeUndefined();
+    expect(what("x/lwc/jsconfig.json")).toBeUndefined();
+    expect(what("x/lwc/__mocks__/m.js")).toBeUndefined();
+    expect(what("x/reports/Sales/Q1/Pipeline.report-meta.xml")).toEqual({ type: "Report", name: "Sales/Q1/Pipeline" });
+    expect(what("x/reports/Sales.reportFolder-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales" });
+    expect(what("x/reports/Sales/Q1.reportFolder-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales/Q1" });
+    expect(what("x/objects/Account/listViews/All.listView-meta.xml")).toEqual({ type: "ListView", name: "Account.All", parent: "Account", parentType: "CustomObject" });
+    expect(what("x/layouts/Account-Account Layout.layout-meta.xml")).toEqual({ type: "Layout", name: "Account-Account Layout" });
+    expect(what("x/settings/Case.settings-meta.xml")).toEqual({ type: "Settings", name: "Case" });
+    expect(what("x/bots/Helper/Helper.bot-meta.xml")).toEqual({ type: "Bot", name: "Helper" });
+    expect(what("README.md")).toBeUndefined();
+    expect(what("x/classes/nested/Foo.cls-meta.xml")).toBeUndefined();
+  });
+
+  it("knows sites, documents, folders in metadata format, territories and top-level children", () => {
+    expect(what("x/experiences/MySite1.site-meta.xml")).toEqual({ type: "ExperienceBundle", name: "MySite1" });
+    expect(what("x/experiences/MySite1/config/mySite1.json")).toEqual({ type: "ExperienceBundle", name: "MySite1" });
+    expect(what("x/digitalExperiences/site/MySite1/MySite1.digitalExperience-meta.xml")).toEqual({ type: "DigitalExperienceBundle", name: "site/MySite1" });
+    expect(what("x/digitalExperiences/site/MySite1/sfdc_cms__view/home/content.json")).toEqual({ type: "DigitalExperienceBundle", name: "site/MySite1" });
+    // A report or email folder's own file in metadata format has no suffix.
+    expect(what("src/reports/Sales-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales" });
+    expect(what("src/reports/Sales/Q1-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales/Q1" });
+    expect(what("src/email/Letters-meta.xml")).toMatchObject({ name: "Letters" });
+    // Documents, in either format, and their folders.
+    for (const f of ["x/documents/Brand/logo.png", "x/documents/Brand/logo.document-meta.xml", "src/documents/Brand/logo.png-meta.xml"]) {
+      expect(what(f)).toEqual({ type: "Document", name: "Brand/logo" });
+    }
+    expect(what("x/documents/Brand.documentFolder-meta.xml")).toEqual({ type: "DocumentFolder", name: "Brand" });
+    expect(what("src/documents/Brand-meta.xml")).toEqual({ type: "DocumentFolder", name: "Brand" });
+    // Territories are named after their model, so two models can hold the same name.
+    expect(what("x/territory2Models/M1/territories/T1.territory2-meta.xml")).toEqual({ type: "Territory2", name: "M1.T1" });
+    expect(what("x/territory2Models/M1/rules/R1.territory2Rule-meta.xml")).toEqual({ type: "Territory2Rule", name: "M1.R1" });
+    expect(what("x/territory2Models/M1/M1.territory2Model-meta.xml")).toEqual({ type: "Territory2Model", name: "M1" });
+    // Children written beside their parent's file.
+    expect(what("x/bots/Helper/v1.botVersion-meta.xml")).toEqual({ type: "BotVersion", name: "Helper.v1", parent: "Helper", parentType: "Bot" });
+    expect(what("x/objectTranslations/Account-en_US/Industry__c.fieldTranslation-meta.xml")).toMatchObject({
+      type: "CustomFieldTranslation",
+      name: "Account-en_US.Industry__c",
+      parentType: "CustomObjectTranslation",
+    });
+  });
+
+  it("reads an expanded static resource as one resource, whatever it holds", () => {
+    expect(what("x/staticresources/lib/lwc/x/y.js")).toEqual({ type: "StaticResource", name: "lib" });
+    expect(what("x/staticresources/lib/classes/Foo.cls")).toEqual({ type: "StaticResource", name: "lib" });
+    expect(what("x/staticresources/lib/pages/home.page")).toEqual({ type: "StaticResource", name: "lib" });
+    expect(what("x/staticresources/lib.resource-meta.xml")).toEqual({ type: "StaticResource", name: "lib" });
+    expect(what("x/staticresources/logo.png")).toEqual({ type: "StaticResource", name: "logo" });
   });
 });
 
@@ -129,6 +175,8 @@ describe("flows", () => {
         "reads CustomField:Account.Segment__c",
         "reads CustomField:Policy__c.Holder__c",
         "reads CustomField:Policy__c.Id",
+        // The entry condition: the field that decides whether the flow runs.
+        "reads CustomField:Policy__c.Status__c",
         "reads CustomObject:Account",
         "triggers_on CustomObject:Policy__c",
         "writes CustomField:Claim__c.Policy__c",
@@ -151,6 +199,8 @@ describe("flows", () => {
       "ReportFolder:Sales",
     ]);
     expect(others.find((c) => c.type === "ListView")).toMatchObject({ parent: "Policy__c", parentType: "CustomObject" });
+    // The bundle's own file, not its test fixture.
+    expect(others.find((c) => c.type === "LightningComponentBundle")?.file).toBe("force-app/main/default/lwc/policyCard/policyCard.js");
     // A subflow outside the project is a placeholder.
     expect(components.find((c) => c.name === "Notify_Holder")).toMatchObject({ type: "Flow", missing: true });
 
@@ -158,6 +208,88 @@ describe("flows", () => {
     expect(mdapi.components.find((c) => c.type === "Flow")).toMatchObject({ name: "Claim_Intake", attrs: { status: "Draft", elements: { recordCreates: 1, screens: 1 } } });
     expect(mdapi.edges).toContainEqual({ from: { type: "Flow", name: "Claim_Intake" }, to: { type: "CustomField", name: "Claim__c.Amount__c" }, kind: "writes" });
     expect(mdapi.components.filter((c) => c.type === "ApexClass").map((c) => c.name)).toEqual(["ClaimService"]);
+  });
+});
+
+describe("flow references", () => {
+  const edgesOf = (xml: string, others: ParsedComponent[] = []) => {
+    const flow = readFlow("F", (parseMetadataXml(`<Flow>${xml}</Flow>`) as { Flow: Record<string, unknown> }).Flow, "flows/F.flow-meta.xml");
+    return linkObjects([flow, ...others])
+      .edges.filter((e) => e.from.name === "F")
+      .map((e) => `${e.kind} ${e.to.type}:${e.to.name}`)
+      .sort();
+  };
+
+  it("follows record variables, Get Records results and loops to the records they write", () => {
+    const edges = edgesOf(`
+      <variables><name>acc</name><dataType>SObject</dataType><objectType>Account</objectType><isCollection>false</isCollection></variables>
+      <recordLookups><name>Get_Accs</name><object>Account</object><storeOutputAutomatically>true</storeOutputAutomatically></recordLookups>
+      <loops><name>Each_Acc</name><collectionReference>Get_Accs</collectionReference></loops>
+      <assignments><name>Set</name><assignmentItems><assignToReference>Each_Acc.Rating</assignToReference><value><elementReference>acc.Industry</elementReference></value></assignmentItems></assignments>
+      <recordUpdates><name>Save</name><inputReference>Get_Accs</inputReference></recordUpdates>
+      <recordCreates><name>Make</name><inputReference>acc</inputReference></recordCreates>`);
+    expect(edges).toEqual(["reads CustomField:Account.Industry", "reads CustomObject:Account", "writes CustomField:Account.Rating", "writes CustomObject:Account"]);
+  });
+
+  it("writes the triggering record's fields in a before-save assignment, and a related record's through it", () => {
+    const edges = edgesOf(`
+      <start><object>Case</object><triggerType>RecordBeforeSave</triggerType>
+        <filters><field>Priority</field><operator>IsChanged</operator></filters>
+        <scheduledPaths><recordField>ClosedDate</recordField></scheduledPaths></start>
+      <assignments><name>A</name><assignmentItems><assignToReference>$Record.Status</assignToReference></assignmentItems></assignments>
+      <recordUpdates><name>U</name><inputReference>$Record.Account</inputReference><inputAssignments><field>Rating</field></inputAssignments></recordUpdates>`);
+    expect(edges).toEqual([
+      "reads CustomField:Case.AccountId",
+      "reads CustomField:Case.ClosedDate",
+      "reads CustomField:Case.Priority",
+      "triggers_on CustomObject:Case",
+      "writes CustomField:Account.Rating",
+      "writes CustomField:Case.Status",
+      "writes CustomObject:Account",
+      "writes CustomObject:Case",
+    ]);
+  });
+
+  it("reads processes, and the actions, plug-ins, stages and screen components a flow calls", () => {
+    const process = edgesOf(`
+      <processType>Workflow</processType>
+      <processMetadataValues><name>ObjectType</name><value><stringValue>Account</stringValue></value></processMetadataValues>
+      <variables><name>myVariable_current</name><dataType>SObject</dataType><objectType>Account</objectType></variables>
+      <decisions><name>D</name><rules><conditions><leftValueReference>myVariable_current.Industry</leftValueReference></conditions></rules></decisions>`);
+    expect(process).toEqual(["reads CustomField:Account.Industry", "triggers_on CustomObject:Account"]);
+
+    const lwc: ParsedComponent = { type: "AuraDefinitionBundle", name: "legacyPicker", attrs: {}, text: "" };
+    const calls = edgesOf(
+      `
+      <actionCalls><name>a</name><actionName>Case.Notify_Owner</actionName><actionType>emailAlert</actionType></actionCalls>
+      <actionCalls><name>b</name><actionName>Case.LogACall</actionName><actionType>quickAction</actionType></actionCalls>
+      <actionCalls><name>c</name><actionName>Payments.charge</actionName><actionType>externalService</actionType></actionCalls>
+      <actionCalls><name>d</name><actionName>chatterPost</actionName><actionType>chatterPost</actionType></actionCalls>
+      <apexPluginCalls><name>e</name><apexClass>LegacyPlugin</apexClass></apexPluginCalls>
+      <orchestratedStages><name>s</name><stageSteps><name>t</name><actionName>Review_Step</actionName><actionType>stepInteractive</actionType></stageSteps></orchestratedStages>
+      <variables><name>req</name><dataType>Apex</dataType><apexClass>QuoteRequest</apexClass></variables>
+      <screens><name>S</name><fields><name>sec</name><fields><name>p</name><extensionName>c:policyCard</extensionName></fields><fields><name>q</name><extensionName>c:legacyPicker</extensionName></fields><fields><name>r</name><extensionName>flowruntime:address</extensionName></fields></fields></screens>`,
+      [lwc],
+    );
+    expect(calls).toEqual([
+      "calls ApexClass:LegacyPlugin",
+      "calls AuraDefinitionBundle:legacyPicker",
+      "calls ExternalServiceRegistration:Payments",
+      "calls Flow:Review_Step",
+      "calls LightningComponentBundle:policyCard",
+      "calls QuickAction:Case.LogACall",
+      "calls WorkflowAlert:Case.Notify_Owner",
+      "references ApexClass:QuoteRequest",
+    ]);
+  });
+
+  it("does not read field names out of descriptions and labels", () => {
+    const edges = edgesOf(`
+      <start><object>Case</object><triggerType>RecordAfterSave</triggerType></start>
+      <description>Do not touch $Record.Secret_Field__c</description>
+      <decisions><name>D</name><label>Check $Record.Other__c</label><rules><conditions><leftValueReference>$Record.Status</leftValueReference></conditions></rules></decisions>
+      <formulas><name>f</name><expression>Account.Name &amp; {!$Record.Subject}</expression></formulas>`);
+    expect(edges).toEqual(["reads CustomField:Case.Status", "reads CustomField:Case.Subject", "triggers_on CustomObject:Case"]);
   });
 });
 
@@ -277,6 +409,24 @@ describe("scanProject on awkward projects", () => {
     await expect(scanProject(tmp)).rejects.toThrow(/^force-app cannot be read: ENOENT/);
     write("sfdx-project.json", "{ not json");
     await expect(scanProject(tmp)).rejects.toThrow("sfdx-project.json is not valid JSON");
+  });
+
+  it("reports a component defined twice, and keeps a bot's versions apart from an object's children", async () => {
+    write("sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "a" }, { path: "b" }] }));
+    write("a/classes/Foo.cls", "public class Foo {}");
+    write("a/classes/Foo.cls-meta.xml", "<ApexClass/>");
+    write("b/classes/Foo.cls", "public class Foo {}");
+    write("a/bots/Helper/Helper.bot-meta.xml", "<Bot/>");
+    write("a/bots/Helper/v1.botVersion-meta.xml", "<BotVersion/>");
+    write("a/objects/Helper/listViews/All.listView-meta.xml", "<ListView/>");
+    const parsed = await scanProject(tmp);
+    expect(parsed.components.filter((c) => c.type === "ApexClass")).toMatchObject([{ name: "Foo", file: "a/classes/Foo.cls" }]);
+    expect(parsed.skipped).toEqual([{ file: "b/classes/Foo.cls", reason: "ApexClass Foo is also defined in a/classes/Foo.cls" }]);
+
+    const index = fresh();
+    const snap = await index.build({ source: "s", kind: "repo" }, async () => parsed);
+    expect(index.children(snap.id, "Helper").map((c) => c.name)).toEqual(["Helper.All"]);
+    expect(index.children(snap.id, "Helper", "Bot")).toMatchObject([{ name: "Helper.v1", parent: "Helper", parentType: "Bot" }]);
   });
 
   it("matches names without case, and links roll-ups and dependent picklists", async () => {

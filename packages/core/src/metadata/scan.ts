@@ -151,6 +151,9 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
     components.push(c);
   };
 
+  /** Where each component found by the registry was found: its type's folder. */
+  const homes = new Map<string, string>();
+
   const files = new Set<string>();
   for (const dir of await packageDirs(root)) {
     try {
@@ -173,7 +176,11 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
     if (!what) {
       // Every other type the registry knows: indexed by name and file.
       const match = classifyFile(file);
-      if (match && !seen.has(componentKey(match.type, match.name))) {
+      // A component's files (Foo.cls and Foo.cls-meta.xml, a bundle's) share its type's
+      // folder; the same name in another folder is a second definition, and reported.
+      const key = match && componentKey(match.type, match.name);
+      if (match && key && homes.get(key) !== match.home) {
+        if (!seen.has(key)) homes.set(key, match.home);
         add({ type: match.type, name: match.name, file, attrs: {}, text: "", ...(match.parent ? { parent: match.parent, parentType: match.parentType } : {}) }, file);
         if (match.parent && match.parentType === "CustomObject") standIn(match.parent, file.split("/").slice(0, -2).join("/"));
       }

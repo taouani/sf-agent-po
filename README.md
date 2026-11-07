@@ -238,7 +238,7 @@ The new code lives in npm workspaces under `packages/`:
   places), the OCR text masked for models that cannot see images, the words the OCR was
   unsure of, and whether the reading can be trusted, for the user to check before the image
   is used.
-Metadata index: `MetadataIndex` is the local metadata index (decision B, phase 3).
+  Metadata index: `MetadataIndex` is the local metadata index (decision B, phase 3).
   `scanProject` reads a Salesforce project in source format (`sfdx-project.json` package
   folders) or metadata format (`objects/*.object`): objects, fields, record types and
   validation rules, with lookups, picklists and formulas. Each indexing run is a snapshot;
@@ -250,12 +250,16 @@ Metadata index: `MetadataIndex` is the local metadata index (decision B, phase 3
   three hops. Descriptions, help text, picklist values and messages (in `text`) and formulas
   are stored as the project holds them, and are masked by whatever passes them to a model.
   API names match without case. A project folder that cannot be read fails the run, so it
-  never replaces a good index. Flows are read too: what starts a record-triggered flow
-  (`triggers_on`), the objects and fields its record elements and `$Record` references read
-  and write (`writes`), and the Apex actions and subflows it calls (`calls`). Every other
+  never replaces a good index. Flows and processes are read too: what starts them
+  (`triggers_on`, entry conditions included), the objects and fields they read and write
+  through `$Record`, record variables, Get Records results and loops, and the Apex actions,
+  subflows, email alerts, quick actions, external services and screen components they call
+  (`calls`). Every other
   type in Salesforce's metadata type registry (copied from source-deploy-retrieve 13.12.0,
   Apache-2.0, by `scripts/metadata-registry.mjs`; the library itself is not a dependency) is
-  indexed by name and file, including bundles, folders and child types such as list views.
+  indexed by name and file, including bundles, static resources, sites, documents, folders
+  and child types such as list views and bot versions. Report, dashboard, document and email
+  template names come from folders people name, and are masked like `text`.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
   Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into

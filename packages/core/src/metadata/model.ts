@@ -6,16 +6,20 @@
  */
 export const COMPONENT_TYPES = ["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
-export type ComponentType = string;
+export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
 
 /**
  * How one component depends on another:
  * - part_of: a field, record type or rule belongs to its object;
- * - references: a lookup or master-detail field points at an object;
+ * - references: a lookup or master-detail field points at an object, or a flow variable is of
+ *   an Apex-defined type;
  * - reads: a formula, rule or flow uses a field (or queries an object);
  * - writes: a flow sets a field (or creates, updates or deletes records of an object);
- * - triggers_on: a record-triggered flow runs when records of an object change;
- * - calls: a flow runs an Apex action or a subflow.
+ * - triggers_on: a flow or process runs for records of an object: when they change
+ *   (record-triggered) or on a schedule. Draft and obsolete flows have the edge too, since
+ *   they would run once activated: their `status` attr says whether they do now;
+ * - calls: a flow runs an Apex action, a subflow, an email alert, a quick action, an external
+ *   service or a custom screen component.
  */
 export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls"] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
@@ -23,16 +27,21 @@ export type EdgeKind = (typeof EDGE_KINDS)[number];
 /**
  * A dependency a reader found but cannot name in full yet: the linker resolves it once every
  * component is known. With `path`, the fields a formula-style path reads on `object`
- * ("Account__r.Owner.Email"); with `object` alone, the object; with `type` and `name`, that
- * component.
+ * ("Account__r.Owner.Email"); a write writes the field at its end, and that field's object;
+ * with `object` alone, the object; with `type` and `name`, that component. Several types are
+ * alternatives, best first: the first the project has, or else the first.
  */
 export type Ref =
   | { kind: EdgeKind; object: string; path?: string }
-  | { kind: EdgeKind; type: ComponentType; name: string };
+  | { kind: EdgeKind; type: ComponentType | readonly ComponentType[]; name: string };
 
 export interface ParsedComponent {
   type: ComponentType;
-  /** Full name: "Account" for an object, "Account.Industry__c" for a field. */
+  /**
+   * Full name: "Account" for an object, "Account.Industry__c" for a field. Names of types kept
+   * in folders people create and name (reports, dashboards, documents, email templates) can
+   * name clients or people, as `text` can: tools mask them, and `file`, the same way.
+   */
   name: string;
   /** The component a child belongs to (its object, for a field). */
   parent?: string;
