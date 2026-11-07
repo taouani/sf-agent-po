@@ -4,3 +4,4 @@ dist/
 .env
 eval-results/
 packages/core/vendor/
+.pack-next/
