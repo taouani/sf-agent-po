@@ -3,8 +3,38 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import PostalMime, { type Address } from "postal-mime";
 import type { DocumentKind, NewDocument } from "@sf-agent-po/core";
+import { readCsv } from "./readers/csv.js";
+import { readDrawio } from "./readers/drawio.js";
+import { readDocx, readPptx, readXlsx, type ReadResult } from "./readers/office.js";
+import { readPdf } from "./readers/pdf.js";
 
-const TEXT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".eml", ".csv", ".json", ".html", ".htm"]);
+const TEXT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".eml", ".json", ".html", ".htm"]);
+
+/** Formats read into text, by extension. */
+const READERS: Record<string, (raw: Buffer) => ReadResult | Promise<ReadResult>> = {
+  ".pdf": readPdf,
+  ".docx": readDocx,
+  ".docm": readDocx,
+  ".pptx": readPptx,
+  ".pptm": readPptx,
+  ".xlsx": readXlsx,
+  ".xlsm": readXlsx,
+  ".csv": (raw) => readCsv(raw.toString("utf8")),
+  ".tsv": (raw) => readCsv(raw.toString("utf8"), "\t"),
+  ".drawio": (raw) => readDrawio(raw.toString("utf8")),
+  ".dio": (raw) => readDrawio(raw.toString("utf8")),
+};
+
+/** Files larger than this are not read. */
+export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+
+/** The extensions loadLocalDocuments reads. */
+export const READABLE_EXTENSIONS: readonly string[] = [...TEXT_EXTENSIONS, ...Object.keys(READERS), ".drawio.xml"].sort();
+
+const extensionOf = (file: string) => {
+  const lower = file.toLowerCase();
+  return lower.endsWith(".drawio.xml") ? ".drawio" : path.extname(lower);
+};
 
 /**
  * Loads meeting notes, emails, PI planning exports and other local files.
@@ -16,14 +46,33 @@ export async function loadLocalDocuments(target: string, kind?: DocumentKind): P
   const files = info.isDirectory() ? await listFiles(target) : [target];
   const docs: NewDocument[] = [];
   for (const file of files) {
-    if (!TEXT_EXTENSIONS.has(path.extname(file).toLowerCase())) continue;
+    const ext = extensionOf(file);
+    if (!TEXT_EXTENSIONS.has(ext) && !READERS[ext]) continue;
+    const size = (await stat(file)).size;
+    if (size > MAX_FILE_BYTES) throw new Error(`${file} is ${Math.round(size / 2 ** 20)} MB; files over ${MAX_FILE_BYTES / 2 ** 20} MB are not read.`);
     docs.push(await parseDocument(file, await readFile(file), kind));
   }
   return docs;
 }
 
 export async function parseDocument(file: string, raw: Buffer, kind?: DocumentKind): Promise<NewDocument> {
-  const ext = path.extname(file).toLowerCase();
+  const ext = extensionOf(file);
+  const reader = READERS[ext];
+  if (reader) {
+    let read: ReadResult;
+    try {
+      read = await reader(raw);
+    } catch (err) {
+      throw new Error(`Could not read ${path.basename(file)}: ${(err as Error).message}`);
+    }
+    return {
+      kind: kind ?? "other",
+      title: read.title?.trim() || path.basename(file),
+      source: path.resolve(file),
+      content: read.content,
+      metadata: { format: ext.slice(1), ...read.metadata },
+    };
+  }
   const text = raw.toString("utf8");
   if (ext === ".eml" || (kind === "email" && looksLikeEmail(text))) {
     return parseEmail(file, raw, kind);
