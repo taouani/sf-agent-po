@@ -270,7 +270,8 @@ The new code lives in npm workspaces under `packages/`:
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
-  browser. `industry_guidance` gives the industry templates. It also holds the approval page (AR5): a small
+  browser. `industry_guidance` gives the industry templates. `sf-agent-po-next init` writes the
+  agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
