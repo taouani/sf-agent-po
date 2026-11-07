@@ -120,7 +120,8 @@ describe("MCP server", () => {
     expect(second.isError).toBeFalsy();
     const full = await call("context_read", { kinds: ["metadata"] });
     expect(full.text).toContain("### Policy__c (Policy)");
-  });
+    // Real git processes: about 1 s on Linux, but Windows runners have taken over 5 s.
+  }, 30_000);
 
   it("reports errors as tool errors", async () => {
     const r = await call("context_add_jira", {});
