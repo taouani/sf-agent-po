@@ -258,7 +258,15 @@ The new code lives in npm workspaces under `packages/`:
   title, body and target with the real values on the approval page, secrets stay masked, and
   exactly what they approved is written. The page is made from the masked Markdown and the
   values are put in escaped afterwards, so no value can change its structure. The model gets back the masked title and a page link
-  without its title part. It also holds the approval page (AR5): a small
+  without its title part. `backlog_save` stores a backlog the same way, every text field
+  masked with one run of the detection (`Masker.maskOutputs`), and runs the quality check;
+  `backlog_get` and `backlog_check` read it back. `jira_publish` shows the user every epic
+  and story as it will be written, with the real values, what Jira holds now (edited since
+  the last publish, moved to another epic, deleted), the labels and the dependency links,
+  and writes only once they approve. Descriptions are built from the masked backlog and the
+  values go into their text nodes. Each issue is recorded as soon as it is written, so a
+  failure part-way never duplicates issues on the next publish, and the model is told only
+  Jira's status code and what was done, with pseudonyms. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,

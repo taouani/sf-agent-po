@@ -39,6 +39,39 @@ interface KnownCache {
   recentCompiled?: CompiledDictionary;
 }
 
+/** Never in what an agent writes: it keeps texts apart when they are masked together. */
+const OUTPUT_MARK = "\u2063";
+const OUTPUT_SEPARATOR = `\n\n${OUTPUT_MARK}\n\n`;
+
+/** What to mask in a text an agent wrote, from what the detection found: never its pseudonyms. */
+function outputSpans(text: string, found: readonly Span[]): Span[] {
+  const labels = pseudonymLikeSpans(text);
+  // A span that runs into a pseudonym ("[SECRET_1]hunter22", "[PERSON_1] Benali") is cut
+  // around it, and the rest masked: dropping it whole would leave that rest in clear.
+  const spans: Span[] = [];
+  for (const s of found) {
+    let start = s.start;
+    for (const l of labels.filter((l) => s.start < l.end && l.start < s.end).sort((a, b) => a.start - b.start)) {
+      if (l.start > start) spans.push({ ...s, start, end: l.start });
+      start = Math.max(start, l.end);
+    }
+    if (start < s.end) spans.push({ ...s, start });
+  }
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const s = spans[i]!;
+    const piece = text.slice(s.start, s.end);
+    // Trim what is left around a cut ("] Benali" gives "Benali"); a piece with no letter or digit is not masked.
+    const lead = piece.length - piece.replace(/^[\s\p{P}]+/u, "").length;
+    const trail = piece.length - piece.replace(/[\s\p{P}]+$/u, "").length;
+    if (s.type !== "SECRET") {
+      s.start += lead;
+      s.end -= trail;
+    }
+    if (s.end <= s.start || !/[\p{L}\p{N}]/u.test(text.slice(s.start, s.end))) spans.splice(i, 1);
+  }
+  return spans;
+}
+
 const RECOMPILE_AFTER = 200;
 
 /** What masking an image gives: the redacted image for vision models, the masked text for the others. */
@@ -257,35 +290,45 @@ export class Masker {
    * contrast, is masked as a literal: there it is text someone wrote.)
    */
   async maskOutput(context: string, text: string): Promise<{ text: string; report: MaskReport }> {
+    const out = await this.maskOutputs(context, [text]);
+    return { text: out.texts[0]!, report: out.report };
+  }
+
+  /**
+   * Masks several texts an agent wrote, such as the fields of a backlog, as maskOutput does,
+   * with one run of the detection: the texts are joined, and only a text where something
+   * found runs past its end is looked at again on its own.
+   */
+  async maskOutputs(context: string, texts: readonly string[]): Promise<{ texts: string[]; report: MaskReport }> {
     const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
-    if (!text.trim()) return { text, report };
-    const labels = pseudonymLikeSpans(text);
-    // A span that runs into a pseudonym ("[SECRET_1]hunter22", "[PERSON_1] Benali") is cut
-    // around it, and the rest masked: dropping it whole would leave that rest in clear.
-    const spans: Span[] = [];
-    for (const s of await this.spansFor(context, text, [], report)) {
-      let start = s.start;
-      for (const l of labels.filter((l) => s.start < l.end && l.start < s.end).sort((a, b) => a.start - b.start)) {
-        if (l.start > start) spans.push({ ...s, start, end: l.start });
-        start = Math.max(start, l.end);
+    const scratch: MaskReport = { counts: {}, model: report.model };
+    const found: Span[][] = texts.map(() => []);
+    if (texts.length > 1 && !texts.some((t) => t.includes(OUTPUT_MARK))) {
+      const starts: number[] = [];
+      let at = 0;
+      for (const t of texts) {
+        starts.push(at);
+        at += t.length + OUTPUT_SEPARATOR.length;
       }
-      if (start < s.end) spans.push({ ...s, start });
-    }
-    for (let i = spans.length - 1; i >= 0; i--) {
-      const s = spans[i]!;
-      const piece = text.slice(s.start, s.end);
-      // Trim what is left around a cut ("] Benali" gives "Benali"); a piece with no letter or digit is not masked.
-      const lead = piece.length - piece.replace(/^[\s\p{P}]+/u, "").length;
-      const trail = piece.length - piece.replace(/[\s\p{P}]+$/u, "").length;
-      if (s.type !== "SECRET") {
-        s.start += lead;
-        s.end -= trail;
+      const redo = new Set<number>();
+      for (const s of await this.spansFor(context, texts.join(OUTPUT_SEPARATOR), [], scratch)) {
+        let i = 0;
+        while (i + 1 < texts.length && starts[i + 1]! <= s.start) i++;
+        const end = starts[i]! + texts[i]!.length;
+        if (s.end <= end) found[i]!.push({ ...s, start: s.start - starts[i]!, end: s.end - starts[i]! });
+        else texts.forEach((t, j) => s.start < starts[j]! + t.length && starts[j]! < s.end && redo.add(j));
       }
-      if (s.end <= s.start || !/[\p{L}\p{N}]/u.test(text.slice(s.start, s.end))) spans.splice(i, 1);
+      for (const i of redo) found[i] = await this.spansFor(context, texts[i]!, [], scratch);
+    } else {
+      for (const [i, t] of texts.entries()) found[i] = await this.spansFor(context, t, [], scratch);
     }
-    report.counts = {};
-    for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
-    return { text: this.opts.vault.mask(context, text, spans, { literals: false }), report };
+    const out = texts.map((text, i) => {
+      if (!text.trim()) return text;
+      const spans = outputSpans(text, found[i]!);
+      for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
+      return this.opts.vault.mask(context, text, spans, { literals: false });
+    });
+    return { texts: out, report };
   }
 
   /**

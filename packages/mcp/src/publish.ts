@@ -8,7 +8,7 @@ import { AtlassianError, markdownToStorage, type AtlassianClient } from "@sf-age
 import type { ContextRepository, Masker } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
-import { getArtifact, KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
+import { getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
 
@@ -22,6 +22,8 @@ export interface PublishKit {
   reviewerFor: (call: CallContext) => Reviewer;
   guard: <A extends { context?: string }>(fn: (args: A, call: CallContext) => Promise<Result>) => (args: A, call: CallContext) => Promise<Result>;
   contextName: z.ZodType<string>;
+  /** One publish at a time per artifact, whatever the target. */
+  lock: KeyedLock;
 }
 
 const text = (t: string): Result => ({ content: [{ type: "text", text: t }] });
@@ -47,19 +49,34 @@ export function unmaskStorage(masker: Masker, context: string, storage: string) 
   return { text: parts.join(""), kept: [...kept], revealed: [...revealed.values()] };
 }
 
-/** Confluence errors may quote what was sent (the real title): only their status reaches the model. */
-async function confluence<T>(what: string, run: () => Promise<T>): Promise<T> {
+/** Atlassian errors may quote what was sent (a real title): only their status reaches the model. */
+export async function atlassianCall<T>(service: "Confluence" | "Jira", what: string, run: () => Promise<T>, after = "Nothing was written."): Promise<T> {
   try {
     return await run();
   } catch (err) {
-    if (err instanceof AtlassianError) throw new Error(`Confluence refused to ${what} (HTTP ${err.status}). Nothing was written.`);
+    if (err instanceof AtlassianError) throw new Error(`${service} refused to ${what} (HTTP ${err.status}).${after ? ` ${after}` : ""}`);
     throw err;
   }
 }
 
+const confluence = <T>(what: string, run: () => Promise<T>) => atlassianCall("Confluence", what, run);
+
+/**
+ * The user's comment on an approval page, for the model. It is in clear and may name someone
+ * just seen on the page, however short the name: the values the page revealed are masked first.
+ */
+export async function decisionComment(masker: Masker, context: string, comment: string | undefined, revealed: readonly { type: string; value: string }[]): Promise<string> {
+  const said = comment?.trim();
+  if (!said) return "";
+  try {
+    return ` Their comment: ${(await masker.mask(context, said, revealed.map((r) => ({ ...r, caseSensitive: false })))).text}`;
+  } catch {
+    return " They left a comment, which could not be shown safely.";
+  }
+}
+
 export function registerPublishTools(server: McpServer, kit: PublishKit): void {
-  const { contexts, masker, guard, contextName } = kit;
-  const lock = new KeyedLock();
+  const { contexts, masker, guard, contextName, lock } = kit;
 
   server.registerTool(
     "design_save",
@@ -129,6 +146,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           let target: string;
           let write: () => Promise<{ pageId: string; url: string; version: number }>;
           let ownPage: boolean;
+          const shownTitles: string[] = [];
           if (existing) {
             let page: Awaited<ReturnType<AtlassianClient["getPageSummary"]>>;
             try {
@@ -141,6 +159,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
               throw err;
             }
             ownPage = !args.pageId || page.pageId === ownPageId;
+            shownTitles.push(page.title);
             const edited = ownPage && doc.metadata.confluence && doc.metadata.confluence.pageVersion !== page.version;
             target =
               `Confluence: replace the content of page "${page.title}" (version ${page.version})` +
@@ -155,6 +174,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             if (args.parentPageId) {
               const parentId = args.parentPageId;
               parent = await confluence("return the parent page", () => client.getPageSummary(parentId));
+              shownTitles.push(parent.title);
               if (parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
             }
             ownPage = true;
@@ -165,17 +185,9 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const req: PublishRequest = { kind: "publish", target, title: title.text, body: body.text, kept: [...new Set([...title.kept, ...body.kept])] };
           const decision = await kit.reviewerFor(call).review(req);
           if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
-          // The user's comment is in clear and may name someone just seen on the page, however short the name: those values are masked first.
-          const comment = async () => {
-            const said = decision.comment?.trim();
-            if (!said) return "";
-            const seen = [...title.revealed, ...body.revealed].map((r) => ({ ...r, caseSensitive: false }));
-            try {
-              return ` Their comment: ${(await masker.mask(context, said, seen)).text}`;
-            } catch {
-              return " They left a comment, which could not be shown safely.";
-            }
-          };
+          // Page titles from Confluence were shown in clear too, and the comment may quote them.
+          const shown = shownTitles.map((value) => ({ type: "PRIVATE", value }));
+          const comment = () => decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...shown]);
           if (decision.status !== "approved") {
             const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
             return text(`Nothing was written: the user ${why}.${await comment()}`);

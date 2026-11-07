@@ -19,3 +19,22 @@ export { createServer, describeDoc, MAX_IMAGES, type ServerOptions } from "./ser
 export { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";
 export { artifactSource, getArtifact, KeyedLock, pageLink, saveArtifact, updateArtifactMeta, type Artifact, type ArtifactMeta } from "./artifacts.js";
 export { registerPublishTools, unmaskStorage, type PublishKit } from "./publish.js";
+export { type JiraMapping } from "./artifacts.js";
+export { atlassianCall, decisionComment } from "./publish.js";
+export { mergeLabels, PartialPublishError, registerBacklogTools } from "./jira.js";
+export {
+  backlogSchema,
+  backlogToMarkdown,
+  checkBacklog,
+  epicDescription,
+  findingsToText,
+  mapAdfText,
+  mapBacklogText,
+  maskBacklog,
+  storyDescription,
+  type AdfNode,
+  type Backlog,
+  type Epic,
+  type Finding,
+  type Story,
+} from "./backlog.js";
