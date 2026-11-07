@@ -62,6 +62,13 @@ textarea { width: 100%; min-height: 72px; font: inherit; padding: 8px; border: 1
 button { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+.choices { list-style: none; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 8px; }
+.choices li { border-top: 1px solid var(--line); }
+.choices li:first-child { border-top: 0; }
+.choices label { display: flex; gap: 10px; align-items: baseline; font-weight: 400; margin: 0; padding: 8px 12px; cursor: pointer; }
+.choices code { font: 13px ui-monospace, Menlo, Consolas, monospace; }
+.choices .detail { color: var(--muted); font-size: 13px; }
+input[type="text"] { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 `;
 
 function layout(title: string, body: string, nonce: string, css = ""): string {
@@ -113,6 +120,31 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
         ),
       opts.nonce,
       css,
+    );
+  }
+
+  if (req.kind === "scope") {
+    const choices = (list: typeof req.proposed, ticked: boolean) =>
+      `<ul class="choices">${list
+        .map(
+          (o, i) =>
+            `<li><label for="o${ticked ? "p" : "s"}${i}"><input type="checkbox" id="o${ticked ? "p" : "s"}${i}" name="object" value="${escapeHtml(o.name)}"${ticked ? " checked" : ""}>` +
+            `<span><code>${escapeHtml(o.name)}</code>${o.label ? ` ${escapeHtml(o.label)}` : ""}<br><span class="detail">${escapeHtml(o.detail)}</span></span></label></li>`,
+        )
+        .join("")}</ul>`;
+    return layout(
+      `Confirm scope: ${req.title}`,
+      `<h1>Confirm what this work touches</h1><p class="sub">${escapeHtml(req.title)} · ${escapeHtml(req.source)}</p>` +
+        (req.reason ? `<p>The agent's reasons: ${markPseudonyms(req.reason)}</p>` : "") +
+        `<p>The agent looks closely at these objects, with their fields, rules, record types, and the flows, triggers, code and layouts linked to them. Untick what is not part of the work.</p>` +
+        form(
+          `<h2 class="label">Proposed</h2>${choices(req.proposed, true)}` +
+            (req.suggested.length ? `<h2 class="label">Linked to them (tick to add)</h2>${choices(req.suggested, false)}` : "") +
+            `<label for="added">Other objects (API names, separated by spaces or commas)</label><input type="text" id="added" name="added" autocomplete="off" placeholder="Account, Claim__c">` +
+            `<label for="comment">Comment for the agent (optional)</label><textarea id="comment" name="comment"></textarea>`,
+          `<button class="primary" name="decision" value="approved">Confirm the scope</button><button name="decision" value="rejected">Reject</button>`,
+        ),
+      opts.nonce,
     );
   }
 

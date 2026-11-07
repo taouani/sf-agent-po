@@ -22,7 +22,7 @@ export interface MetadataKit {
 }
 
 /** Types whose names are chosen by users for their content (a report on a client): masked like text. */
-const NAMED_LIKE_TEXT = new Set<string>([
+export const NAMED_LIKE_TEXT = new Set<string>([
   "Report",
   "Dashboard",
   "Document",
@@ -63,7 +63,7 @@ export function trimDetails(value: unknown): unknown {
 }
 
 /** Masks pieces of text for a context, each distinct piece once. */
-class Pieces {
+export class Pieces {
   private readonly pending = new Map<string, Promise<string>>();
   constructor(
     private readonly masker: Masker,
@@ -100,13 +100,13 @@ class Pieces {
 }
 
 /** The ready snapshot of each source, newest first. */
-function readySources(index: MetadataIndex): SnapshotInfo[] {
+export function readySources(index: MetadataIndex): SnapshotInfo[] {
   const seen = new Set<string>();
   return index.snapshots().filter((s) => s.status === "ready" && !seen.has(s.source) && (seen.add(s.source), true));
 }
 
 /** The snapshot a call works on: the named source, or the newest one. */
-function pick(index: MetadataIndex, source: string | undefined): SnapshotInfo {
+export function pick(index: MetadataIndex, source: string | undefined): SnapshotInfo {
   const ready = readySources(index);
   if (!ready.length) throw new Error("Nothing is indexed yet. Index an org or a project folder with metadata_index first.");
   if (!source) return ready.sort((a, b) => ((a.finishedAt ?? "") < (b.finishedAt ?? "") ? 1 : -1))[0]!;
@@ -127,7 +127,7 @@ async function describeJob(pieces: Pieces, j: IndexJob): Promise<string> {
   return `${j.target}: ${j.state}, ${when}${j.message ? `: ${await pieces.mask(j.message)}` : ""}`;
 }
 
-const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash"); the newest one when omitted.');
+export const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash"); the newest one when omitted.');
 
 export function registerMetadataTools(server: McpServer, kit: MetadataKit): void {
   const { index, indexer, guard, contextName } = kit;
@@ -283,7 +283,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
 }
 
 /** One component on one line: type, API name, label, and its kind (a field's type). */
-async function line(pieces: Pieces, c: IndexedComponent): Promise<string> {
+export async function line(pieces: Pieces, c: IndexedComponent): Promise<string> {
   const name = await pieces.name(c.type, c.name);
   const label = c.label ? ` "${await pieces.mask(c.label)}"` : "";
   const missing = c.missing ? " (referenced only)" : "";
