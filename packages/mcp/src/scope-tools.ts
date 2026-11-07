@@ -36,6 +36,8 @@ const MAX_OBJECTS = 30;
 const MAX_SUGGESTED = 15;
 /** Lines listed in each part of a scope. */
 const MAX_LISTED = 300;
+/** Fields, rules and record types listed for each object: metadata_component lists them all. */
+const MAX_CHILDREN_EACH = 60;
 
 const WORDS: Partial<Record<EdgeKind, string>> = {
   writes: "writes",
@@ -74,7 +76,7 @@ function counts(parts: readonly IndexedComponent[]): string {
 
 /** What the page shows for one proposed object: its own scope, counted. */
 function proposedChoice(index: MetadataIndex, snapshot: number, object: IndexedComponent): ScopeChoice {
-  const own = index.scope(snapshot, [object.name], { hops: 1 });
+  const own = index.scope(snapshot, [object.name], { hops: 1, neighbours: false });
   const elsewhere = own.members.filter((m) => m.component.parent && m.component.parent !== object.name).length;
   const linked = own.members.filter((m) => !(m.component.parent && m.component.parent !== object.name)).map((m) => m.component);
   const detail = counts([...own.children, ...linked]);
@@ -95,7 +97,13 @@ async function describeScope(pieces: Pieces, snap: SnapshotInfo, scope: Metadata
   };
   const out = [header, `Source: ${snap.source}`];
   out.push(`Objects (${scope.objects.length}):\n${await capped(scope.objects, (o) => line(pieces, o))}`);
-  if (scope.children.length) out.push(`Their fields, rules and record types (${scope.children.length}):\n${await capped(scope.children, (c) => line(pieces, c))}`);
+  for (const o of scope.objects) {
+    const own = scope.children.filter((c) => c.parent === o.name);
+    if (!own.length) continue;
+    const shown = own.slice(0, MAX_CHILDREN_EACH);
+    const more = own.length > shown.length ? `\n- and ${own.length - shown.length} more: metadata_component lists them all` : "";
+    out.push(`Fields, rules and record types of ${o.name} (${own.length}):\n${(await Promise.all(shown.map((c) => line(pieces, c)))).join("\n")}${more}`);
+  }
   const near = scope.members.filter((m) => m.hop === 1);
   const far = scope.members.filter((m) => m.hop === 2);
   if (near.length) out.push(`Linked to them (${near.length}):\n${await capped(near, async (m) => `${await line(pieces, m.component)} (${words(m.kinds)})`)}`);
@@ -109,7 +117,7 @@ async function describeScope(pieces: Pieces, snap: SnapshotInfo, scope: Metadata
         return `${await line(pieces, n.object)}: ${n.links} link(s), such as ${via.join("; ")}`;
       })}`,
     );
-  if (scope.unknown.length) out.push(`Not in the index: ${scope.unknown.join(", ")}.`);
+  if (scope.unknown.length) out.push(`Not in the index: ${(await Promise.all(scope.unknown.map((u) => pieces.mask(u)))).join(", ")}.`);
   out.push("The index does not see dynamic Apex, SOQL built from strings or long formula chains: check with the user when a conclusion depends on them.");
   return out.join("\n\n");
 }
@@ -154,16 +162,27 @@ export function registerScopeTools(server: McpServer, kit: ScopeKit): void {
         const why = decision.status === "rejected" ? "The user rejected this scope" : "The user did not confirm the scope in time, or closed the page";
         return text(`${why}; the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}`);
       }
+      // The source may have been indexed again while the user decided: use its newest snapshot.
+      const now = readySources(index).find((x) => x.source === snap.source);
+      if (!now) throw new Error(`${snap.source} is not indexed any more, so the scope could not be kept. Index it again with metadata_index.`);
       const chosen = [...(decision.selected ?? []), ...(decision.added ?? [])];
-      const confirmed = index.scope(snap.id, chosen, { hops: 2 });
-      if (!confirmed.objects.length) return text(`The user unticked every object, so the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}`);
-      const stored: StoredScope = { source: snap.source, objects: confirmed.objects.map((o) => o.name), confirmedAt: new Date().toISOString() };
+      const confirmed = index.scope(now.id, chosen, { hops: 2 });
+      const typedUnknown = (decision.added ?? []).filter((a) => confirmed.unknown.includes(a)).length;
+      if (!confirmed.objects.length) {
+        const typed = typedUnknown ? ` (the ${typedUnknown} object name(s) they typed are not in the index)` : "";
+        return text(`The user kept no object${typed}, so the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}`);
+      }
+      const stored: StoredScope = { source: now.source, objects: confirmed.objects.map((o) => o.name), confirmedAt: new Date().toISOString() };
       contexts.updateSettings(context, { scope: stored });
+      const added = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.id === o.id) && !decision.selected?.some((x) => x.toLowerCase() === o.name.toLowerCase())).map((o) => o.name);
+      const ticked = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.name === o.name) && decision.selected?.includes(o.name)).map((o) => o.name);
       const changed = [
-        ...(decision.added?.length ? [`The user added: ${decision.added.join(", ")}.`] : []),
+        ...(ticked.length ? [`The user added linked objects: ${ticked.join(", ")}.`] : []),
+        ...(added.length ? [`The user added: ${added.join(", ")}.`] : []),
+        ...(typedUnknown ? [`${typedUnknown} object name(s) the user typed are not in the index.`] : []),
         ...proposal.objects.filter((o) => !decision.selected?.includes(o.name)).map((o) => `The user removed ${o.name}.`),
       ].join(" ");
-      return text(await describeScope(pieces, snap, confirmed, `The user confirmed the scope of "${context}".${changed ? ` ${changed}` : ""}${comment}`));
+      return text(await describeScope(pieces, now, { ...confirmed, unknown: [] }, `The user confirmed the scope of "${context}".${changed ? ` ${changed}` : ""}${comment}`));
     }),
   );
 

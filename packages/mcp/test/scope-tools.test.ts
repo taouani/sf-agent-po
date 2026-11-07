@@ -37,6 +37,8 @@ function project(): string {
     "objects/Policy__c.object",
     `<?xml version="1.0"?><CustomObject><label>Policy of Karim</label>` +
       `<fields><fullName>Status__c</fullName><label>Status</label><type>Picklist</type></fields>` +
+      `<fields><fullName>Account__c</fullName><label>Account</label><type>Lookup</type><referenceTo>Account</referenceTo></fields>` +
+      `<fields><fullName>Account_Industry__c</fullName><label>Industry</label><type>Text</type><formula>Account__r.Industry</formula></fields>` +
       `<validationRules><fullName>Status_Required</fullName><active>true</active><errorConditionFormula>ISBLANK(TEXT(Status__c))</errorConditionFormula></validationRules></CustomObject>`,
   );
   w(
@@ -53,13 +55,18 @@ function project(): string {
   w("triggers/PolicyTrigger.trigger-meta.xml", "<ApexTrigger/>");
   w("classes/PolicyService.cls", "public class PolicyService { public static void run(List<Policy__c> ps) { Helper.go(); } }");
   w("classes/PolicyService.cls-meta.xml", "<ApexClass/>");
+  // Account is not in the project: only referenced. Apex reads one of its standard fields; a trigger on Contact writes policies.
+  w("classes/AcctUtil.cls", "public class AcctUtil { void x() { Account a = [SELECT Industry FROM Account LIMIT 1]; } }");
+  w("classes/AcctUtil.cls-meta.xml", "<ApexClass/>");
+  w("triggers/ContactTrigger.trigger", "trigger ContactTrigger on Contact (after insert) { insert new Policy__c(); }");
+  w("triggers/ContactTrigger.trigger-meta.xml", "<ApexTrigger/>");
   w("classes/Helper.cls", "public class Helper { public static void go() { } }");
   w("classes/Helper.cls-meta.xml", "<ApexClass/>");
   w("profiles/Admin.profile", `<?xml version="1.0"?><Profile><objectPermissions><object>Policy__c</object><allowRead>true</allowRead></objectPermissions></Profile>`);
   return root;
 }
 
-async function connect(decide: (req: ScopeRequest) => Partial<Decision>) {
+async function connect(decide: (req: ScopeRequest) => Partial<Decision> | Promise<Partial<Decision>>) {
   const db = new Database(":memory:");
   const vault = new Vault(db, newVaultKey());
   const masker = new Masker({ vault, model: fakeModel(["Karim"]) });
@@ -80,19 +87,20 @@ async function connect(decide: (req: ScopeRequest) => Partial<Decision>) {
     reviewer: () => ({
       review: async (req) => {
         seen.push(req);
-        return { status: "approved", missed: [], digest: "d", ...decide(req as ScopeRequest) };
+        return { status: "approved", missed: [], digest: "d", ...(await decide(req as ScopeRequest)) };
       },
     }),
   });
   const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
-  await indexProject(index, project());
+  const root = project();
+  await indexProject(index, root);
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r = (await client.callTool({ name, arguments: args })) as { content: { type: string; text?: string }[]; isError?: boolean };
     return { ...r, text: r.content.map((c) => c.text ?? "").join("\n") };
   };
-  return { call, seen, contexts, index };
+  return { call, seen, contexts, index, root };
 }
 
 describe("scope tools", () => {
@@ -102,14 +110,22 @@ describe("scope tools", () => {
     const scope = index.scope(snap.id, ["policy__c", "Nope__c"], { hops: 2 });
     expect(scope.objects.map((o) => o.name)).toEqual(["Policy__c"]);
     expect(scope.unknown).toEqual(["Nope__c"]);
-    expect(scope.children.map((c) => c.name)).toEqual(["Policy__c.Status__c", "Policy__c.Status_Required"]);
+    expect(scope.children.map((c) => c.name)).toEqual(["Policy__c.Account__c", "Policy__c.Account_Industry__c", "Policy__c.Status__c", "Policy__c.Status_Required"]);
     const members = Object.fromEntries(scope.members.map((m) => [`${m.component.type} ${m.component.name}`, m.hop]));
     // The trigger calls PolicyService (two hops); what PolicyService calls would be a third.
-    expect(members).toEqual({ "Flow Open_Claim": 1, "ApexTrigger PolicyTrigger": 1, "CustomField Claim__c.Policy__c": 1, "ApexClass PolicyService": 2 });
+    expect(members).toEqual({ "Flow Open_Claim": 1, "ApexTrigger PolicyTrigger": 1, "ApexTrigger ContactTrigger": 1, "CustomField Claim__c.Policy__c": 1, "ApexClass PolicyService": 2 });
     expect(Object.keys(members)).not.toContain("Profile Admin");
     expect(scope.grantedBy).toEqual({ Profile: 1 });
-    expect(scope.neighbours.map((n) => n.object.name)).toEqual(["Claim__c"]);
-    expect(scope.neighbours[0]!.via.map((v) => v.component.name).sort()).toEqual(["Claim__c.Policy__c", "Open_Claim"]);
+    // Each neighbour names the scope's side of the link: the lookup and formula pointing to Account,
+    // the lookup from Claim__c and the flow creating claims, the trigger on Contact writing policies.
+    const via = Object.fromEntries(scope.neighbours.map((n) => [n.object.name, n.via.map((v) => `${v.component.name} ${v.kinds.join(",")}`).sort()]));
+    expect(via).toEqual({
+      Account: ["Policy__c.Account_Industry__c reads", "Policy__c.Account__c references"],
+      Claim__c: ["Claim__c.Policy__c references", "Open_Claim writes"],
+      Contact: ["ContactTrigger triggers_on"],
+    });
+    // A standard object only referenced keeps the links to its standard fields.
+    expect(index.scope(snap.id, ["Account"]).members.map((m) => m.component.name)).toEqual(["AcctUtil", "Policy__c.Account__c", "Policy__c.Account_Industry__c"]);
     // One hop leaves out what the code calls.
     expect(index.scope(snap.id, ["Policy__c"], { hops: 1 }).members.map((m) => m.component.name)).not.toContain("PolicyService");
   });
@@ -123,16 +139,17 @@ describe("scope tools", () => {
     const page = seen[0] as ScopeRequest;
     expect(page).toMatchObject({ kind: "scope", title: "acme", reason: "Claims open on update" });
     // The page is the user's own: labels in clear, with what comes with each object.
-    expect(page.proposed).toEqual([{ name: "Policy__c", label: "Policy of Karim", detail: "1 field, 1 validation rule, 1 flow, 1 Apex trigger; 1 field(s) of other objects use it" }]);
-    expect(page.suggested[0]).toMatchObject({ name: "Claim__c", label: "Claim", detail: expect.stringContaining("Flow Open_Claim (writes)") });
+    expect(page.proposed).toEqual([{ name: "Policy__c", label: "Policy of Karim", detail: "3 fields, 1 validation rule, 1 flow, 2 Apex triggers; 1 field(s) of other objects use it" }]);
+    expect(page.suggested[1]).toMatchObject({ name: "Claim__c", label: "Claim", detail: expect.stringContaining("Flow Open_Claim (writes)") });
 
-    expect(r.text).toContain('The user confirmed the scope of "acme". The user added: Invoice__c, Ghost__c.');
+    expect(r.text).toContain('The user confirmed the scope of "acme". The user added: Invoice__c. 1 object name(s) the user typed are not in the index.');
+    expect(r.text).not.toContain("Ghost__c");
     expect(r.text).toContain("The user's comment: [PERSON_1] owns it");
     expect(r.text).toContain('- CustomObject Policy__c "Policy of [PERSON_1]"');
     expect(r.text).toContain("- CustomObject Invoice__c");
     expect(r.text).toContain("Called by or calling that automation (1):\n- ApexClass PolicyService (calls or is called by)");
     expect(r.text).toContain("Access is given by 1 Profile");
-    expect(r.text).toMatch(/Objects outside the scope that it touches \(1\)[^\n]*\n- CustomObject Claim__c "Claim": 2 link\(s\)/);
+    expect(r.text).toMatch(/Objects outside the scope that it touches \(3\)[^\n]*\n- CustomObject Account \(referenced only\): 2 link\(s\)[^\n]*\n- CustomObject Claim__c "Claim": 2 link\(s\)/);
     expect(r.text).not.toContain("Karim");
     expect(contexts.get("acme")?.settings.scope).toMatchObject({ objects: ["Policy__c", "Invoice__c"], source: expect.stringMatching(/^repo:/) });
 
@@ -149,11 +166,25 @@ describe("scope tools", () => {
     answer = { status: "rejected" };
     expect((await call("scope_propose", { context: "acme", objects: ["Claim__c"] })).text).toContain("The user rejected this scope; the context keeps its previous scope.");
     answer = { selected: [] };
-    expect((await call("scope_propose", { context: "acme", objects: ["Claim__c"] })).text).toContain("The user unticked every object");
+    expect((await call("scope_propose", { context: "acme", objects: ["Claim__c"] })).text).toContain("The user kept no object, so the context keeps its previous scope.");
     expect(contexts.get("acme")?.settings.scope).toMatchObject({ objects: ["Policy__c"] });
 
     const unknown = await call("scope_propose", { context: "acme", objects: ["Polic__c"] });
     expect(unknown.isError).toBe(true);
     expect(unknown.text).toContain("None of these objects is in repo:");
+  });
+
+  it("keep the user's choice when the source is indexed again while they decide", async () => {
+    let reindex = async () => {};
+    const { call, contexts, index, root } = await connect(async (req) => {
+      await reindex();
+      return { selected: req.proposed.map((p) => p.name) };
+    });
+    reindex = async () => void (await indexProject(index, root, { force: true }));
+    const before = index.snapshots()[0]!.id;
+    const r = await call("scope_propose", { context: "acme", objects: ["Policy__c"] });
+    expect(index.snapshots()[0]!.id).not.toBe(before);
+    expect(r.text).toContain('The user confirmed the scope of "acme".');
+    expect(contexts.get("acme")?.settings.scope).toMatchObject({ objects: ["Policy__c"] });
   });
 });

@@ -214,7 +214,7 @@ describe("approval page", () => {
       title: "renewals",
       source: "org:00D000000000001AAA",
       reason: "[PERSON_1] asked for <renewals>",
-      proposed: [{ name: "Policy__c", label: "Policy", detail: "3 fields, 1 flow" }],
+      proposed: [{ name: "Policy__c", label: 'Policy <"&>', detail: "3 fields, 1 <flow>" }],
       suggested: [{ name: "Claim__c", detail: "1 link: Flow Open_Claim (writes)" }],
     });
     const tab = await open(pending.url);
@@ -222,6 +222,8 @@ describe("approval page", () => {
     expect(html).toContain('name="object" value="Policy__c" checked>');
     expect(html).toContain('name="object" value="Claim__c">');
     expect(html).toContain("<mark>[PERSON_1]</mark> asked for &#60;renewals&#62;");
+    expect(html).toContain("Policy &#60;&#34;&#38;&#62;");
+    expect(html).toContain("3 fields, 1 &#60;flow&#62;");
     expect(html).not.toMatch(/<script|style="/i);
     const page = await call(tab.page, { headers: { cookie: tab.cookie } });
     const body = `csrf=${encodeURIComponent(csrfOf(page.body.toString()))}&decision=approved&object=Claim__c&object=Evil__c&added=${encodeURIComponent("Account, Claim__c; Invoice__c <x> 1bad")}`;
