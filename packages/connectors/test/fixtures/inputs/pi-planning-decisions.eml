@@ -1,0 +1,29 @@
+From: =?UTF-8?Q?Ren=C3=A9e_Martin?= <pm@example.com>
+To: sa@example.com, po@example.com
+Subject: =?UTF-8?Q?PI_planning_=E2=80=93_decisions?=
+Date: Tue, 21 Oct 2026 14:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/alternative; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Renewal portal is committed for PI 4.=0AAgents get a dashboard of renewals du=
+e in 30 days.
+--inner
+Content-Type: text/html; charset=utf-8
+
+<p>Renewal portal is committed for PI 4.</p>
+--inner--
+
+--outer
+Content-Type: text/csv; name="objectives.csv"
+Content-Disposition: attachment; filename="objectives.csv"
+Content-Transfer-Encoding: base64
+
+T2JqZWN0aXZlLEJWCg==
+--outer--
