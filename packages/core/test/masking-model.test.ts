@@ -160,6 +160,12 @@ describe("the vendored runtime", () => {
     const t = new ort.Tensor("int64", BigInt64Array.from([1n, 2n]), [1, 2]);
     expect(t.dims).toEqual([1, 2]);
   });
+
+  it("starts its WebAssembly backend (a junk model fails to parse, not to load the backend)", async () => {
+    const ort = (await import(pathToFileURL(VENDORED_RUNTIME).href)) as typeof import("onnxruntime-common");
+    ort.env.wasm.numThreads = 1;
+    await expect(ort.InferenceSession.create(new Uint8Array([1, 2, 3]))).rejects.toThrow(/protobuf parsing failed/);
+  });
 });
 
 // The real model (138 MB) is downloaded from Hugging Face, so this runs only where that is
