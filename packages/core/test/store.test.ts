@@ -24,6 +24,23 @@ describe("Database", () => {
     b.close();
   });
 
+  it("orders documents of an older database by when they were added", () => {
+    const file = join(dir, "v1-order", "sf-agent.db");
+    const v1 = new Database(file, MIGRATIONS.slice(0, 1));
+    v1.db.exec("INSERT INTO context (name, created_at, updated_at) VALUES ('c', 'now', 'now')");
+    for (const s of ["z.md", "a.md", "m.md"]) {
+      v1.db
+        .prepare("INSERT INTO document (context, id, kind, title, source, content, added_at, updated_at) VALUES ('c', ?, 'other', ?, ?, '', 'now', 'now')")
+        .run(documentId(s), s, s);
+    }
+    v1.close();
+    const db = new Database(file);
+    const repo = new ContextRepository(db);
+    repo.addDocuments("c", [{ kind: "other", title: "b", source: "b.md", content: "" }]);
+    expect(repo.documents("c").map((d) => d.source)).toEqual(["z.md", "a.md", "m.md", "b.md"]);
+    db.close();
+  });
+
   it("refuses a database written by a newer version", () => {
     const file = join(dir, "newer", "sf-agent.db");
     const a = new Database(file);

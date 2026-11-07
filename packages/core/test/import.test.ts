@@ -90,6 +90,25 @@ describe("importLegacyWorkspace", () => {
     db.close();
   });
 
+  it("keeps the order of documents that 0.x added in one batch", async () => {
+    const ws = workspace();
+    const sources = ["f", "a", "e", "b", "d", "c"].map((s) => `notes/${s}.md`);
+    await new ContextStore(ws).addDocuments("c", sources.map((source) => ({ kind: "meeting-notes" as const, title: source, source, content: "" })));
+    const db = new Database(join(ws, "sf-agent.db"));
+    await importLegacyWorkspace(ws, db);
+    expect(new ContextRepository(db).documents("c").map((d) => d.source)).toEqual(sources);
+    db.close();
+  });
+
+  it("reads files saved with a byte order mark", async () => {
+    const ws = workspace();
+    mkdirSync(join(ws, "contexts"), { recursive: true });
+    writeFileSync(join(ws, "contexts", "bom.json"), '\uFEFF{"name": "bom", "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "documents": []}');
+    const db = new Database(":memory:");
+    expect((await importLegacyWorkspace(ws, db)).imported.map((c) => c.name)).toEqual(["bom"]);
+    db.close();
+  });
+
   it("does nothing for a workspace without 0.x contexts", async () => {
     const db = new Database(":memory:");
     expect(await importLegacyWorkspace(workspace(), db)).toEqual({ imported: [], skipped: [], failed: [] });
@@ -106,26 +125,50 @@ describe("parseLegacyContext", () => {
         documents: [
           { id: "doc-0000000000", kind: "slides", source: "deck.pptx", content: "a" },
           { kind: "email", source: "", content: "no source" },
-          { kind: "email", source: "m.eml", content: 42 },
+          { kind: "email", source: "m.eml", content: 42, metadata: ["x"] },
           { kind: "email", title: "Second", source: "m.eml", content: "kept", addedAt: "2026-03-01T10:00:00.000Z" },
         ],
       },
       "renewal",
     );
-    expect(context.name).toBe("renewal");
-    expect(Date.parse(context.createdAt)).not.toBeNaN();
-    expect(context.updatedAt).toBe(context.createdAt);
-    expect(context.documents).toEqual([
-      { kind: "other", title: "deck.pptx", source: "deck.pptx", content: "a", metadata: {}, masked: false, addedAt: context.createdAt },
-      { kind: "email", title: "Second", source: "m.eml", content: "kept", metadata: {}, masked: false, addedAt: "2026-03-01T10:00:00.000Z" },
-    ]);
+    const first = "2026-03-01T10:00:00.000Z";
+    expect(context).toEqual({
+      name: "renewal",
+      // Missing or broken context dates come from the documents.
+      createdAt: first,
+      updatedAt: first,
+      documents: [
+        { kind: "other", title: "deck.pptx", source: "deck.pptx", content: "a", metadata: {}, masked: false, addedAt: first },
+        { kind: "email", title: "Second", source: "m.eml", content: "kept", metadata: {}, masked: false, addedAt: first },
+      ],
+    });
     expect(warnings).toEqual([
       'The file says the context is "other-name"; imported as "renewal" after its file name.',
       'Document 1 (deck.pptx) has the unknown kind "slides"; imported as "other".',
       `Document 1 (deck.pptx) had the id doc-0000000000; its id is now ${documentId("deck.pptx")}.`,
+      "Document 1 (deck.pptx) has no title; the source is used as its title.",
+      "Document 1 (deck.pptx) has no date.",
       "Document 2 has no source and was left out.",
+      "Document 3 (m.eml) has no title; the source is used as its title.",
       "Document 3 (m.eml) has no text content.",
+      "Document 3 (m.eml) has metadata that is not an object; it was left out.",
+      "Document 3 (m.eml) has no date.",
+      'The context (createdAt) has the invalid date "yesterday".',
+      "The context (updatedAt) has no date.",
       "1 duplicate document(s) from the same source; kept the last one.",
+    ]);
+  });
+
+  it("stores every date as ISO 8601 in UTC and keeps empty titles", () => {
+    const { context, warnings } = parseLegacyContext(
+      { name: "c", createdAt: "March 5, 2026 UTC", updatedAt: "2026-03-06T00:00:00.000Z", documents: [{ kind: "email", title: "", source: "m.eml", content: "", addedAt: "2026-03-05T09:00:00Z" }] },
+      "c",
+    );
+    expect(context.createdAt).toBe("2026-03-05T00:00:00.000Z");
+    expect(context.documents[0]).toMatchObject({ title: "", addedAt: "2026-03-05T09:00:00.000Z" });
+    expect(warnings).toEqual([
+      'Document 1 (m.eml) has the date "2026-03-05T09:00:00Z", stored as 2026-03-05T09:00:00.000Z.',
+      'The context (createdAt) has the date "March 5, 2026 UTC", stored as 2026-03-05T00:00:00.000Z.',
     ]);
   });
 });

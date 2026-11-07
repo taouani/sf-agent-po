@@ -134,7 +134,7 @@ export class ContextRepository {
   }
 
   documents(name: string): SourceDocument[] {
-    const rows = this.db.prepare("SELECT * FROM document WHERE context = ? ORDER BY added_at, id").all(name) as unknown as DocumentRow[];
+    const rows = this.db.prepare("SELECT * FROM document WHERE context = ? ORDER BY seq, id").all(name) as unknown as DocumentRow[];
     return rows.map(toDocument);
   }
 
@@ -206,22 +206,23 @@ export class ContextRepository {
   }
 
   /**
-   * Inserts or replaces a document. Replacing keeps the original `added_at`
-   * and position (0.x moved a re-added document to the end and reset its
-   * date; no caller relied on that).
+   * Inserts or replaces a document. A new document goes to the end of the
+   * context (`seq`). Replacing keeps the original `added_at` and position
+   * (0.x moved a re-added document to the end and reset its date; no caller
+   * relied on that).
    */
   private put(name: string, d: NewDocument, now: string, addedAt?: string): void {
     const id = documentId(d.source);
     const { changes } = this.db
       .prepare(
-        `INSERT INTO document (context, id, kind, title, source, content, metadata, masked, added_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO document (context, id, kind, title, source, content, metadata, masked, added_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM document WHERE context = ?))
          ON CONFLICT (context, id) DO UPDATE SET
            kind = excluded.kind, title = excluded.title, content = excluded.content,
            metadata = excluded.metadata, masked = excluded.masked, updated_at = excluded.updated_at
          WHERE document.source = excluded.source`,
       )
-      .run(name, id, d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now);
+      .run(name, id, d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now, name);
     if (changes === 0) {
       // Two different sources hashed to the same id: never let one overwrite the other.
       throw new Error(`Document id ${id} is already used by another source in context "${name}".`);
