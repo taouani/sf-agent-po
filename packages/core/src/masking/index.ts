@@ -5,4 +5,33 @@ export { MASKED_TYPES, mergeSpans, normaliseType, replaceSpans, type MaskedType,
 export { alignTokens, decodeSpans, labelType, type DecodeStats } from "./model/decode.js";
 export { DEFAULT_MODEL, defaultModelDir, modelFile, type DownloadOptions, type Fetch, type ModelFile, type ModelManifest } from "./model/files.js";
 export { detectorFor, loadDetectionModel, splitText, VENDORED_RUNTIME, type DetectionModel, type ModelOptions, type ModelRunner } from "./model/ner.js";
-export { NEVER_UNMASKED, newVaultKey, pseudonymLabel, pseudonymType, Vault, VAULT_KEY_BYTES, VaultKeyError } from "./vault.js";
+export { NEVER_UNMASKED, newVaultKey, pseudonymLabel, pseudonymType, Vault, VAULT_KEY_BYTES, vaultKeyCheck, VaultKeyError } from "./vault.js";
+export {
+  configDir,
+  defaultKeysDir,
+  KeychainTimeout,
+  SECURITY,
+  secretToolPath,
+  windowsPowerShell,
+  type SaveOptions,
+  exportVaultKey,
+  importVaultKey,
+  KEYCHAIN_SERVICE,
+  KeychainUnavailable,
+  keyFile,
+  macosKeychain,
+  openVault,
+  runCommand,
+  secretService,
+  storedVaultKeyId,
+  systemKeyStore,
+  VaultKeyMissingError,
+  vaultKeyId,
+  windowsDpapi,
+  withFallback,
+  type CommandResult,
+  type KeySaved,
+  type KeyStore,
+  type OpenedVault,
+  type RunCommand,
+} from "./keychain.js";

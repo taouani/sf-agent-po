@@ -11,6 +11,15 @@ export function newVaultKey(): Buffer {
   return randomBytes(VAULT_KEY_BYTES);
 }
 
+/**
+ * The key check stored in a vault: a keyed hash that shows whether a key is the vault's
+ * without revealing it. Its start names the key in the keychain (see vaultKeyId).
+ */
+export function vaultKeyCheck(key: Buffer): Buffer {
+  const checkKey = Buffer.from(hkdfSync("sha256", key, Buffer.alloc(0), "sf-agent-po vault check", 32));
+  return createHmac("sha256", checkKey).update("sf-agent-po vault key check").digest();
+}
+
 /** The key in the keychain is not the one this workspace's vault was written with (or it was lost and replaced). */
 export class VaultKeyError extends Error {
   constructor(file: string) {
@@ -110,7 +119,7 @@ export class Vault {
       get: db.prepare("SELECT lookup, original FROM pseudonym WHERE context = ? AND type = ? AND n = ?"),
       counts: db.prepare("SELECT type, count(*) AS c FROM pseudonym WHERE context = ? GROUP BY type"),
     };
-    const check = createHmac("sha256", derive("check")).update("sf-agent-po vault key check").digest();
+    const check = vaultKeyCheck(key);
     database.write(() => {
       const row = db.prepare("SELECT key_check FROM vault WHERE id = 1").get() as { key_check: Uint8Array } | undefined;
       if (!row) {
