@@ -35,10 +35,14 @@ export interface Model {
   complete(system: string, prompt: string): Promise<string>;
 }
 
+const OPENROUTER_URL = "https://openrouter.ai/api/v1";
+
 export const PROVIDERS = {
   anthropic: { env: "ANTHROPIC_API_KEY" },
   openai: { env: "OPENAI_API_KEY" },
   xai: { env: "XAI_API_KEY", baseURL: "https://api.x.ai/v1" },
+  /** One key for many vendors' models, named as OpenRouter lists them: "openrouter:anthropic/claude-opus-5.5". */
+  openrouter: { env: "OPENROUTER_API_KEY", baseURL: OPENROUTER_URL },
 } as const;
 
 export type Provider = keyof typeof PROVIDERS;
@@ -58,7 +62,33 @@ export function createModel(spec: string, env: NodeJS.ProcessEnv = process.env, 
   const apiKey = env[p.env];
   if (!apiKey) throw new Error(`${spec} needs the ${p.env} environment variable.`);
   if (provider === "anthropic") return new AnthropicModel(spec, model, new Anthropic({ apiKey, fetch: fetchImpl }));
-  return new OpenAICompatibleModel(spec, model, new OpenAI({ apiKey, baseURL: "baseURL" in p ? p.baseURL : undefined, fetch: fetchImpl }));
+  return new OpenAICompatibleModel(
+    spec,
+    model,
+    new OpenAI({ apiKey, baseURL: "baseURL" in p ? p.baseURL : undefined, fetch: fetchImpl }),
+    // OpenRouter passes max_tokens on to every vendor; max_completion_tokens is OpenAI's own name.
+    provider === "openrouter" ? "max_tokens" : "max_completion_tokens",
+  );
+}
+
+/**
+ * Checks that every OpenRouter model asked for is one OpenRouter lists (its list needs no key),
+ * so that a misspelt id fails at once, with the ids of the same vendor to choose from.
+ */
+export async function checkOpenRouterModels(specs: readonly string[], fetchImpl: typeof fetch = fetch): Promise<void> {
+  const wanted = specs.filter((s) => s.startsWith("openrouter:")).map((s) => s.slice("openrouter:".length));
+  if (!wanted.length) return;
+  const response = await fetchImpl(`${OPENROUTER_URL}/models`);
+  if (!response.ok) throw new Error(`OpenRouter's model list could not be read (HTTP ${response.status}).`);
+  const listed = ((await response.json()) as { data?: { id?: unknown }[] }).data?.flatMap((m) => (typeof m.id === "string" ? [m.id] : [])) ?? [];
+  const unknown = wanted.filter((w) => !listed.includes(w));
+  if (!unknown.length) return;
+  const lines = unknown.map((u) => {
+    const vendor = u.split("/")[0]!;
+    const near = listed.filter((id) => id.startsWith(`${vendor}/`)).sort().reverse().slice(0, 15);
+    return `"${u}" is not a model OpenRouter lists.${near.length ? ` Its ${vendor} models include: ${near.join(", ")}.` : ""}`;
+  });
+  throw new Error(lines.join("\n"));
 }
 
 export class AnthropicModel implements Model {
@@ -115,7 +145,12 @@ export class OpenAICompatibleModel implements Model {
     readonly id: string,
     private readonly model: string,
     private readonly client: OpenAI,
+    private readonly maxTokensParam: "max_tokens" | "max_completion_tokens" = "max_completion_tokens",
   ) {}
+
+  private get limit() {
+    return { [this.maxTokensParam]: MAX_TOKENS } as { max_completion_tokens: number };
+  }
 
   async runAgent(prompt: string, specs: ToolSpec[], callTool: CallTool, opts: { maxTurns?: number } = {}): Promise<AgentRun> {
     const tools: OpenAI.Chat.ChatCompletionTool[] = specs.map((t) => ({
@@ -126,7 +161,7 @@ export class OpenAICompatibleModel implements Model {
     const run: AgentRun = { finalText: "", toolCalls: [], turns: 0, inputTokens: 0, outputTokens: 0, stop: "max_turns" };
     while (run.turns < (opts.maxTurns ?? DEFAULT_MAX_TURNS)) {
       run.turns++;
-      const response = await this.client.chat.completions.create({ model: this.model, max_completion_tokens: MAX_TOKENS, tools, messages });
+      const response = await this.client.chat.completions.create({ model: this.model, ...this.limit, tools, messages });
       run.inputTokens += response.usage?.prompt_tokens ?? 0;
       run.outputTokens += response.usage?.completion_tokens ?? 0;
       const choice = response.choices[0];
@@ -163,7 +198,7 @@ export class OpenAICompatibleModel implements Model {
   async complete(system: string, prompt: string): Promise<string> {
     const response = await this.client.chat.completions.create({
       model: this.model,
-      max_completion_tokens: MAX_TOKENS,
+      ...this.limit,
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },

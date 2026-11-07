@@ -1,4 +1,4 @@
-export { AnthropicModel, OpenAICompatibleModel, PROVIDERS, createModel, type AgentRun, type CallTool, type Model, type Provider, type ToolSpec } from "./models.js";
+export { AnthropicModel, OpenAICompatibleModel, PROVIDERS, checkOpenRouterModels, createModel, type AgentRun, type CallTool, type Model, type Provider, type ToolSpec } from "./models.js";
 export { TARGET_SCORE, reportMarkdown } from "./report.js";
 export {
   allowedTool,

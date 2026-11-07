@@ -22,9 +22,13 @@ It calls paid APIs. Build first (the default server is today's `dist/index.js`):
 
 ```bash
 npm run build
-export ANTHROPIC_API_KEY=...   # and/or OPENAI_API_KEY, XAI_API_KEY
+export ANTHROPIC_API_KEY=...   # and/or OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY
 node packages/eval/dist/cli.js --models anthropic:claude-opus-5-5,openai:<model>,xai:<model>
 ```
+
+With one OpenRouter key, name models as OpenRouter lists them:
+`--models openrouter:anthropic/<model>,openrouter:openai/<model>,openrouter:x-ai/<model>`. An id
+OpenRouter does not list stops the run at once, with that vendor's ids to choose from.
 
 Options: `--judge` (default: the first model), `--scenarios` (ids, default: all), `--server`
 (a command that starts another MCP server, for example v1; split on spaces, or a JSON array
@@ -41,7 +45,7 @@ saves with its own save tool is judged. A task or judging failure scores that ta
 listed in the report.
 
 On GitHub, the **Eval** workflow does the same by hand (Actions, Eval, Run workflow), using the
-repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY`. The report appears
+repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `OPENROUTER_API_KEY`. The report appears
 in the run's summary.
 
 ## Scenarios

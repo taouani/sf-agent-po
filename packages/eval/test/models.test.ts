@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createModel, type CallTool, type ToolSpec } from "../src/index.js";
+import { checkOpenRouterModels, createModel, type CallTool, type ToolSpec } from "../src/index.js";
 
 const tools: ToolSpec[] = [
   { name: "design_save", description: "Saves a design.", inputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } },
@@ -117,4 +117,37 @@ describe("OpenAI-compatible agent loop", () => {
     expect(toolMessages.map((m: any) => m.tool_call_id)).toEqual(["c1", "c2"]);
     expect(toolMessages[1].content).toMatch(/Invalid JSON/);
   });
+
+  it("reaches OpenRouter with max_tokens, which it passes on to every vendor", async () => {
+    const urls: string[] = [];
+    const bodies: any[] = [];
+    const fakeFetch = (async (url: string, init: RequestInit) => {
+      urls.push(String(url));
+      bodies.push(JSON.parse(init.body as string));
+      return completion({ content: "Fine." }, "stop");
+    }) as typeof fetch;
+    const model = createModel("openrouter:anthropic/claude-opus-5.5", { OPENROUTER_API_KEY: "k" }, fakeFetch);
+    expect(await model.complete("Judge.", "Score this.")).toBe("Fine.");
+    expect(urls[0]).toMatch(/^https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
+    expect(bodies[0]).toMatchObject({ model: "anthropic/claude-opus-5.5", max_tokens: 32_000 });
+    expect(bodies[0].max_completion_tokens).toBeUndefined();
+    expect(() => createModel("openrouter:x-ai/grok", {})).toThrow(/OPENROUTER_API_KEY/);
+  });
 });
+
+describe("checkOpenRouterModels", () => {
+  const list = (async () => new Response(JSON.stringify({ data: [{ id: "anthropic/claude-opus-5.5" }, { id: "anthropic/claude-sonnet-5.5" }, { id: "x-ai/grok-5" }] }))) as unknown as typeof fetch;
+
+  it("accepts listed ids and names the vendor's models for an unknown one", async () => {
+    await expect(checkOpenRouterModels(["anthropic:claude-opus-5-5"], async () => fail())).resolves.toBeUndefined();
+    await expect(checkOpenRouterModels(["openrouter:anthropic/claude-opus-5.5", "openrouter:x-ai/grok-5"], list)).resolves.toBeUndefined();
+    await expect(checkOpenRouterModels(["openrouter:anthropic/claude-opus-5-5"], list)).rejects.toThrow(
+      /"anthropic\/claude-opus-5-5" is not a model OpenRouter lists\. Its anthropic models include: anthropic\/claude-sonnet-5\.5, anthropic\/claude-opus-5\.5/,
+    );
+  });
+});
+
+function fail(): never {
+  throw new Error("fetched");
+}
+
