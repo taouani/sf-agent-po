@@ -174,13 +174,13 @@ export class ContextRepository {
 
   /**
    * Replaces `expected` with `doc` only if it is still as it was read, for slow work
-   * (masking) done outside a transaction. Returns false when the document changed or was
-   * removed meanwhile.
+   * (masking) done outside a transaction. `doc` may have another source (a masked one): it
+   * then takes the old document's place, date and position. Returns false when the
+   * document changed or was removed meanwhile.
    */
   replaceIfUnchanged(name: string, expected: SourceDocument, doc: NewDocument): boolean {
-    if (doc.source !== expected.source) throw new Error("replaceIfUnchanged cannot change a document's source.");
     return this.database.write(() => {
-      const current = this.getDocument(name, documentId(doc.source));
+      const current = this.getDocument(name, expected.id);
       const same =
         current &&
         current.source === expected.source &&
@@ -191,7 +191,12 @@ export class ContextRepository {
         JSON.stringify(current.metadata) === JSON.stringify(expected.metadata);
       if (!same) return false;
       const now = new Date().toISOString();
-      this.put(name, doc, now);
+      if (doc.source !== expected.source) {
+        const { seq } = this.db.prepare("SELECT seq FROM document WHERE context = ? AND id = ?").get(name, expected.id) as { seq: number };
+        this.db.prepare("DELETE FROM document WHERE context = ? AND id = ?").run(name, expected.id);
+        this.put(name, doc, now, expected.addedAt);
+        this.db.prepare("UPDATE document SET seq = ? WHERE context = ? AND id = ?").run(seq, name, documentId(doc.source));
+      } else this.put(name, doc, now);
       this.touch(name, now);
       return true;
     });

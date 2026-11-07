@@ -1,4 +1,4 @@
-import { detectWithDictionary, type DictionaryEntry } from "./dictionary.js";
+import { detectWithDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
 import { detectWithRules } from "./rules.js";
 import { mergeSpans, normaliseType, type Span } from "./spans.js";
 
@@ -20,6 +20,8 @@ export type EntityDetector = (text: string) => Promise<Span[]>;
 export interface DetectOptions {
   /** Values the context already knows, for example the org's users. */
   dictionary?: readonly DictionaryEntry[];
+  /** Known values already compiled (see compileDictionary), for long lists used again and again. */
+  compiled?: readonly CompiledDictionary[];
   /** The detection model, when it is available. */
   model?: EntityDetector;
   /** Terms the model must never mask; defaults to DOMAIN_ALLOWLIST. */
@@ -59,6 +61,11 @@ function checkModelSpan(s: Span, length: number): Span | undefined {
 /** Everything to mask in `text`: rules, then the dictionary, then the model if given; merged. */
 export async function detect(text: string, opts: DetectOptions = {}): Promise<Span[]> {
   const fromModel = opts.model ? (await opts.model(text)).flatMap((s) => checkModelSpan(s, text.length) ?? []) : [];
-  const found = [...detectWithRules(text), ...detectWithDictionary(text, opts.dictionary ?? []), ...fromModel];
+  const found = [
+    ...detectWithRules(text),
+    ...detectWithDictionary(text, opts.dictionary ?? []),
+    ...(opts.compiled ?? []).flatMap((d) => d.find(text)),
+    ...fromModel,
+  ];
   return mergeSpans(applyPolicy(text, found, opts.allowlist));
 }

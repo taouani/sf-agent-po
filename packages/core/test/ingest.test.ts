@@ -48,23 +48,32 @@ describe("masking inputs", () => {
     expect((await masker.mask("acme", "Build a Flow.")).text).toBe("Build a Flow.");
   });
 
-  it("masks a document's title, content and metadata, but not its source", async () => {
+  it("masks a document's title, content, metadata and source", async () => {
     const { masker } = setup(fakeModel(["Sarah Whitfield"]));
     const doc = await masker.maskDocument("acme", {
       kind: "meeting-notes",
       title: "Call with Sarah Whitfield",
       source: "notes/2026-11-07.md",
       content: "Sarah Whitfield wants the VIP flag. Mail: sarah@example.com",
-      metadata: { attendees: ["Sarah Whitfield", { email: "sarah@example.com" }], status: "Sarah Whitfield", count: 3 },
+      metadata: {
+        attendees: ["Sarah Whitfield", { email: "sarah@example.com" }],
+        status: { assignee: "Sarah Whitfield" },
+        "sarah@example.com": "owner",
+        card: 4111111111111111,
+        count: 3,
+      },
     });
     expect(doc.title).toBe("Call with [PERSON_1]");
     expect(doc.content).toBe("[PERSON_1] wants the VIP flag. Mail: [EMAIL_1]");
-    expect(doc.source).toBe("notes/2026-11-07.md");
+    expect(doc.source).toBe("[SOURCE_1]");
+    expect(masker.realSource("acme", doc.source)).toBe("notes/2026-11-07.md");
     expect(doc.metadata).toEqual({
       attendees: ["[PERSON_1]", { email: "[EMAIL_1]" }],
-      status: "Sarah Whitfield", // a field name kept as written
+      status: { assignee: "[PERSON_1]" },
+      "[EMAIL_1]": "owner",
+      card: "[CARD_1]",
       count: 3,
-      masking: { counts: { PERSON: 3, EMAIL: 2 }, model: true },
+      masking: { counts: { PERSON: 4, EMAIL: 3, CARD: 1 }, model: true },
     });
     expect(doc.masked).toBe(true);
     await expect(masker.maskDocument("acme", { ...doc })).rejects.toThrow(/already masked/);
@@ -87,9 +96,9 @@ describe("masking inputs", () => {
     ]);
     const first = await masker.maskContext(contexts, "acme");
     expect(first).toMatchObject({ masked: 2, changed: 0, report: { counts: { PERSON: 1 } } });
-    expect(contexts.documents("acme").map((d) => [d.content, d.masked])).toEqual([
-      ["Reporter: [PERSON_1]", true],
-      ["Nothing personal", true],
+    expect(contexts.documents("acme").map((d) => [d.source, d.content, d.masked])).toEqual([
+      ["[SOURCE_1]", "Reporter: [PERSON_1]", true],
+      ["[SOURCE_2]", "Nothing personal", true],
     ]);
     expect((await masker.maskContext(contexts, "acme")).masked).toBe(0);
   });
@@ -107,7 +116,7 @@ describe("masking inputs", () => {
     };
     const masker = new Masker({ vault, model: editing });
     expect(await masker.maskContext(contexts, "acme")).toMatchObject({ masked: 0, changed: 1 });
-    expect(contexts.documents("acme")[0]).toMatchObject({ content: "Reporter: Tom Baker, edited", masked: false });
+    expect(contexts.documents("acme")[0]).toMatchObject({ source: "ACME-1", content: "Reporter: Tom Baker, edited", masked: false });
     expect(await masker.maskContext(contexts, "acme")).toMatchObject({ masked: 1, changed: 0 });
   });
 
@@ -120,6 +129,60 @@ describe("masking inputs", () => {
   });
 });
 
+describe("known values", () => {
+  it("replaces a re-added source's document, under the same pseudonym", async () => {
+    const { contexts, masker } = setup();
+    const doc = { kind: "email" as const, title: "Re: VIP", source: "/mail/Sarah Whitfield.eml", content: "v1" };
+    await masker.addDocuments(contexts, "acme", [doc]);
+    await masker.addDocuments(contexts, "acme", [{ ...doc, content: "v2" }]);
+    expect(contexts.documents("acme").map((d) => [d.source, d.content])).toEqual([["[SOURCE_1]", "v2"]]);
+  });
+
+  it("does not look for secrets, sources or short values in later documents", async () => {
+    const { masker } = setup();
+    masker.remember("acme", [
+      { value: "1234", type: "SECRET" },
+      { value: "Hunter2!x", type: "SECRET" },
+      { value: "Al", type: "PERSON" },
+      { value: "4242", type: "PHONE" },
+    ]);
+    masker.maskSource("acme", "Release");
+    const text = "Fix ACME-1234 and order 4242 for Al before the Release; Hunter2!x is in the doc.";
+    expect((await masker.mask("acme", text)).text).toBe(text);
+  });
+
+  it("matches a one-word name learned from the model in its own case only", async () => {
+    const { vault } = setup();
+    await new Masker({ vault, model: fakeModel(["Grace"]) }).mask("acme", "Grace approved it.");
+    const without = new Masker({ vault });
+    expect((await without.mask("acme", "Grace said the grace period is 30 days.")).text).toBe("[PERSON_1] said the grace period is 30 days.");
+  });
+
+  it("notices a context that was deleted and filled again", async () => {
+    const { db, masker } = setup();
+    masker.remember("acme", [{ value: "Karim Benali", type: "PERSON" }]);
+    expect((await masker.mask("acme", "Karim Benali")).text).toBe("[PERSON_1]");
+    db.db.exec("DELETE FROM context WHERE name = 'acme'");
+    masker.remember("acme", [{ value: "Tom Baker", type: "PERSON" }]);
+    expect((await masker.mask("acme", "Karim Benali and Tom Baker")).text).toBe("Karim Benali and [PERSON_1]");
+  });
+
+  it("stays fast with many known values", async () => {
+    const { masker } = setup();
+    masker.remember("acme", Array.from({ length: 2000 }, (_, i) => ({ value: `Person${i} Surname${i}`, type: "PERSON" })));
+    const started = performance.now();
+    const doc = await masker.maskDocument("acme", {
+      kind: "other",
+      title: "Big",
+      source: "big",
+      content: "Person1999 Surname1999 met Person7 Surname7. ".repeat(4000),
+      metadata: { emails: Array.from({ length: 300 }, (_, i) => `user${i}@example.com`) },
+    });
+    expect(doc.content.startsWith("[PERSON_2000] met [PERSON_8].")).toBe(true);
+    expect(performance.now() - started).toBeLessThan(8000);
+  });
+});
+
 describe("unmasking on publish", () => {
   it("puts real values back, keeps secrets and lists what stays masked", async () => {
     const { masker } = setup(fakeModel(["Sarah Whitfield"]));
@@ -129,6 +192,7 @@ describe("unmasking on publish", () => {
     const out = masker.unmask("acme", story);
     expect(out.text).toBe("As Sarah Whitfield, I want my VIP flag. Login secret stays [SECRET_1]. See [PERSON_7].");
     expect(out.kept).toEqual(["[SECRET_1]", "[PERSON_7]"]);
-    expect(masker.unmask("acme", "[LITERAL_1]").text).toBe("[PERSON_1]");
+    // A literal written in a source comes back as text, not as a pseudonym left masked.
+    expect(masker.unmask("acme", "[LITERAL_1]")).toEqual({ text: "[PERSON_1]", kept: [] });
   });
 });

@@ -74,4 +74,13 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 4,
+    name: "vault generation",
+    sql: `
+      -- A random id the vault gives a context the first time it looks, so a context that is
+      -- deleted and created again (a new row) is never taken for the old one.
+      ALTER TABLE context ADD COLUMN vault_generation TEXT;
+    `,
+  },
 ];
