@@ -5,7 +5,7 @@ import path from "node:path";
 import type { IndexTarget } from "@sf-agent-po/connectors";
 import type { SnapshotInfo } from "@sf-agent-po/core";
 
-export const INDEX_USAGE = `Usage: sf-agent-po-next index (--org <alias or username> | --project <folder>) [--workspace <folder>] [--force]
+export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder>) [--workspace <folder>] [--force]
 
 Reads a Salesforce project folder (source or metadata format), or retrieves an org's
 metadata with your Salesforce CLI (sf, logged in with sf org login), into the

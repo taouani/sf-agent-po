@@ -1,6 +1,6 @@
 {
   "name": "@sf-agent-po/mcp",
-  "version": "1.0.0-next.0",
+  "version": "1.0.0-next.1",
   "private": true,
   "description": "sf-agent-po v1 MCP server: the tools, prompts, approval page and host files users install",
   "license": "MIT",

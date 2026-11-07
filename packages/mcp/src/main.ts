@@ -106,6 +106,6 @@ if (command === "init") await init(process.argv.slice(3));
 else if (command === "index") await index(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run sf-agent-po-next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}`);
+  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}`);
   process.exitCode = 1;
 } else await main();

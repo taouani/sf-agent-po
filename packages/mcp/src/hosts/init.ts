@@ -2,7 +2,7 @@ import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HOSTS, type Host, hostFiles } from "./files.js";
 
-export const USAGE = `Usage: sf-agent-po-next init [--host claude-code|cursor|copilot|all] [--dir <project folder>] [--force] [--dry-run]
+export const USAGE = `Usage: npx sf-agent-po@next init [--host claude-code|cursor|copilot|all] [--dir <project folder>] [--force] [--dry-run]
 
 Writes Salesforce Solution Architect and Product Owner agent files for your
 AI coding tool into a project. The files use the sf-agent-po MCP server, which
