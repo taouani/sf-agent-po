@@ -9,7 +9,7 @@ export {
 } from "./atlassian.js";
 export { markdownToStorage } from "./confluence-storage.js";
 export { run, type ExecResult } from "./exec.js";
-export { htmlToText, loadLocalDocuments, MAX_FILE_BYTES, parseDocument, parseEmail, READABLE_EXTENSIONS, textDocument } from "./files.js";
+export { decodeText, htmlToText, loadLocalDocuments, MAX_FILE_BYTES, parseDocument, parseEmail, READABLE_EXTENSIONS, textDocument, type LoadError } from "./files.js";
 export * from "./readers/index.js";
 export {
   METADATA_PROVIDERS,

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import PostalMime, { type Address } from "postal-mime";
 import type { DocumentKind, NewDocument } from "@sf-agent-po/core";
+export { htmlToText } from "./html.js";
+import { htmlToText } from "./html.js";
 import { readCsv } from "./readers/csv.js";
 import { readDrawio } from "./readers/drawio.js";
 import { readDocx, readPptx, readXlsx, type ReadResult } from "./readers/office.js";
@@ -19,11 +21,26 @@ const READERS: Record<string, (raw: Buffer) => ReadResult | Promise<ReadResult>>
   ".pptm": readPptx,
   ".xlsx": readXlsx,
   ".xlsm": readXlsx,
-  ".csv": (raw) => readCsv(raw.toString("utf8")),
-  ".tsv": (raw) => readCsv(raw.toString("utf8"), "\t"),
+  ".csv": (raw) => readCsv(decodeText(raw)),
+  ".tsv": (raw) => readCsv(decodeText(raw), "\t"),
   ".drawio": (raw) => readDrawio(raw.toString("utf8")),
   ".dio": (raw) => readDrawio(raw.toString("utf8")),
 };
+
+/**
+ * Text whose encoding is not declared, such as a CSV export: a byte order mark decides, else
+ * UTF-8 if the bytes are valid UTF-8, else Windows-1252 (what Excel writes on Windows).
+ */
+export function decodeText(raw: Uint8Array): string {
+  if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) return new TextDecoder("utf-8").decode(raw.subarray(3));
+  if (raw[0] === 0xff && raw[1] === 0xfe) return new TextDecoder("utf-16le").decode(raw.subarray(2));
+  if (raw[0] === 0xfe && raw[1] === 0xff) return new TextDecoder("utf-16be").decode(raw.subarray(2));
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    return new TextDecoder("windows-1252").decode(raw);
+  }
+}
 
 /** Files larger than this are not read. */
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -36,21 +53,36 @@ const extensionOf = (file: string) => {
   return lower.endsWith(".drawio.xml") ? ".drawio" : path.extname(lower);
 };
 
+/** A file of a folder that could not be read. */
+export interface LoadError {
+  file: string;
+  message: string;
+}
+
 /**
  * Loads meeting notes, emails, PI planning exports and other local files.
  * A directory is loaded recursively. When `kind` is omitted it is inferred
  * from the file (an .eml file is an email, everything else is "other").
+ * A file that cannot be read stops the load, unless `errors` is given: then
+ * the other files of a folder are still loaded and each failure is added to
+ * `errors`. A single file always throws.
  */
-export async function loadLocalDocuments(target: string, kind?: DocumentKind): Promise<NewDocument[]> {
+export async function loadLocalDocuments(target: string, kind?: DocumentKind, opts: { errors?: LoadError[] } = {}): Promise<NewDocument[]> {
   const info = await stat(target);
-  const files = info.isDirectory() ? await listFiles(target) : [target];
+  const folder = info.isDirectory();
+  const files = folder ? await listFiles(target) : [target];
   const docs: NewDocument[] = [];
   for (const file of files) {
     const ext = extensionOf(file);
     if (!TEXT_EXTENSIONS.has(ext) && !READERS[ext]) continue;
-    const size = (await stat(file)).size;
-    if (size > MAX_FILE_BYTES) throw new Error(`${file} is ${Math.round(size / 2 ** 20)} MB; files over ${MAX_FILE_BYTES / 2 ** 20} MB are not read.`);
-    docs.push(await parseDocument(file, await readFile(file), kind));
+    try {
+      const size = (await stat(file)).size;
+      if (size > MAX_FILE_BYTES) throw new Error(`${path.basename(file)} is ${Math.round(size / 2 ** 20)} MB; files over ${MAX_FILE_BYTES / 2 ** 20} MB are not read.`);
+      docs.push(await parseDocument(file, await readFile(file), kind));
+    } catch (err) {
+      if (!folder || !opts.errors) throw err;
+      opts.errors.push({ file, message: (err as Error).message });
+    }
   }
   return docs;
 }
@@ -129,28 +161,6 @@ function formatAddresses(list: Address[] | undefined): string | undefined {
   if (!list?.length) return undefined;
   const mailboxes = list.flatMap((a) => (a.group ? a.group : [a]));
   return mailboxes.map((m) => (m.name ? `${m.name} <${m.address}>` : m.address)).join(", ");
-}
-
-export function htmlToText(html: string): string {
-  return (
-    html
-      // Confluence code macros wrap their body in CDATA; keep it verbatim.
-      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, code: string) => `\n${code}\n`.replace(/</g, "&lt;").replace(/>/g, "&gt;"))
-      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
-      .replace(/<li[^>]*>/gi, "- ")
-      .replace(/<[^>]+>/g, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      // Decode &amp; last so "&amp;lt;" becomes "&lt;", not "<".
-      .replace(/&amp;/g, "&")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
 }
 
 function firstHeading(content: string): string | undefined {

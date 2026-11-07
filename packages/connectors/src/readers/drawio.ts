@@ -1,7 +1,7 @@
 // draw.io (diagrams.net) files as text: each page's shapes and the connections between them.
 
 import { inflateRawSync } from "node:zlib";
-import { htmlToText } from "../files.js";
+import { htmlToText } from "../html.js";
 import type { ReadResult } from "./office.js";
 import { attr, find, findAll, local, parseXml, textOf, type XmlNode } from "./xml.js";
 
@@ -14,11 +14,27 @@ function graphOf(diagram: XmlNode): XmlNode[] {
   if (inline) return [inline];
   const packed = textOf(diagram).trim();
   if (!packed) return [];
-  const xml = decodeURIComponent(inflateRawSync(Buffer.from(packed, "base64"), { maxOutputLength: MAX_DIAGRAM }).toString("utf8"));
+  const inflated = inflateRawSync(Buffer.from(packed, "base64"), { maxOutputLength: MAX_DIAGRAM }).toString("utf8");
+  // Older files hold the XML URI-encoded; some tools write it as is.
+  let xml = inflated;
+  try {
+    xml = decodeURIComponent(inflated);
+  } catch {
+    // Not URI-encoded: a "%" in a label is not an escape.
+  }
   return parseXml(xml);
 }
 
-const label = (raw: string | undefined) => (raw ? htmlToText(raw).replace(/\s+/g, " ").trim() : "");
+/** A cell's label as text: HTML only when its style says so (html=1); otherwise the label is plain text. */
+const label = (raw: string | undefined, style?: string) => {
+  if (!raw) return "";
+  const text = /(?:^|;)html=1(?:;|$)/.test(style ?? "") ? htmlToText(raw) : raw;
+  return text.replace(/\s+/g, " ").trim();
+};
+
+/** A wrapped cell's label with its %name% placeholders filled from the wrapper's properties. */
+const fillPlaceholders = (raw: string | undefined, wrapper: XmlNode) =>
+  attr(wrapper, "placeholders") === "1" && raw ? raw.replace(/%(\w+)%/g, (m, name: string) => wrapper.attrs[name] ?? m) : raw;
 
 export function readDrawio(text: string): ReadResult {
   const doc = parseXml(text);
@@ -34,38 +50,35 @@ export function readDrawio(text: string): ReadResult {
   for (const page of pages) {
     type Cell = { label: string; vertex: boolean; edge: boolean; source?: string; target?: string; parent?: string; props?: string };
     const cells = new Map<string, Cell>();
-    // A cell with custom properties is wrapped in <object> or <UserObject>, which holds its id and label.
-    for (const n of findAll(page.graph, "mxCell")) {
-      cells.set(attr(n, "id") ?? `cell-${cells.size}`, {
-        label: label(attr(n, "value")),
-        vertex: attr(n, "vertex") === "1",
-        edge: attr(n, "edge") === "1",
-        source: attr(n, "source"),
-        target: attr(n, "target"),
-        parent: attr(n, "parent"),
-      });
-    }
-    for (const tag of ["object", "UserObject"]) {
-      for (const o of findAll(page.graph, tag)) {
-        const cell = find(o.children, "mxCell");
-        const id = attr(o, "id");
-        if (!cell || !id) continue;
-        // Custom properties (an owner, a status) are part of what the diagram says.
-        const props = Object.entries(o.attrs)
-          .filter(([k, v]) => !["id", "label", "placeholders", "tooltip", "link"].includes(k) && v.trim())
-          .map(([k, v]) => `${k}: ${label(v)}`)
-          .join(", ");
-        cells.set(id, {
-          props: props || undefined,
-          label: label(attr(o, "label")),
-          vertex: attr(cell, "vertex") === "1",
-          edge: attr(cell, "edge") === "1",
-          source: attr(cell, "source"),
-          target: attr(cell, "target"),
-          parent: attr(cell, "parent"),
-        });
+    const fromCell = (n: XmlNode, value: string | undefined, props?: string): Cell => ({
+      label: label(value, attr(n, "style")),
+      props,
+      vertex: attr(n, "vertex") === "1",
+      edge: attr(n, "edge") === "1",
+      source: attr(n, "source"),
+      target: attr(n, "target"),
+      parent: attr(n, "parent"),
+    });
+    // Cells in document order. A cell with custom properties is wrapped in <object> or
+    // <UserObject>, which holds its id and label; the mxCell inside is the same cell.
+    const visit = (nodes: readonly XmlNode[]) => {
+      for (const n of nodes) {
+        const tag = local(n.tag);
+        if (tag === "mxCell") cells.set(attr(n, "id") ?? `cell-${cells.size}`, fromCell(n, attr(n, "value")));
+        else if (tag === "object" || tag === "UserObject") {
+          const cell = find(n.children, "mxCell");
+          const id = attr(n, "id");
+          if (!cell || !id) continue;
+          // Custom properties (an owner, a status) are part of what the diagram says.
+          const props = Object.entries(n.attrs)
+            .filter(([k, v]) => !["id", "label", "placeholders", "tooltip", "link"].includes(k) && v.trim())
+            .map(([k, v]) => `${k}: ${label(v)}`)
+            .join(", ");
+          cells.set(id, fromCell(cell, fillPlaceholders(attr(n, "label"), n), props || undefined));
+        } else visit(n.children);
       }
-    }
+    };
+    visit(page.graph);
     // Edge labels are often their own small cells, children of the edge.
     const edgeLabels = new Map<string, string[]>();
     for (const c of cells.values()) {

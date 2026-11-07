@@ -3,8 +3,12 @@
 
 import { strFromU8, unzipSync } from "fflate";
 
-/** The most an Office file may hold once unpacked, in all and per part. */
-export const ZIP_LIMITS = { total: 256 * 1024 * 1024, part: 64 * 1024 * 1024, parts: 10_000 };
+/**
+ * The most an Office file may hold once unpacked. Parsed XML takes about 80 times its size in
+ * memory, so XML parts read into a tree are kept small (`xml`); parts scanned as a stream
+ * (worksheets, shared strings) may be larger (`part`).
+ */
+export const ZIP_LIMITS = { total: 128 * 1024 * 1024, part: 64 * 1024 * 1024, xml: 8 * 1024 * 1024, parts: 10_000 };
 
 export interface ZipParts {
   has(name: string): boolean;
@@ -13,7 +17,7 @@ export interface ZipParts {
 }
 
 /** Opens a zip archive, unpacking only the parts `wanted` accepts. */
-export function openZip(raw: Uint8Array, wanted: (name: string) => boolean = () => true): ZipParts {
+export function openZip(raw: Uint8Array, wanted: (name: string) => boolean = () => true, partLimit: (name: string) => number = () => ZIP_LIMITS.part): ZipParts {
   let total = 0;
   let count = 0;
   let files: Record<string, Uint8Array>;
@@ -22,7 +26,8 @@ export function openZip(raw: Uint8Array, wanted: (name: string) => boolean = () 
       filter: (f) => {
         if (++count > ZIP_LIMITS.parts) throw new Error(`it has more than ${ZIP_LIMITS.parts} parts`);
         if (!wanted(f.name)) return false;
-        if (f.originalSize > ZIP_LIMITS.part) throw new Error(`its part ${f.name} is larger than ${ZIP_LIMITS.part / 2 ** 20} MB unpacked`);
+        const limit = partLimit(f.name);
+        if (f.originalSize > limit) throw new Error(`its part ${f.name} is larger than ${limit / 2 ** 20} MB unpacked`);
         total += f.originalSize;
         if (total > ZIP_LIMITS.total) throw new Error(`it is larger than ${ZIP_LIMITS.total / 2 ** 20} MB unpacked`);
         return true;
@@ -31,8 +36,9 @@ export function openZip(raw: Uint8Array, wanted: (name: string) => boolean = () 
   } catch (err) {
     throw new Error(`This file cannot be read as an Office document: ${(err as Error).message}.`);
   }
-  // The sizes in a zip header can lie: check what was actually unpacked.
+  // A stored part can be larger than its header says (fflate cuts deflated parts to the declared size).
   const actual = Object.values(files).reduce((n, f) => n + f.length, 0);
+  for (const [name, f] of Object.entries(files)) if (f.length > partLimit(name)) throw new Error(`This file cannot be read: its part ${name} is too large.`);
   if (actual > ZIP_LIMITS.total) throw new Error(`This file cannot be read: it is larger than ${ZIP_LIMITS.total / 2 ** 20} MB unpacked.`);
   return {
     has: (name) => name in files,

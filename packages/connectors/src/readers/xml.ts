@@ -18,7 +18,8 @@ const parser = new XMLParser({
   parseTagValue: false,
   parseAttributeValue: false,
   processEntities: true,
-  htmlEntities: false,
+  // Numeric references (&#8217; &#xa;) are common in Office and draw.io files.
+  htmlEntities: true,
 });
 
 type Ordered = Record<string, unknown> & { ":@"?: Record<string, string> };
@@ -40,7 +41,9 @@ function convert(items: Ordered[]): XmlNode[] {
  * these formats never use one, and its entities could expand without limit.
  */
 export function parseXml(xml: string): XmlNode[] {
-  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error("XML with a document type declaration is not read.");
+  // CDATA and comments may mention a declaration as text; anywhere else, refuse it.
+  const markup = xml.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, "");
+  if (/<!DOCTYPE|<!ENTITY/i.test(markup)) throw new Error("XML with a document type declaration is not read.");
   return convert(parser.parse(xml) as Ordered[]);
 }
 
@@ -87,4 +90,22 @@ export function textOf(node: XmlNode): string {
 export function relId(node: XmlNode): string | undefined {
   for (const [k, v] of Object.entries(node.attrs)) if (k.includes(":") && local(k) === "id") return v;
   return undefined;
+}
+
+/** Decodes the XML entities and character references in text scanned without a parser. */
+export function decodeEntities(s: string): string {
+  if (!s.includes("&")) return s;
+  return (
+    s
+      .replace(/&#x([0-9a-f]+);|&#(\d+);/gi, (m, hex: string | undefined, dec: string | undefined) => {
+        const code = hex ? parseInt(hex, 16) : Number(dec);
+        return code <= 0x10ffff ? String.fromCodePoint(code) : m;
+      })
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      // Last, so "&amp;lt;" becomes "&lt;", not "<".
+      .replace(/&amp;/g, "&")
+  );
 }

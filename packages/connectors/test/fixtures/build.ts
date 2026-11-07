@@ -14,6 +14,33 @@ const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main
 const wp = (text: string, style?: string, list = false) =>
   `<w:p>${style || list ? `<w:pPr>${style ? `<w:pStyle w:val="${style}"/>` : ""}${list ? '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' : ""}</w:pPr>` : ""}<w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`;
 
+const MC = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+const wstyle = (id: string, name: string, inner = "") => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/>${inner}</w:style>`;
+
+/** A Word file with styles, structured rows, merged cells, moves, text boxes and footnotes. */
+export function docxFeatures(): Buffer {
+  const cell = (text: string, span = 1) => `<w:tc>${span > 1 ? `<w:tcPr><w:gridSpan w:val="${span}"/></w:tcPr>` : ""}${wp(text)}</w:tc>`;
+  const body = [
+    wp("Exigences", "Exig"),
+    wp("Not a heading", "Kop1"),
+    `<w:p><w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr><w:r><w:t>Numbering removed</w:t></w:r></w:p>`,
+    wp("Bullet from style", "Puce"),
+    `<w:p><w:r><w:t>Client&#8217;s &#x2014; </w:t></w:r><w:moveFrom><w:r><w:t>moved </w:t></w:r></w:moveFrom><w:moveTo><w:r><w:t>arrived</w:t></w:r></w:moveTo></w:p>`,
+    `<w:p><w:r><mc:AlternateContent ${MC}><mc:Choice Requires="wps"><w:drawing><w:txbxContent>${wp("Box text")}</w:txbxContent></w:drawing></mc:Choice><mc:Fallback><w:pict><w:txbxContent>${wp("Box text")}</w:txbxContent></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>`,
+    `<w:tbl><w:tr>${cell("A")}${cell("B")}${cell("C")}</w:tr><w:sdt><w:sdtContent><w:tr>${cell("Merged", 2)}${cell("Last")}</w:tr></w:sdtContent></w:sdt></w:tbl>`,
+  ].join("");
+  return zip({
+    "word/document.xml": `${XML}<w:document ${W} ${MC}><w:body>${body}</w:body></w:document>`,
+    "word/styles.xml": `${XML}<w:styles ${W}>${[
+      wstyle("Heading2", "heading 2"),
+      wstyle("Exig", "Exigence", '<w:basedOn w:val="Heading2"/>'),
+      wstyle("Kop1", "Kop 1"),
+      wstyle("Puce", "List Bullet", '<w:pPr><w:numPr><w:numId w:val="4"/></w:numPr></w:pPr>'),
+    ].join("")}</w:styles>`,
+    "word/footnotes.xml": `${XML}<w:footnotes ${W}><w:footnote w:type="separator" w:id="-1">${wp("---")}</w:footnote><w:footnote w:id="1">${wp("See the 2025 audit.")}</w:footnote></w:footnotes>`,
+  });
+}
+
 export function docx(): Buffer {
   const body = [
     wp("VIP clienteling", "Heading1"),
@@ -48,6 +75,41 @@ export function pptx(): Buffer {
     "ppt/notesSlides/notesSlide1.xml": slide(shape(["Mention the budget"], "body") + shape(["3"], "sldNum")),
     "ppt/slides/slide1.xml": slide(shape(["Goals"], "title") + shape(["Grow retention", "Know every client"]) + table, true),
     "docProps/core.xml": core("", "Tom Baker"),
+  });
+}
+
+/** A deck whose shapes are wrapped in AlternateContent, with a SmartArt diagram and a chart. */
+export function pptxGraphics(): Buffer {
+  const MCX = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"';
+  const frame = (inner: string) => `<p:graphicFrame><a:graphic><a:graphicData>${inner}</a:graphicData></a:graphic></p:graphicFrame>`;
+  const inner = [
+    shape(["Roadmap"], "title"),
+    `<mc:AlternateContent><mc:Choice Requires="p14">${shape(["New shape"])}</mc:Choice><mc:Fallback>${shape(["New shape"])}</mc:Fallback></mc:AlternateContent>`,
+    frame('<dgm:relIds r:dm="rId2" r:lo="rId3"/>'),
+    frame('<c:chart r:id="rId4"/>'),
+  ].join("");
+  const pt = (text: string, type?: string) => `<dgm:pt modelId="${text}"${type ? ` type="${type}"` : ""}><dgm:t><a:p><a:r><a:t>${text}</a:t></a:r></a:p></dgm:t></dgm:pt>`;
+  const ser = (name: string) =>
+    `<c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>${name}</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache></c:strRef></c:cat></c:ser>`;
+  return zip({
+    "ppt/presentation.xml": `${XML}<p:presentation ${A}><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+    "ppt/_rels/presentation.xml.rels": rels(rel("rId1", "slide", "slides/slide1.xml")),
+    "ppt/slides/slide1.xml": `${XML}<p:sld ${A} ${MCX}><p:cSld><p:spTree>${inner}</p:spTree></p:cSld></p:sld>`,
+    "ppt/slides/_rels/slide1.xml.rels": rels(rel("rId2", "diagramData", "../diagrams/data1.xml"), rel("rId4", "chart", "../charts/chart1.xml")),
+    "ppt/diagrams/data1.xml": `${XML}<dgm:dataModel ${A} ${MCX}><dgm:ptLst>${pt("Discover")}${pt("Build")}${pt("x", "parTrans")}</dgm:ptLst></dgm:dataModel>`,
+    "ppt/charts/chart1.xml": `${XML}<c:chartSpace ${A} ${MCX}><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea>${ser("Paris")}${ser("Lyon")}</c:plotArea></c:chart></c:chartSpace>`,
+  });
+}
+
+/** A sheet with dates, cells without a reference, escaped text and more columns than are kept. */
+export function xlsxDates(columns: number): Buffer {
+  const S = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+  const wide = Array.from({ length: columns }, (_, i) => `<c><v>${i}</v></c>`).join("");
+  return zip({
+    "xl/workbook.xml": `${XML}<workbook ${S}><sheets><sheet name="Plan" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": rels(rel("rId1", "worksheet", "worksheets/sheet1.xml")),
+    "xl/styles.xml": `${XML}<styleSheet ${S}><numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy;@"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="4"/></cellXfs></styleSheet>`,
+    "xl/worksheets/sheet1.xml": `${XML}<worksheet ${S}><sheetData><row><c t="inlineStr"><is><t>Due &amp; owner &#8217;</t></is></c><c t="inlineStr"><is><t>When</t></is></c></row><row><c><v>1</v></c><c s="1"><v>46000</v></c><c s="2"><v>46000.5</v></c><c s="3"><v>46000</v></c></row><row>${wide}</row></sheetData></worksheet>`,
   });
 }
 
@@ -88,12 +150,21 @@ export function pdf(pages: string[] = ["Hello Sarah Whitfield", "Second page"]):
 }
 
 const graph = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
-<mxCell id="a" value="&lt;b&gt;Store&lt;/b&gt; associate" vertex="1" parent="1"/>
+<mxCell id="a" value="&lt;b&gt;Store&lt;/b&gt; associate" style="rounded=1;html=1;" vertex="1" parent="1"/>
 <object id="b" label="Client book" owner="Sarah Whitfield"><mxCell vertex="1" parent="1"/></object>
 <mxCell id="e" edge="1" source="a" target="b" parent="1"/>
 <mxCell id="l" value="updates" vertex="1" parent="e"/>
 <mxCell id="f" value="notifies" edge="1" source="b" parent="1"/>
 </root></mxGraphModel>`;
+
+/** A draw.io page with plain-text labels, a wrapped edge and placeholders. */
+export function drawioFeatures(): string {
+  return `<mxfile><diagram name="Plain"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="a" value="a &lt; b &amp; &lt;i&gt;c&lt;/i&gt;" style="rounded=1;" vertex="1" parent="1"/>
+<UserObject id="b" label="%role%: %name%" placeholders="1" role="Owner" name="Tom Baker"><mxCell style="html=1;" vertex="1" parent="1"/></UserObject>
+<object id="e" label="approves" status="draft"><mxCell edge="1" source="a" target="b" parent="1"/></object>
+</root></mxGraphModel></diagram></mxfile>`;
+}
 
 /** A draw.io file with one page inline and one compressed, as draw.io saves it. */
 export function drawio(): string {
