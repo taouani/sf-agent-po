@@ -1,0 +1,27 @@
+{
+  "name": "@sf-agent-po/connectors",
+  "version": "0.0.0",
+  "private": true,
+  "description": "sf-agent-po v1 connectors: everything that talks to the outside (Atlassian, the Salesforce CLI, git hosts, local files)",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit --rootDir .. --customConditions @sf-agent-po/source"
+  },
+  "dependencies": {
+    "@sf-agent-po/core": "0.0.0",
+    "marked": "^18.1.1",
+    "postal-mime": "^4.1.4"
+  }
+}

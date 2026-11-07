@@ -43,6 +43,7 @@
     "node": ">=20"
   },
   "workspaces": [
-    "packages/*"
+    "packages/core",
+    "packages/connectors"
   ]
 }

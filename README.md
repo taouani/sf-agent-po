@@ -197,5 +197,10 @@ The new code lives in npm workspaces under `packages/`:
   Later it also holds masking, the metadata index and the workflow engine. It needs Node 24.
   `importLegacyWorkspace` copies the 0.x contexts (`.sf-agent/contexts/*.json`) into the
   database, keeping document ids and dates. It only reads the JSON files.
+- `packages/connectors`: everything that talks to the outside: the Jira and Confluence
+  client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
+
+The connectors started as copies of the 0.x modules in `src/`, which stay as they are so the
+current server keeps working. A fix to one of them belongs in both places until v1 replaces 0.x.
 
 `npm test` and `npm run typecheck` cover both the current server and the packages.
