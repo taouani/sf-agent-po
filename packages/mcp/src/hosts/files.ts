@@ -5,7 +5,7 @@ import { SA_PRINCIPLES, SA_ROLE, saDetailedDesignPrompt, saHighLevelDesignPrompt
 
 /**
  * Native agent files for each host, generated from the same text as the MCP
- * prompts so the two never drift apart. `sf-agent-po init` writes them into a
+ * prompts so the two never drift apart. `sf-agent-po-next init` writes them into a
  * project; they all rely on the sf-agent-po MCP server being configured.
  */
 export const HOSTS = ["claude-code", "cursor", "copilot"] as const;

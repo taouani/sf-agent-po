@@ -4,15 +4,16 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { atlassianConfigFromEnv, AtlassianClient } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, openVault } from "@sf-agent-po/core";
-import { ApprovalServer } from "./approval/server.js";
 import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
-import { createServer } from "./server.js";
-import { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";
 
 async function main(): Promise<void> {
+  // Loaded here, so that init, which only writes files, does not load the store.
+  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+  const { atlassianConfigFromEnv, AtlassianClient } = await import("@sf-agent-po/connectors");
+  const { ContextRepository, Database, Masker, openVault } = await import("@sf-agent-po/core");
+  const { ApprovalServer } = await import("./approval/server.js");
+  const { createServer } = await import("./server.js");
+  const { databaseFile, lazyDetector, lazyRecognizer } = await import("./startup.js");
   const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
   const workspace = path.resolve(process.env.SF_AGENT_WORKSPACE ?? path.join(process.cwd(), ".sf-agent"));
   const database = new Database(databaseFile(workspace));
