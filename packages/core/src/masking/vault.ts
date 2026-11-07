@@ -93,6 +93,11 @@ const LABEL_IN_TEXT = new RegExp(String.raw`\\?\[${CORE}\\?\]|<${CORE}>|&lt;${CO
 const LABEL_EXACT = /^\[?([A-Z][A-Z0-9_]*?)_([1-9][0-9]*)\]?$/;
 
 /** The pseudonyms written in `text`, in any form unmask accepts, as "[TYPE_n]", each once. */
+/** Where `text` holds something that looks like a pseudonym ("[PERSON_1]"), as offsets. */
+export function pseudonymLikeSpans(text: string): { start: number; end: number }[] {
+  return [...text.matchAll(LABEL_IN_TEXT)].map((m) => ({ start: m.index, end: m.index + m[0].length }));
+}
+
 export function pseudonymsIn(text: string): string[] {
   const found = new Set<string>();
   for (const m of text.matchAll(LABEL_IN_TEXT)) {

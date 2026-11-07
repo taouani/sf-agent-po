@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,6 +186,8 @@ describe("several processes writing at once", () => {
     const tsc = join(require.resolve("typescript/package.json"), "..", "bin", "tsc");
     execFileSync(process.execPath, [tsc, "-p", join(import.meta.dirname, "..", "tsconfig.json"), "--outDir", build, "--declaration", "false", "--sourceMap", "false"]);
     writeFileSync(join(build, "package.json"), '{"type":"module"}');
+    // The build imports the core's dependencies: let it find the workspace's packages.
+    symlinkSync(join(import.meta.dirname, "..", "..", "..", "node_modules"), join(dir, "node_modules"), "junction");
   }, 60_000);
 
   it("loses no writes", async () => {
