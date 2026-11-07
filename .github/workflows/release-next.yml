@@ -1,0 +1,67 @@
+name: Release next
+
+# Publishes the v1 pre-release to npm as sf-agent-po@next. It runs only when someone with
+# write access starts it from the Actions tab; nothing publishes on push or merge.
+# Needs the repository secret NPM_TOKEN (an npm granular access token that can publish
+# sf-agent-po). The version is the one in packages/mcp/package.json: bump it in a pull
+# request before each release, since npm never accepts the same version twice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Build, check and pack, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # For npm provenance: the package records which workflow run built it.
+  id-token: write
+
+concurrency:
+  group: release-next
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Only from main, so what is published went through review and CI.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - id: version
+        name: Check the version
+        run: |
+          version=$(node -p "require('./packages/mcp/package.json').version")
+          case "$version" in
+            *-next.*) ;;
+            *) echo "::error::$version is not a next pre-release (x.y.z-next.n)"; exit 1 ;;
+          esac
+          if npm view "sf-agent-po@$version" version > /dev/null 2>&1; then
+            echo "::error::sf-agent-po@$version is already on npm: bump the version in packages/mcp/package.json"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: node scripts/pack-next.mjs --smoke --smoke-server
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::The NPM_TOKEN secret is not set"; exit 1; fi
+          npm publish ".pack-next/sf-agent-po-${{ steps.version.outputs.version }}.tgz" --tag next --access public --provenance
+      - name: Summary
+        run: |
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "Dry run: sf-agent-po@${{ steps.version.outputs.version }} was built and checked, not published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published sf-agent-po@${{ steps.version.outputs.version }} with the tag next: https://www.npmjs.com/package/sf-agent-po" >> "$GITHUB_STEP_SUMMARY"
+          fi

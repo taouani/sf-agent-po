@@ -274,7 +274,10 @@ The new code lives in npm workspaces under `packages/`:
   agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. `node scripts/pack-next.mjs --smoke` builds the
   installable pre-release, one `sf-agent-po` package with core, connectors, the model runtime
   and the content bundled inside, then installs it in an empty folder and runs it (CI does
-  this on the three systems). Nothing is published by it. It also holds the approval page (AR5): a small
+  this on the three systems). Nothing is published by it: the `Release next` workflow
+  publishes `sf-agent-po@next` to npm, only when started by hand from main, after the checks,
+  the tests and both smoke tests, with provenance (it needs the `NPM_TOKEN` secret, and a new
+  `-next.n` version in `packages/mcp/package.json` each time; it is a dry run by default). It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
