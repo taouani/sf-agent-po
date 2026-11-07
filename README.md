@@ -298,9 +298,9 @@ The new code lives in npm workspaces under `packages/`:
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
-  browser. `industry_guidance` gives the industry templates. `sf-agent-po-next init` writes the
+  browser. `industry_guidance` gives the industry templates. `npx sf-agent-po@next init` writes the
   agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules.
-  `sf-agent-po-next index --project <folder>` or `--org <alias>` fills the workspace's
+  `npx sf-agent-po@next index --project <folder>` or `--org <alias>` fills the workspace's
   metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
   only; the types the index uses, in parts of at most 9,000 files, with profiles merged back),
   under `<workspace>/orgs/<org id>`. A project is named by its folder and a hash of its path,
