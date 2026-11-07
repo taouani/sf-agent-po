@@ -200,6 +200,9 @@ The new code lives in npm workspaces under `packages/`:
   Domain content (industry templates, including the new luxury one, the agents' roles and
   practices, and design templates) is Markdown in `packages/core/content`, so it can be reviewed
   and changed without touching code.
+  `detect` finds what masking hides (personal data and secrets): rules for structured values
+  and street addresses, a dictionary of names the context already knows, and, later, the
+  detection model. Places and company names stay visible unless they are part of an address.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
