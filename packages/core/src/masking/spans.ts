@@ -2,6 +2,12 @@
 export const MASKED_TYPES = ["PERSON", "EMAIL", "PHONE", "ADDRESS", "IBAN", "CARD", "NATIONAL_ID", "SECRET", "IP"] as const;
 export type MaskedType = (typeof MASKED_TYPES)[number];
 
+/**
+ * Types that stay visible (MA1): places, organisations, and the model's other non-personal
+ * labels. Every other type is masked, including ones this code does not know (fail closed).
+ */
+export const VISIBLE_TYPES: ReadonlySet<string> = new Set(["LOCATION", "ORG", "MISC", "DATE", "TIME"]);
+
 /** A stretch of text to mask, as UTF-16 offsets. */
 export interface Span {
   /** Inclusive. */

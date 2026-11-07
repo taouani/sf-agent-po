@@ -34,6 +34,17 @@ export type NewDocument = Pick<SourceDocument, "kind" | "title" | "source" | "co
   masked?: boolean;
 };
 
+/** A redacted image the user confirmed, stored with the document that holds its masked text. */
+export interface ConfirmedImage {
+  /** The redacted image, as PNG. */
+  png: Buffer;
+  width: number;
+  height: number;
+  /** The approval page's digest of what the user confirmed. */
+  digest: string;
+  confirmedAt: string;
+}
+
 /** A whole context as the importer hands it over, with its original dates. */
 export interface ImportedContext {
   name: string;
@@ -202,6 +213,41 @@ export class ContextRepository {
     });
   }
 
+  /**
+   * Adds or replaces a document with the image the user confirmed for it, in one
+   * transaction. Without `image` (the user chose the text only), a stored image of the same
+   * source is removed.
+   */
+  addImageDocument(name: string, doc: NewDocument, image?: Omit<ConfirmedImage, "confirmedAt">): SourceDocument {
+    return this.database.write(() => {
+      const now = new Date().toISOString();
+      this.ensure(name, now);
+      this.put(name, doc, now);
+      const id = documentId(doc.source);
+      if (image) {
+        this.db
+          .prepare("INSERT INTO image (context, document, png, width, height, digest, confirmed_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(name, id, image.png, image.width, image.height, image.digest, now);
+      }
+      this.touch(name, now);
+      return this.getDocument(name, id)!;
+    });
+  }
+
+  /** The confirmed image of a document, if it has one. */
+  getImage(name: string, id: string): ConfirmedImage | undefined {
+    const row = this.db.prepare("SELECT png, width, height, digest, confirmed_at FROM image WHERE context = ? AND document = ?").get(name, id) as
+      | { png: Uint8Array; width: number; height: number; digest: string; confirmed_at: string }
+      | undefined;
+    return row && { png: Buffer.from(row.png), width: row.width, height: row.height, digest: row.digest, confirmedAt: row.confirmed_at };
+  }
+
+  /** The ids of a context's documents that have a confirmed image. */
+  imageIds(name: string): Set<string> {
+    const rows = this.db.prepare("SELECT document FROM image WHERE context = ?").all(name) as { document: string }[];
+    return new Set(rows.map((r) => r.document));
+  }
+
   removeDocument(name: string, id: string): boolean {
     return this.database.write(() => {
       const { changes } = this.db.prepare("DELETE FROM document WHERE context = ? AND id = ?").run(name, id);
@@ -239,7 +285,7 @@ export class ContextRepository {
    * Inserts or replaces a document. A new document goes to the end of the
    * context (`seq`). Replacing keeps the original `added_at` and position
    * (0.x moved a re-added document to the end and reset its date; no caller
-   * relied on that).
+   * relied on that), and drops the document's image: it showed the old content.
    */
   private put(name: string, d: NewDocument, now: string, addedAt?: string): void {
     const id = documentId(d.source);
@@ -257,6 +303,7 @@ export class ContextRepository {
       // Two different sources hashed to the same id: never let one overwrite the other.
       throw new Error(`Document id ${id} is already used by another source in context "${name}".`);
     }
+    this.db.prepare("DELETE FROM image WHERE context = ? AND document = ?").run(name, id);
   }
 
   private touch(name: string, at: string): void {

@@ -1,6 +1,6 @@
 import { detectWithDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
 import { detectWithRules } from "./rules.js";
-import { mergeSpans, normaliseType, type Span } from "./spans.js";
+import { mergeSpans, normaliseType, VISIBLE_TYPES, type Span } from "./spans.js";
 
 /**
  * Salesforce and tooling vocabulary that is never masked, even when the model tags it
@@ -27,12 +27,6 @@ export interface DetectOptions {
   /** Terms the model must never mask; defaults to DOMAIN_ALLOWLIST. */
   allowlist?: readonly string[];
 }
-
-/**
- * Types that stay visible (MA1): places, organisations, and the model's other non-personal
- * labels. Every other type is masked, including ones this code does not know (fail closed).
- */
-const VISIBLE_TYPES = new Set(["LOCATION", "ORG", "MISC", "DATE", "TIME"]);
 
 /**
  * Keeps what masking hides (MA1): the model's places and organisations are dropped

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ContextRepository, Database, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "../src/index.js";
+import { ContextRepository, Database, declaredType, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "../src/index.js";
 
 /** A stand-in for the detection model that knows a few names. */
 const fakeModel =
@@ -206,5 +206,76 @@ describe("unmasking on publish", () => {
     expect(out.kept).toEqual(["[SECRET_1]", "[PERSON_7]"]);
     // A literal written in a source comes back as text, not as a pseudonym left masked.
     expect(masker.unmask("acme", "[LITERAL_1]")).toEqual({ text: "[PERSON_1]", kept: [] });
+  });
+});
+
+describe("values the user declares", () => {
+  it("names the type from the rules, or a name, or a private value", () => {
+    expect(declaredType("karim@example.com")).toBe("EMAIL");
+    expect(declaredType("+33 6 12 34 56 78")).toBe("PHONE");
+    expect(declaredType("Karim Benali")).toBe("PERSON");
+    expect(declaredType("O'Neil")).toBe("PERSON");
+    expect(declaredType("刘洋")).toBe("PERSON");
+    expect(declaredType("project bluebird")).toBe("PRIVATE");
+    expect(declaredType("Room 4B")).toBe("PRIVATE");
+  });
+
+  it("masks a declared value in every later input, however short, in any case", async () => {
+    const { masker, vault } = setup();
+    const { entries, ignored } = masker.declare("acme", ["Al", " bluebird ", "x", "[PERSON_1]", ""]);
+    expect(entries).toEqual([
+      { type: "PERSON", value: "Al", caseSensitive: false },
+      { type: "PRIVATE", value: "bluebird", caseSensitive: false },
+    ]);
+    expect(ignored).toBe(1); // "x"; the pseudonym is already hidden
+    expect(vault.declared("acme")).toEqual([
+      { type: "PERSON", value: "Al" },
+      { type: "PRIVATE", value: "bluebird" },
+    ]);
+    // A learned value as short as "Al" is never looked for; a declared one is.
+    expect((await masker.mask("acme", "AL and Al run Bluebird; also Alice.")).text).toBe("[PERSON_1] and [PERSON_1] run [PRIVATE_1]; also Alice.");
+  });
+
+  it("picks up a known value declared later, even from another masker, under its pseudonym", async () => {
+    const { masker, vault } = setup(fakeModel(["al"]));
+    await masker.mask("acme", "ask al"); // learned from the model, too short to look for again
+    const other = new Masker({ vault });
+    expect((await other.mask("acme", "ask al")).text).toBe("ask al");
+    const before = vault.version("acme");
+    masker.declare("acme", ["al"]);
+    // The same pseudonym, now declared: no second one under another type.
+    expect(vault.version("acme")).toMatchObject({ count: before.count, declared: 1 });
+    expect((await other.mask("acme", "ask al")).text).toBe("ask [PERSON_1]");
+  });
+
+  it("masks the spelling the user wrote, when the vault knows the value in another", async () => {
+    const { masker, vault } = setup(fakeModel(["O'Neil"]));
+    await masker.mask("acme", "ask O'Neil, call 0612345678");
+    masker.declare("acme", ["O\u2019Neil", "06/12/34/56/78"]);
+    const later = new Masker({ vault });
+    expect((await later.mask("acme", "ask O\u2019Neil, call 06/12/34/56/78")).text).toBe("ask [PERSON_1], call [PHONE_1]");
+  });
+
+  it("keeps declared secrets hidden, exactly as written", async () => {
+    const { masker, vault } = setup();
+    const secret = ["Tr0ub4", "dor&3x"].join("");
+    expect((await masker.mask("acme", `password: ${secret}`)).text).toBe("password: [SECRET_1]");
+    expect(masker.declare("acme", [secret]).entries).toEqual([{ type: "SECRET", value: secret, caseSensitive: true }]);
+    expect((await new Masker({ vault }).mask("acme", `the pw is ${secret} ok`)).text).toBe("the pw is [SECRET_1] ok");
+  });
+
+  it("takes the text around a copied pseudonym, without the punctuation", async () => {
+    const { masker } = setup();
+    const { entries, ignored } = masker.declare("acme", ["[PERSON_1] Benali,", "(Karim)", "[EMAIL_2] x"]);
+    expect(entries.map((e) => e.value)).toEqual(["Benali", "Karim"]);
+    expect(ignored).toBe(1);
+    expect((await masker.mask("acme", "Karim said Benali.")).text).toBe("[PERSON_2] said [PERSON_1].");
+  });
+
+  it("never takes a type that stays visible from an earlier value", async () => {
+    const { masker, vault } = setup();
+    vault.pseudonym("acme", "ORG", "Bluebird");
+    expect(masker.declare("acme", ["Bluebird"]).entries).toEqual([{ type: "PERSON", value: "Bluebird", caseSensitive: false }]);
+    expect((await masker.mask("acme", "project Bluebird")).text).toBe("project [PERSON_1]");
   });
 });

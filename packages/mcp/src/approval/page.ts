@@ -28,6 +28,7 @@ const TYPE_NAMES: Record<string, [string, string]> = {
   NATIONAL_ID: ["ID number", "ID numbers"],
   SECRET: ["secret", "secrets"],
   IP: ["IP address", "IP addresses"],
+  PRIVATE: ["private value", "private values"],
 };
 
 /** "3 names, 1 email address": what masking hid. */
