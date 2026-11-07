@@ -3,7 +3,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ParsedComponent, ParsedMetadata } from "./model.js";
+import { COMPONENT_TYPES, type ParsedComponent, type ParsedMetadata } from "./model.js";
 import { componentKey, isCustomName, linkObjects, readField, readObject, readRecordType, readValidationRule } from "./objects.js";
 import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
@@ -32,30 +32,37 @@ type Kind =
  * kind. Apex is read from its source file, the rest from their XML in either format
  * (Foo.permissionset-meta.xml or Foo.permissionset).
  */
-const TOP_LEVEL: Record<string, [string, Kind, boolean]> = {
-  flows: [".flow", "flow", true],
-  classes: [".cls", "apexClass", false],
-  triggers: [".trigger", "apexTrigger", false],
-  permissionsets: [".permissionset", "permissionSet", true],
-  profiles: [".profile", "profile", true],
-  permissionsetgroups: [".permissionsetgroup", "permissionSetGroup", true],
-  layouts: [".layout", "layout", true],
-};
+const TOP_LEVEL = new Map<string, [string, Kind, boolean]>([
+  ["flows", [".flow", "flow", true]],
+  ["classes", [".cls", "apexClass", false]],
+  ["triggers", [".trigger", "apexTrigger", false]],
+  ["permissionsets", [".permissionset", "permissionSet", true]],
+  ["profiles", [".profile", "profile", true]],
+  ["permissionsetgroups", [".permissionsetgroup", "permissionSetGroup", true]],
+  ["layouts", [".layout", "layout", true]],
+]);
+
+/** Types read in detail: every other one is indexed by name and file. */
+const DETAILED = new Set<string>(COMPONENT_TYPES);
 
 /** What a file is, from its name and the folders around it, or undefined. */
 export function classify(rel: string): { kind: Kind; object: string; child?: string } | undefined {
+  // A file in a folder another type owns (an expanded static resource's classes/Foo.cls) is
+  // that type's.
+  const owner = classifyFile(rel)?.type;
+  if (owner && !DETAILED.has(owner)) return undefined;
   const parts = rel.split("/");
   const base = parts.at(-1)!;
   const dir = parts.at(-2);
   const up = parts.at(-3);
   const upper = parts.at(-4);
   // flows/Renewal.flow-meta.xml (source) or flows/Renewal.flow (metadata format),
-  // classes/Foo.cls; the name travels in `object`.
-  const top = dir ? TOP_LEVEL[dir] : undefined;
-  if (top) {
-    const [suffix, kind, xml] = top;
-    const stem = xml && base.endsWith(`${suffix}-meta.xml`) ? base.slice(0, -`${suffix}-meta.xml`.length) : base.endsWith(suffix) ? base.slice(0, -suffix.length) : "";
-    if (stem) return { kind, object: stem };
+  // classes/Foo.cls; the name travels in `object`. Source format lets these sit in any folder
+  // (classes/services/Foo.cls); metadata format keeps them right in their own.
+  for (const [folder, [suffix, kind, xml]] of TOP_LEVEL) {
+    const meta = `${suffix}-meta.xml`;
+    if (xml && base.endsWith(meta) && base.length > meta.length) return { kind, object: base.slice(0, -meta.length) };
+    if (base.endsWith(suffix) && base.length > suffix.length && (dir === folder || !xml)) return { kind, object: base.slice(0, -suffix.length) };
   }
   // metadata format: objects/Account.object
   if (dir === "objects" && base.endsWith(".object") && base.length > ".object".length) return { kind: "mdapiObject", object: base.slice(0, -".object".length) };
@@ -68,7 +75,7 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
       recordTypes: [".recordType-meta.xml", "recordType"],
       validationRules: [".validationRule-meta.xml", "validationRule"],
     };
-    const known = dir ? children[dir] : undefined;
+    const known = dir && Object.hasOwn(children, dir) ? children[dir] : undefined;
     if (known && base.endsWith(known[0]) && base.length > known[0].length) return { kind: known[1], object: up, child: base.slice(0, -known[0].length) };
   }
   return undefined;

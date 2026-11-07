@@ -11,7 +11,7 @@ export const MAX_APEX_LENGTH = 1_000_000;
 /** Apex words that can stand where a type or a variable would. */
 const KEYWORDS = new Set(
   (
-    "abstract after and as before break case catch class continue default delete do else enum extends false final finally for get global if implements " +
+    "abstract after and as before break catch class continue default delete do else enum extends false final finally for get global if implements " +
     "insert instanceof interface merge new null on or override private protected public return set static super switch testmethod this throw transient " +
     "trigger true try undelete update upsert virtual void webservice when while with without inherited sharing"
   ).split(" "),
@@ -21,7 +21,8 @@ const SOQL_WORDS = new Set(
   (
     "select from where and or not in like includes excludes order by group having limit offset asc desc nulls first last null true false with " +
     "security_enforced user_mode system_mode for update view reference all rows using scope typeof when then else end rollup cube above below at " +
-    "data category tracking viewstat yesterday today tomorrow mine everything team delegated my_territory my_team_territory"
+    "data category tracking viewstat yesterday today tomorrow mine everything team delegated my_territory my_team_territory " +
+    "mine_and_my_groups standard custom"
   ).split(" "),
 );
 /** SOQL date literals: LAST_WEEK, NEXT_N_DAYS:3 and the like. */
@@ -79,54 +80,130 @@ function soqlBlocks(code: string): { start: number; end: number; query: string }
   return blocks;
 }
 
-/** A query's object and the fields it names (selected, filtered, sorted), subqueries left out. */
-export function soqlFields(query: string): { object?: string; fields: string[] } {
-  // Subqueries name child relationships, not fields of the object: dropped.
-  const parts: string[] = [];
-  const sub = /\(\s*select\b/gi;
-  let at = 0;
-  let m: RegExpExecArray | null;
-  while ((m = sub.exec(query))) {
-    let i = m.index;
-    for (let d = 0; i < query.length; i++) {
-      if (query[i] === "(") d++;
-      else if (query[i] === ")" && --d === 0) break;
-    }
-    parts.push(query.slice(at, m.index), " ");
-    at = sub.lastIndex = i + 1;
+/** The end of the parenthesised group opening at `open`, or -1; looks no further than `limit`. */
+function closing(text: string, open: number, limit = text.length): number {
+  const stop = Math.min(text.length, limit);
+  for (let i = open, d = 0; i < stop; i++) {
+    if (text[i] === "(") d++;
+    else if (text[i] === ")" && --d === 0) return i;
   }
-  parts.push(query.slice(at));
+  return -1;
+}
+
+/**
+ * Bind expressions blanked: ":acc.Id", ":String.escapeSingleQuotes(term)", ": ids[0]" are Apex,
+ * not fields. Date literals (LAST_N_DAYS:7) keep their number.
+ */
+function withoutBinds(query: string): string {
+  const out: string[] = [];
+  let at = 0;
+  for (let i = query.indexOf(":"); i >= 0; i = query.indexOf(":", i + 1)) {
+    let j = i + 1;
+    while (query[j] === " ") j++;
+    if (/\d/.test(query[j] ?? "")) continue;
+    for (let d = 0; j < query.length; j++) {
+      const c = query[j]!;
+      if (c === "(" || c === "[") d++;
+      else if ((c === ")" || c === "]") && d > 0) d--;
+      else if (d === 0 && !/[\w.]/.test(c)) break;
+    }
+    out.push(query.slice(at, i), " ");
+    at = j;
+    i = j - 1;
+  }
+  out.push(query.slice(at));
+  return out.join("");
+}
+
+export interface SoqlReads {
+  object?: string;
+  fields: string[];
+  /** Semi-joins and anti-joins (WHERE Id IN (SELECT AccountId FROM Opportunity)): other objects read. */
+  joins: { object: string; fields: string[] }[];
+}
+
+/**
+ * A query's object and the fields it names (selected, filtered, sorted). Subqueries in the
+ * select list name child relationships and are left out; those after FROM are semi-joins, read
+ * as queries of their own. TYPEOF clauses, bind expressions, functions, aliases and date
+ * literals are not fields. A query built in a string (Database.query) is not read.
+ */
+export function soqlFields(query: string, depth = 0): SoqlReads {
+  const text = withoutBinds(query.replace(/\s+/g, " ")).replace(/\btypeof\b.{0,2000}?\bend\b/gi, " ");
+  const parts: string[] = [];
+  const joins: SoqlReads["joins"] = [];
+  const sub = /\( ?select\b/gi;
+  let at = 0;
+  let afterFrom = false;
+  let m: RegExpExecArray | null;
+  while ((m = sub.exec(text))) {
+    const before = text.slice(at, m.index);
+    afterFrom ||= /\bfrom\b/i.test(before);
+    const end = closing(text, m.index);
+    const stop = end < 0 ? text.length : end;
+    if (afterFrom && depth < 2) {
+      const inner = soqlFields(text.slice(m.index + 1, stop), depth + 1);
+      if (inner.object) joins.push({ object: inner.object, fields: inner.fields }, ...inner.joins);
+    }
+    parts.push(before, " ");
+    at = sub.lastIndex = stop + 1;
+  }
+  parts.push(text.slice(at));
   const flat = parts.join("");
-  const from = /\bfrom\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(flat);
+  const from = /\bfrom ([A-Za-z_][A-Za-z0-9_]*)/i.exec(flat);
   const fields = new Set<string>();
-  // Identifiers and paths, not functions, bind variables (":acc.Id"), literals or keywords.
-  const token = /(?<![\w.:'])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?![\w(])(?!\s*\()(?!:\d)/g;
+  // Identifiers and paths, not functions, literals or keywords.
+  const token = /(?<![\w.'])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?![\w(])(?! ?\()(?!:\d)/g;
   for (const part of [flat.slice(0, from?.index ?? flat.length), from ? flat.slice(from.index + from[0].length) : ""]) {
     for (const t of part.matchAll(token)) {
       const word = t[1]!;
-      const lower = word.toLowerCase();
-      if (SOQL_WORDS.has(lower) || DATE_LITERAL.test(word)) continue;
+      if (SOQL_WORDS.has(word.toLowerCase()) || DATE_LITERAL.test(word)) continue;
       // An alias after an aggregate: COUNT(Id) total.
       let k = t.index - 1;
-      while (k >= 0 && /\s/.test(part[k]!)) k--;
+      if (part[k] === " ") k--;
       if (part[k] === ")") continue;
       fields.add(word);
     }
   }
-  return { ...(from ? { object: from[1] } : {}), fields: [...fields] };
+  return { ...(from ? { object: from[1] } : {}), fields: [...fields], joins };
+}
+
+/** A sort of Apex variables: what each name was declared as, and where. */
+class Declarations {
+  private byName = new Map<string, { at: number; type: string }[]>();
+  add(name: string, at: number, type: string) {
+    const key = name.toLowerCase();
+    const list = this.byName.get(key);
+    if (list) list.push({ at, type });
+    else this.byName.set(key, [{ at, type }]);
+  }
+  /** The type of the nearest declaration before `at`, or of the first after (a class member). */
+  typeOf(name: string, at: number): string | undefined {
+    const list = this.byName.get(name.toLowerCase());
+    if (!list) return undefined;
+    let best: { at: number; type: string } | undefined;
+    for (const d of list) if (d.at <= at && (!best || d.at > best.at)) best = d;
+    return (best ?? list[0])?.type;
+  }
+  types(): string[] {
+    return [...this.byName.values()].flat().map((d) => d.type);
+  }
 }
 
 /**
  * An Apex class or trigger from its source. Queries read their object and fields; DML writes
  * the object of the record or list it is given; `record.Field = x` writes a field and
- * `record.Field` reads it, for records whose type the code declares; classes, flows and
- * custom labels it names are linked. Comments are not kept: they can name people.
+ * `record.Field` reads it, for records whose type the code declares (the nearest declaration of
+ * that name before the use); classes, flows and custom labels it names are linked. Comments are
+ * not kept: they can name people.
  */
 export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source: string, file: string): ParsedComponent {
   const refs: Ref[] = [];
   const attrs: Record<string, unknown> = { lines: source.split("\n").length };
   if (source.length > MAX_APEX_LENGTH) return { type, name, file, attrs: { ...attrs, tooLarge: true }, text: "" };
-  let code = apexCode(source);
+  // One space for every run of whitespace (blanked comments included): the patterns below
+  // then never meet a long run, where backtracking would cost quadratic time.
+  let code = apexCode(source).replace(/\s+/g, " ");
   const seen = new Set<string>();
   const add = (ref: Ref) => {
     const id = ("type" in ref ? `${ref.kind}|${String(ref.type)}|${ref.name}` : `${ref.kind}||${ref.object}|${ref.path ?? ""}`).toLowerCase();
@@ -140,32 +217,36 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     add({ kind, object, ...(path ? { path } : {}), ...(isCustomName(object) || isStandardObject(object) ? {} : { known: true }) });
 
   if (type === "ApexTrigger") {
-    const head = /\btrigger\s+[A-Za-z_]\w*\s+on\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/i.exec(code);
+    const head = /\btrigger [A-Za-z_]\w* ?on ?([A-Za-z_]\w*) ?\(([^)]{0,500})\)/i.exec(code);
     if (head) {
       objectRef("triggers_on", head[1]!);
       attrs.object = head[1];
-      attrs.events = head[2]!.split(",").map((e) => e.trim().replace(/\s+/g, " ").toLowerCase()).filter(Boolean);
+      attrs.events = head[2]!.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
     }
   } else {
-    const head = /\b(class|interface|enum)\s+[A-Za-z_]\w*/i.exec(code);
+    const head = /\b(class|interface|enum) [A-Za-z_]\w*/i.exec(code);
     if (head) attrs.kind = head[1]!.toLowerCase();
-    const sharing = /\b(with|without|inherited)\s+sharing\b/i.exec(code);
+    const sharing = /\b(with|without|inherited) sharing\b/i.exec(code);
     if (sharing) attrs.sharing = sharing[1]!.toLowerCase();
-    if (/@\s*istest\b/i.test(code)) attrs.isTest = true;
+    if (/@ ?istest\b/i.test(code)) attrs.isTest = true;
   }
 
-  // Queries: their object and fields are read; then they are blanked, so that their words
+  // Queries: their object and fields are read; then they are taken out, so that their words
   // are not taken for variables.
   let queries = 0;
   let dml = 0;
   const blocks = soqlBlocks(code);
   for (const b of blocks) {
     queries++;
-    const { object, fields } = soqlFields(b.query);
+    const { object, fields, joins } = soqlFields(b.query);
+    for (const j of joins) {
+      objectRef("reads", j.object);
+      for (const f of j.fields) objectRef("reads", j.object, f);
+    }
     if (!object) continue;
     objectRef("reads", object);
     // delete [SELECT ...], Database.update([SELECT ...]): the records queried are written.
-    if (/(?:\b(?:insert|update|upsert|delete|undelete)\s+(?:as\s+(?:user|system)\s+)?|\bdatabase\s*\.\s*\w+\s*\(\s*)$/i.test(code.slice(Math.max(0, b.start - 40), b.start))) {
+    if (/(?:\b(?:insert|update|upsert|delete|undelete) (?:as (?:user|system) )?|\bdatabase ?\. ?(?:insert|update|upsert|delete|undelete)\w* ?\( ?)$/i.test(code.slice(Math.max(0, b.start - 40), b.start))) {
       objectRef("writes", object);
       dml++;
     }
@@ -176,33 +257,36 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     const parts: string[] = [];
     let at = 0;
     for (const b of blocks) {
-      parts.push(code.slice(at, b.start), " ".repeat(Math.min(b.end, code.length - 1) - b.start + 1));
+      parts.push(code.slice(at, b.start), " ''");
       at = b.end + 1;
     }
     parts.push(code.slice(at));
     code = parts.join("");
   }
+  // this.acc is acc.
+  code = code.replace(/\bthis ?\. ?/gi, "");
 
-  // Declared types of variables, parameters and loop variables: Account a, List<Case> cs,
-  // Policy__c[] ps, for (Contact c : contacts).
-  const types = new Map<string, string>();
-  const declaration = /(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*(?:<\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*>|\[\s*\])?\s+([A-Za-z_]\w*)\s*(?=[=;,):])/g;
+  // Declared types of variables, parameters, properties and loop variables: Account a,
+  // List<Case> cs, Map<Id, Account> m (its values), Policy__c[] ps, for (Contact c : contacts),
+  // when Account a {.
+  const declarations = new Declarations();
+  const declaration = /(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?: ?(?:<(?: ?[\w.]+ ?,)? ?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?) ?>|\[ ?\]))? ([A-Za-z_]\w*) ?(?=[=;,):{])/g;
   for (const m of code.matchAll(declaration)) {
     const declared = (m[2] ?? m[1]!).replace(/^schema\./i, "");
     if (KEYWORDS.has(declared.toLowerCase()) || KEYWORDS.has(m[3]!.toLowerCase())) continue;
-    types.set(m[3]!.toLowerCase(), declared);
+    declarations.add(m[3]!, m.index, declared);
   }
-  const typeOf = (variable: string) => types.get(variable.toLowerCase());
+  const typeOf = (variable: string, at: number) => declarations.typeOf(variable, at);
   const sobject = (t: string | undefined): t is string => !!t && !/^(?:s?object|string|id|integer|long|decimal|double|boolean|date|datetime|time|blob)$/i.test(t);
 
   // DML: insert acc; update as user cases; Database.upsert(new List<Account>{...}).
-  const statement = /\b(insert|update|upsert|delete|undelete|merge)\s+(?:as\s+(?:user|system)\s+)?(?:new\s+(?:list\s*<\s*([\w.]+)\s*>|([\w.]+))|([A-Za-z_]\w*))/gi;
-  const method = /\bdatabase\s*\.\s*(insert|update|upsert|delete|undelete|merge)\w*\s*\(\s*(?:new\s+(?:list\s*<\s*([\w.]+)\s*>|([\w.]+))|([A-Za-z_]\w*))/gi;
+  const statement = /\b(insert|update|upsert|delete|undelete|merge) (?:as (?:user|system) )?(?:new (?:list ?< ?([\w.]+) ?>|([\w.]+))|([A-Za-z_]\w*))/gi;
+  const method = /\bdatabase ?\. ?(insert|update|upsert|delete|undelete|merge)\w* ?\( ?(?:new (?:list ?< ?([\w.]+) ?>|([\w.]+))|([A-Za-z_]\w*))/gi;
   for (const re of [statement, method]) {
     for (const m of code.matchAll(re)) {
-      // "update" after a dot or in "for update" is not DML.
-      if (/[.]\s*$/.test(code.slice(Math.max(0, m.index - 2), m.index))) continue;
-      const object = m[2] ?? m[3] ?? typeOf(m[4]!);
+      // "update" after a dot is a method, not DML.
+      if (/\. ?$/.test(code.slice(Math.max(0, m.index - 2), m.index))) continue;
+      const object = m[2] ?? m[3] ?? typeOf(m[4]!, m.index);
       if (!sobject(object) || KEYWORDS.has(object.toLowerCase())) continue;
       dml++;
       objectRef("writes", object.replace(/^schema\./i, ""));
@@ -210,27 +294,40 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
   }
   if (dml) attrs.dml = dml;
 
-  // new Account(Name = 'x', Industry = y): the fields are set.
-  for (const m of code.matchAll(/\bnew\s+([A-Za-z_][\w.]*)\s*\(([^()]*)\)/g)) {
+  // new Account(Name = 'x', OwnerId = UserInfo.getUserId()): the fields are set.
+  for (const m of code.matchAll(/\bnew ([A-Za-z_][\w.]*) ?\(/g)) {
     const object = m[1]!.replace(/^schema\./i, "");
     if (!isCustomName(object) && !isStandardObject(object)) continue;
-    for (const f of m[2]!.matchAll(/(?<![\w.])([A-Za-z_]\w*)\s*=(?!=)/g)) objectRef("writes", object, f[1]!);
+    const open = m.index + m[0].length - 1;
+    const end = closing(code, open, open + 5_000);
+    if (end < 0) continue;
+    // Only the constructor's own arguments: what nested calls hold is blanked.
+    let args = "";
+    for (let i = open + 1, d = 0; i < end; i++) {
+      const c = code[i]!;
+      if (c === "(") d++;
+      if (d === 0) args += c;
+      if (c === ")") d--;
+    }
+    for (const f of args.matchAll(/(?<![\w.])([A-Za-z_]\w*) ?=(?![=>])/g)) objectRef("writes", object, f[1]!);
   }
 
-  // record.Field, record.Lookup__r.Field = x: through a variable of a declared record type.
-  // Method calls end the path.
-  const access = /(?<![\w.])([A-Za-z_]\w*)((?:\s*\.\s*[A-Za-z_]\w*(?!\w|\s*\())+)(\s*=(?!=))?/g;
+  // record.Field, record.Lookup__r.Field = x, record.Amount += 1: through a variable of a
+  // declared record type. Method calls end the path.
+  const access = /(?<![\w.])([A-Za-z_]\w*)((?: ?\. ?[A-Za-z_]\w*(?!\w| ?\())+)( ?(?:[-+*/]?=(?![=>])|\+\+|--))?/g;
   for (const m of code.matchAll(access)) {
     const head = m[1]!;
-    const path = m[2]!.replace(/\s+/g, "").slice(1);
+    const path = m[2]!.replace(/ /g, "").slice(1);
     const lower = head.toLowerCase();
+    const declared = typeOf(head, m.index);
     if (lower === "schema") {
-      // Schema.SObjectType.Policy__c.fields.Status__c, Schema.Policy__c.Status__c.
-      const s = /^(?:sobjecttype\.)?([A-Za-z_]\w*)(?:\.fields)?(?:\.([A-Za-z_]\w*))?/i.exec(path);
+      // Schema.SObjectType.Policy__c.fields.Status__c, Schema.Policy__c.Status__c; not
+      // describe properties (Schema.SObjectType.Account.keyPrefix).
+      const s = /^sobjecttype\./i.test(path) ? /^sobjecttype\.([A-Za-z_]\w*)(?:\.fields\.([A-Za-z_]\w*))?/i.exec(path) : /^([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?/.exec(path);
       if (s) objectRef("reads", s[1]!, s[2] && !/^sobjecttype$/i.test(s[2]) ? s[2] : undefined);
       continue;
     }
-    if (lower === "label" || (lower === "system" && /^label\./i.test(path))) {
+    if (!declared && (lower === "label" || (lower === "system" && /^label\./i.test(path)))) {
       const label = path.replace(/^label\./i, "").split(".")[0]!;
       add({ kind: "reads", type: "CustomLabel", name: label });
       continue;
@@ -239,25 +336,26 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
       add({ kind: "calls", type: "Flow", name: path.split(".")[1]! });
       continue;
     }
-    const declared = typeOf(head);
     if (sobject(declared) && !KEYWORDS.has(lower)) {
       objectRef(m[3] ? "writes" : "reads", declared.replace(/^schema\./i, ""), path);
-    } else if (isCustomName(head)) {
-      // Policy__c.Status__c.getDescribe(), Settings__c.getInstance(): the object, and its field.
-      const field = path.split(".")[0]!;
-      objectRef("reads", head, /^sobjecttype$/i.test(field) ? undefined : field);
+    } else if (!declared && (isCustomName(head) || isStandardObject(head))) {
+      // Static field tokens: Policy__c.Status__c.getDescribe(), Account.Fields.Ext_Id__c (an
+      // upsert's key), Account.SObjectType; Settings__c.getInstance() below.
+      const segments = path.split(".");
+      const field = /^(?:fields|sobjectfield)$/i.test(segments[0]!) ? segments[1] : segments[0];
+      objectRef("reads", head, field && !/^sobjecttype$/i.test(field) ? field : undefined);
     }
   }
   // Custom settings and metadata read by method: Settings__c.getInstance().
-  for (const m of code.matchAll(/(?<![\w.])([A-Za-z_]\w*__(?:c|mdt))\s*\.\s*get\w*\s*\(/gi)) objectRef("reads", m[1]!);
+  for (const m of code.matchAll(/(?<![\w.])([A-Za-z_]\w*__(?:c|mdt)) ?\. ?get\w* ?\(/gi)) objectRef("reads", m[1]!);
 
   // Classes it names: Foo.bar(), new Foo(), Foo x, extends Foo. Only those the project has.
   const self = name.toLowerCase();
   const classes = new Set<string>();
-  for (const re of [/(?<![\w.])([A-Za-z_]\w*)\s*\./g, /\bnew\s+([A-Za-z_]\w*)/gi, /\b(?:extends|implements)\s+([A-Za-z_]\w*)/gi]) {
+  for (const re of [/(?<![\w.])([A-Za-z_]\w*) ?\./g, /\bnew ([A-Za-z_]\w*)/gi, /\b(?:extends|implements) ([A-Za-z_]\w*)/gi]) {
     for (const m of code.matchAll(re)) classes.add(m[1]!);
   }
-  for (const t of types.values()) classes.add(t.split(".")[0]!);
+  for (const t of declarations.types()) classes.add(t.split(".")[0]!);
   for (const c of classes) {
     const lower = c.toLowerCase();
     if (lower === self || KEYWORDS.has(lower) || isCustomName(c)) continue;

@@ -97,7 +97,10 @@ export function readPermissions(type: "PermissionSet" | "Profile", name: string,
   };
 }
 
-/** A permission set group: the permission sets it includes, and those it mutes. */
+/**
+ * A permission set group: the permission sets it includes. Its muting permission set is
+ * included too, as a MutingPermissionSet: what it mutes is taken away, not granted.
+ */
 export function readPermissionSetGroup(name: string, root: Record<string, unknown>, file: string): ParsedComponent {
   const refs: Ref[] = [];
   for (const p of list(root.permissionSets)) {

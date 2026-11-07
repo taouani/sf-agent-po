@@ -115,7 +115,10 @@ describe("classifyFile (the metadata type registry)", () => {
     expect(what("x/settings/Case.settings-meta.xml")).toEqual({ type: "Settings", name: "Case" });
     expect(what("x/bots/Helper/Helper.bot-meta.xml")).toEqual({ type: "Bot", name: "Helper" });
     expect(what("README.md")).toBeUndefined();
-    expect(what("x/classes/nested/Foo.cls-meta.xml")).toBeUndefined();
+    // Source format lets a class sit in a subfolder, or any folder.
+    expect(classifyFile("x/classes/nested/Foo.cls-meta.xml")).toEqual({ type: "ApexClass", name: "Foo", home: "x/classes/nested" });
+    expect(what("x/services/Foo.cls")).toEqual({ type: "ApexClass", name: "Foo" });
+    expect(what("x/notes/Foo.txt")).toBeUndefined();
   });
 
   it("knows sites, documents, folders in metadata format, territories and top-level children", () => {
@@ -382,6 +385,7 @@ describe("Apex, permissions and layouts", () => {
     expect(soqlFields("SELECT Id, toLabel(Status), COUNT(Amount__c) total, (SELECT Id FROM Contacts) FROM Account WHERE Name LIKE :n AND CreatedDate = LAST_N_DAYS:7 ORDER BY Owner.Name DESC NULLS LAST")).toEqual({
       object: "Account",
       fields: ["Id", "Status", "Amount__c", "Name", "CreatedDate", "Owner.Name"],
+      joins: [],
     });
     expect(apexCode("a = 'it\\'s // not'; // x\n/* y */b")).toBe("a = '            '; // x\n/* y */b".replace("// x", "    ").replace("/* y */", "       "));
     const c = readApex("ApexClass", "C", "public class C { void m(User u, Foo f) { return u; } void update(List<X> l) {} String s = 'insert acc;'; }", "classes/C.cls");
@@ -391,6 +395,76 @@ describe("Apex, permissions and layouts", () => {
     const huge = readApex("ApexClass", "Big", "x".repeat(MAX_APEX_LENGTH + 1), "classes/Big.cls");
     expect(huge).toMatchObject({ attrs: { tooLarge: true } });
     expect(huge.refs).toBeUndefined();
+  });
+});
+
+describe("Apex scanning, hard cases", () => {
+  const edges = (src: string, others: ParsedComponent[] = []) =>
+    linkObjects([readApex("ApexClass", "X", src, "classes/X.cls"), ...others])
+      .edges.filter((e) => e.from.name === "X")
+      .map((e) => `${e.kind} ${e.to.type}:${e.to.name}`)
+      .sort();
+
+  it("stays fast on long runs of whitespace, comments and unclosed constructs", () => {
+    const started = Date.now();
+    readApex("ApexClass", "T", "@IsTest\n" + "// old code that was commented out\n".repeat(6000) + "private class T {}", "x");
+    readApex("ApexClass", "T", "@AuraEnabled\n/*" + " ".repeat(300_000) + "*/", "x");
+    readApex("ApexClass", "T", "return [SELECT " + "Name, ".repeat(10_000) + "Id FROM Account];", "x");
+    readApex("ApexClass", "T", "insert" + " ".repeat(100_000) + "as" + " ".repeat(100_000) + "x", "x");
+    readApex("ApexClass", "T", "Database" + " ".repeat(100_000) + "." + " ".repeat(100_000) + "insert (", "x");
+    readApex("ApexTrigger", "T", "trigger a on b (".repeat(20_000), "x");
+    readApex("ApexClass", "T", "new Account(".repeat(20_000) + "[SELECT Id FROM X WHERE A = :".repeat(5_000) + "TYPEOF ".repeat(5_000), "x");
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it("reads each use of a variable as the type it was declared with nearest before it", () => {
+    const e = edges("@IsTest class X { static void a(){ Contact c = new Contact(LastName='x'); insert c; } static void b(){ Case c = new Case(); c.Status='New'; c.Origin='Web'; insert c; } }");
+    expect(e).toContain("writes CustomObject:Case");
+    expect(e).toContain("writes CustomField:Case.Status");
+    expect(e).not.toContain("writes CustomField:Contact.Status");
+  });
+
+  it("does not take bind expressions, TYPEOF, FIELDS() or locators for fields or writes", () => {
+    expect(soqlFields("SELECT Id FROM Account WHERE Name = :String.escapeSingleQuotes(term) AND CreatedDate > :Date.newInstance(year, month, 1) AND Id = : byName.get(key).Id").fields).toEqual(["Id", "Name", "CreatedDate"]);
+    expect(soqlFields("SELECT Id, TYPEOF What WHEN Account THEN Phone ELSE Name END FROM Event").fields).toEqual(["Id"]);
+    expect(soqlFields("SELECT FIELDS(STANDARD) FROM Account USING SCOPE mine_and_my_groups").fields).toEqual([]);
+    expect(soqlFields("SELECT Id FROM Account WHERE Id NOT IN (SELECT AccountId FROM Opportunity WHERE IsWon = true)")).toEqual({
+      object: "Account",
+      fields: ["Id"],
+      joins: [{ object: "Opportunity", fields: ["AccountId", "IsWon"] }],
+    });
+    const batch = edges("class X { Database.QueryLocator start() { return Database.getQueryLocator([SELECT Id FROM Account]); } }");
+    expect(batch).toEqual(["reads CustomField:Account.Id", "reads CustomObject:Account"]);
+  });
+
+  it("knows map initialisers, compound assignments, describes, nested calls and static field tokens", () => {
+    expect(edges("class X { void m(Account acc) { Map<Id, Account> m = new Map<Id, Account>{ acc.Id => acc }; update m.values(); } }")).not.toContain("writes CustomField:Account.Id");
+    expect(edges("class X { void m(Opportunity o) { o.Amount += 10; o.Probability++; } }")).toEqual([
+      "writes CustomField:Opportunity.Amount",
+      "writes CustomField:Opportunity.Probability",
+      "writes CustomObject:Opportunity",
+    ]);
+    expect(edges("class X { String p = Schema.SObjectType.Account.keyPrefix; }")).toEqual(["reads CustomObject:Account"]);
+    expect(edges("class X { void m() { insert new Account(Name = 'x', OwnerId = UserInfo.getUserId()); } }")).toEqual([
+      "writes CustomField:Account.Name",
+      "writes CustomField:Account.OwnerId",
+      "writes CustomObject:Account",
+    ]);
+    expect(edges("class X { Account acc; void m(List<Account> accs) { this.acc.Name = 'x'; upsert accs Account.Fields.Ext_Id__c; switch on acc { when Account a { a.Rating = 'Hot'; } } } }")).toEqual([
+      "reads CustomField:Account.Ext_Id__c",
+      "writes CustomField:Account.Name",
+      "writes CustomField:Account.Rating",
+      "writes CustomObject:Account",
+    ]);
+    // A variable named label is not a custom label.
+    expect(edges("class X { void m(Wrapper label) { label.value = 'x'; } }")).toEqual([]);
+  });
+
+  it("does not crash on folders named after object properties, nor read Apex inside a static resource", async () => {
+    expect(classify("x/lwc/constructor/constructor.js")).toBeUndefined();
+    expect(classify("x/objects/A/constructor/B.field-meta.xml")).toBeUndefined();
+    expect(classify("x/staticresources/lib/classes/Foo.cls")).toBeUndefined();
+    expect(classify("x/classes/services/Foo.cls")).toEqual({ kind: "apexClass", object: "Foo" });
   });
 });
 

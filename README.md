@@ -256,7 +256,8 @@ The new code lives in npm workspaces under `packages/`:
   subflows, email alerts, quick actions, external services and screen components they call
   (`calls`). Apex classes and triggers are scanned for the
   objects and fields they query and write (inline SOQL, DML, `record.Field`), the classes,
-  flows and custom labels they use, and a trigger's object; comments are not kept. Permission
+  flows and custom labels they use, and a trigger's object; comments are not kept, and
+  queries built in strings (`Database.query`) are not read. Permission
   sets and profiles grant (`grants`) objects with their CRUD level, fields (read or edit),
   classes, pages, flows and layouts; permission set groups include (`includes`) permission
   sets; layouts show (`shows`) their fields, buttons, related lists and actions. Every other

@@ -262,7 +262,9 @@ export class MetadataIndex {
 
   /**
    * Components linked to one, up to `depth` hops (1 to 3), each at its shortest distance:
-   * what it depends on ("out") and what depends on it ("in").
+   * what it depends on ("out") and what depends on it ("in"). Beyond one hop, `kinds` are
+   * those of the last hop. The walk keeps each (component, kind, direction, depth) once, so a
+   * dense graph stays bounded by its size.
    */
   related(componentId: number, options: { depth?: number; kinds?: readonly EdgeKind[] } = {}): Related[] {
     const depth = Math.min(Math.max(options.depth ?? 1, 1), 3);
@@ -272,12 +274,12 @@ export class MetadataIndex {
     const sql = `
       WITH RECURSIVE walk(id, kind, direction, depth) AS (
         SELECT e.dst, e.kind, 'out', 1 FROM edge e WHERE e.src = ? ${kindFilter}
-        UNION ALL
+        UNION
         SELECT e.src, e.kind, 'in', 1 FROM edge e WHERE e.dst = ? ${kindFilter}
-        UNION ALL
+        UNION
         SELECT e.dst, e.kind, w.direction, w.depth + 1 FROM walk w JOIN edge e ON e.src = w.id
           WHERE w.direction = 'out' AND w.depth < ? ${kindFilter}
-        UNION ALL
+        UNION
         SELECT e.src, e.kind, w.direction, w.depth + 1 FROM walk w JOIN edge e ON e.dst = w.id
           WHERE w.direction = 'in' AND w.depth < ? ${kindFilter}
       )
