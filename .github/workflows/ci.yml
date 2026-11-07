@@ -24,3 +24,29 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # The detection model on the bundled WebAssembly runtime, with the real model files
+  # (138 MB, downloaded from Hugging Face once and cached).
+  model:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SF_AGENT_PO_MODEL_TEST: "1"
+      SF_AGENT_PO_MODEL_DIR: ${{ github.workspace }}/.model-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: detection-model-${{ hashFiles('packages/core/src/masking/model/files.ts') }}
+      - run: npm run model:manifest -w @sf-agent-po/core
+        if: matrix.os == 'ubuntu-latest'
+      - run: npm test -- packages/core/test/masking-model.test.ts

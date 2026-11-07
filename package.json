@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build --workspaces --if-present",
     "start": "node dist/index.js",
+    "pretest": "npm run vendor -w @sf-agent-po/core",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck --workspaces --if-present"
   },

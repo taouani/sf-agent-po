@@ -12,12 +12,25 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "content"],
+  "files": [
+    "dist",
+    "content",
+    "vendor"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.check.json"
+    "vendor": "node scripts/vendor-ort.mjs",
+    "build": "node scripts/vendor-ort.mjs && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "model:manifest": "node scripts/model-manifest.mjs"
+  },
+  "dependencies": {
+    "@huggingface/tokenizers": "0.2.0",
+    "onnxruntime-common": "1.31.1"
+  },
+  "devDependencies": {
+    "onnxruntime-web": "1.31.1"
   }
 }

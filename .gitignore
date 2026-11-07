@@ -3,3 +3,4 @@ dist/
 .sf-agent/
 .env
 eval-results/
+packages/core/vendor/
