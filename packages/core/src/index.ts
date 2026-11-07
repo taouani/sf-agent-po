@@ -22,3 +22,4 @@ export {
   type IndustrySection,
   type IndustryTemplate,
 } from "./content/library.js";
+export * from "./masking/index.js";
