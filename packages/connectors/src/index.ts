@@ -19,4 +19,17 @@ export {
   type MetadataSourceSpec,
 } from "./metadata-source.js";
 export { type PublishedPage } from "./atlassian.js";
-export { SalesforceOrg, orgToMarkdown, type OrgInfo, type SObjectDescribe } from "./salesforce.js";
+export { SalesforceOrg, defaultSfRunner, orgToMarkdown, type OrgInfo, type SfRunner, type SObjectDescribe } from "./salesforce.js";
+export {
+  checkOrgArg,
+  DEFAULT_ORG_TYPES,
+  MAX_FILES_PER_RETRIEVE,
+  readManifest,
+  retrieveOrgMetadata,
+  splitManifest,
+  writeManifest,
+  type ManifestEntry,
+  type OrgRetrieval,
+  type RetrieveOptions,
+} from "./org-metadata.js";
+export { BackgroundIndexer, indexOrg, indexProject, indexTarget, projectSource, type IndexJob, type IndexOptions, type IndexTarget } from "./indexing.js";

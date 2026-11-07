@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
+import { INDEX_USAGE } from "./index-command.js";
 
 async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
@@ -63,10 +64,48 @@ async function init(argv: string[]): Promise<void> {
   }
 }
 
+/** `index` fills the workspace's metadata index from a project folder or an org. */
+async function index(argv: string[]): Promise<void> {
+  const { describeSnapshot, parseIndexArgs } = await import("./index-command.js");
+  let database: InstanceType<(typeof import("@sf-agent-po/core"))["Database"]> | undefined;
+  try {
+    const opts = parseIndexArgs(argv);
+    if ("help" in opts) return console.log(opts.help);
+    const { Database, MetadataIndex } = await import("@sf-agent-po/core");
+    const { indexTarget } = await import("@sf-agent-po/connectors");
+    const { databaseFile } = await import("./startup.js");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(opts.workspace, { recursive: true });
+    database = new Database(databaseFile(opts.workspace));
+    const metadata = new MetadataIndex(database);
+    // Stopped with Ctrl-C: the run is marked failed, so that the next one need not wait for
+    // its lease to run out.
+    const stop = () => {
+      metadata.abandon("stopped by the user");
+      database?.close();
+      process.exit(130);
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+    const snapshot = await indexTarget(metadata, opts.target, {
+      workspace: opts.workspace,
+      force: opts.force,
+      progress: (m) => console.error(m),
+    });
+    for (const line of describeSnapshot(snapshot)) console.log(line);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  } finally {
+    database?.close();
+  }
+}
+
 const command = process.argv[2];
 if (command === "init") await init(process.argv.slice(3));
+else if (command === "index") await index(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run sf-agent-po-next with no arguments to start the MCP server.\n\n${USAGE}`);
+  console.error(`Unknown command "${command}". Run sf-agent-po-next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}`);
   process.exitCode = 1;
 } else await main();

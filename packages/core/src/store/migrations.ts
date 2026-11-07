@@ -198,4 +198,13 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX component_parent ON component (snapshot, parent_type, parent);
     `,
   },
+  {
+    version: 8,
+    name: "metadata build heartbeat",
+    sql: `
+      -- A long run (an org retrieved in parts) renews its lease as it goes, so that it is not
+      -- taken for dead after an hour.
+      ALTER TABLE metadata_snapshot ADD COLUMN heartbeat_at TEXT;
+    `,
+  },
 ];

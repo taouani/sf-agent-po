@@ -17,13 +17,14 @@ export interface SObjectDescribe {
   childRelationships: number;
 }
 
-type SfRunner = (args: string[]) => Promise<any>;
+/** Runs `sf` with these arguments (and --json) and returns its `result` payload. */
+export type SfRunner = (args: string[], opts?: { cwd?: string; timeoutMs?: number }) => Promise<any>;
 
 /** Characters allowed in org aliases, usernames and object names passed to the CLI. */
 const SAFE_ARG = /^[\w.@+-]+$/;
 
 /** Runs the Salesforce CLI with --json and returns its `result` payload. */
-const defaultRunner: SfRunner = async (args) => {
+export const defaultSfRunner: SfRunner = async (args, opts = {}) => {
   // On Windows the CLI is sf.cmd, which only starts through a shell, so the
   // arguments must be safe to pass unquoted.
   const windows = process.platform === "win32";
@@ -31,14 +32,19 @@ const defaultRunner: SfRunner = async (args) => {
     throw new Error(`Unsupported characters in sf arguments: ${args.join(" ")}`);
   }
   // sf exits non-zero on failure but still prints its JSON error, which has the useful message.
-  const { stdout } = await run("sf", [...args, "--json"], { shell: windows, parseFailureOutput: true });
+  const { stdout } = await run("sf", [...args, "--json"], { shell: windows, parseFailureOutput: true, ...opts });
   let parsed;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    throw new Error(`sf ${args.slice(0, 2).join(" ")} returned unexpected output: ${stdout.slice(0, 300)}`);
+    // Shown in part to help, with anything token-shaped taken out (org display prints one).
+    const shown = stdout.slice(0, 300).replace(/("accessToken"\s*:\s*")[^"]*/gi, "$1…").replace(/00D\w{12,15}![\w.]+/g, "…");
+    throw new Error(`sf ${args.slice(0, 2).join(" ")} returned unexpected output: ${shown}`);
   }
-  if (parsed.status !== 0) throw new Error(`sf ${args.slice(0, 2).join(" ")} failed: ${parsed.message ?? "unknown error"}`);
+  if (parsed.status !== 0) {
+    const detail = parsed.message ?? parsed.result?.errorMessage ?? parsed.result?.messages?.[0]?.problem ?? parsed.name ?? "unknown error";
+    throw new Error(`sf ${args.slice(0, 2).join(" ")} failed: ${detail}`);
+  }
   return parsed.result;
 };
 
@@ -49,7 +55,7 @@ const defaultRunner: SfRunner = async (args) => {
 export class SalesforceOrg {
   constructor(
     private readonly targetOrg: string,
-    private readonly sf: SfRunner = defaultRunner,
+    private readonly sf: SfRunner = defaultSfRunner,
   ) {}
 
   async info(): Promise<OrgInfo> {

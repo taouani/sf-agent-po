@@ -15,6 +15,8 @@ import { obj, parseMetadataXml } from "./xml.js";
 const SKIP_DIRS = new Set([
   "node_modules", ".git", ".sf", ".sfdx", ".vscode", ".idea", ".husky", ".github",
   "coverage", "target", ".venv", "venv", "__pycache__", ".next", ".cache", ".pack-next",
+  // sf-agent-po's own workspace, which holds retrieved org metadata.
+  ".sf-agent",
 ]);
 /** Larger files are skipped and reported: no object or field file comes near this. */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -88,7 +90,7 @@ const byName = (a: { name: string }, b: { name: string }) => (a.name < b.name ? 
  * readable, or this throws; a subfolder that is not is reported in `skipped` and passed over.
  * Iterative, so neither a deep tree nor a large one strains the stack.
  */
-async function walk(root: string, start: string, files: Set<string>, skip: (file: string, err: unknown) => void): Promise<void> {
+async function walk(root: string, start: string, files: Set<string>, skip: (file: string, err: unknown) => void, excluded: (rel: string) => boolean = () => false): Promise<void> {
   const stack = [start];
   let first = true;
   while (stack.length) {
@@ -107,7 +109,7 @@ async function walk(root: string, start: string, files: Set<string>, skip: (file
     for (const e of entries.reverse()) {
       const child = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) stack.push(child);
+        if (!SKIP_DIRS.has(e.name) && !excluded(child)) stack.push(child);
       } else if (e.isFile()) {
         files.add(child);
         if (files.size > MAX_FILES) throw new Error(`more than ${MAX_FILES.toLocaleString("en")} files: point the index at the Salesforce project folder`);
@@ -153,7 +155,10 @@ async function packageDirs(root: string): Promise<string[]> {
  * project folder or one of its package folders cannot be read at all, this throws: an
  * empty result would otherwise replace a good index.
  */
-export async function scanProject(root: string): Promise<ParsedMetadata> {
+export async function scanProject(root: string, options: { exclude?: readonly string[] } = {}): Promise<ParsedMetadata> {
+  // Folders not to read, such as the workspace when it sits in the project.
+  const excludedDirs = new Set((options.exclude ?? []).map((d) => path.resolve(d)));
+  const excluded = (rel: string) => excludedDirs.size > 0 && excludedDirs.has(path.resolve(root, rel));
   const components: ParsedComponent[] = [];
   const skipped: ParsedMetadata["skipped"] = [];
   let skippedCount = 0;
@@ -190,7 +195,7 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
   const files = new Set<string>();
   for (const dir of await packageDirs(root)) {
     try {
-      await walk(root, dir, files, (f, err) => skip(f, reason(err)));
+      await walk(root, dir, files, (f, err) => skip(f, reason(err)), excluded);
     } catch (err) {
       throw new Error(`${dir || "the project folder"} cannot be read: ${reason(err)}`);
     }
