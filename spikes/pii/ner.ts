@@ -90,56 +90,68 @@ export async function loadNer(id: string, dtype: string, cacheDir?: string): Pro
       const inputs = tokenizer(text);
       const { logits } = await (model as any)(inputs);
       const [, seqLen, numLabels] = logits.dims as number[];
-      const data = logits.data as Float32Array;
-      const offsets = alignTokens(text, enc.tokens);
-      for (const [i, tok] of enc.tokens.entries()) {
-        if (SPECIAL.test(tok)) continue;
-        stats.tokens++;
-        if (!offsets[i]) stats.unaligned++;
-      }
-      const spans: Span[] = [];
-      let open: Span | null = null;
-      for (let t = 0; t < seqLen!; t++) {
-        const off = offsets[t];
-        if (!off) continue;
-        let best = 0;
-        let max = -Infinity;
-        let sum = 0;
-        for (let k = 0; k < numLabels!; k++) {
-          const v = data[t * numLabels! + k]!;
-          if (v > max) {
-            max = v;
-            best = k;
-          }
-        }
-        for (let k = 0; k < numLabels!; k++) sum += Math.exp(data[t * numLabels! + k]! - max);
-        const label = id2label[best] ?? `LABEL_${best}`;
-        const type = mapLabel(label);
-        const score = 1 / sum;
-        if (off.continuation && open) {
-          // A sub-word always belongs to the word it continues.
-          open.end = off.end;
-          continue;
-        }
-        if (!type) {
-          open = null;
-          continue;
-        }
-        const begins = /^[BS]-/.test(label);
-        if (open && open.type === type && !begins) {
-          open.end = off.end;
-          open.score = Math.min(open.score ?? 1, score);
-        } else {
-          open = { start: off.start, end: off.end, type, source: 'ner', score };
-          spans.push(open);
-        }
-      }
-      // Grow each span to whole words so a name is never half masked (not for CJK).
-      for (const s of spans) {
-        while (s.start > 0 && /[\p{L}\p{N}]/u.test(text[s.start - 1]!) && !/[㐀-鿿]/u.test(text[s.start - 1]!)) s.start--;
-        while (s.end < text.length && /[\p{L}\p{N}]/u.test(text[s.end]!) && !/[㐀-鿿]/u.test(text[s.end]!)) s.end++;
-      }
-      return spans;
+      return decodeSpans(text, enc.tokens, logits.data as Float32Array, seqLen!, numLabels!, id2label, stats);
     },
   };
+}
+
+/** Turns per-token logits into entity spans in `text`. Shared by every runtime, so they can only differ in the logits. */
+export function decodeSpans(
+  text: string,
+  tokens: string[],
+  data: Float32Array,
+  seqLen: number,
+  numLabels: number,
+  id2label: Record<string, string>,
+  stats: { tokens: number; unaligned: number },
+): Span[] {
+  const offsets = alignTokens(text, tokens);
+  for (const [i, tok] of tokens.entries()) {
+    if (SPECIAL.test(tok)) continue;
+    stats.tokens++;
+    if (!offsets[i]) stats.unaligned++;
+  }
+  const spans: Span[] = [];
+  let open: Span | null = null;
+  for (let t = 0; t < seqLen; t++) {
+    const off = offsets[t];
+    if (!off) continue;
+    let best = 0;
+    let max = -Infinity;
+    let sum = 0;
+    for (let k = 0; k < numLabels; k++) {
+      const v = data[t * numLabels + k]!;
+      if (v > max) {
+        max = v;
+        best = k;
+      }
+    }
+    for (let k = 0; k < numLabels; k++) sum += Math.exp(data[t * numLabels + k]! - max);
+    const label = id2label[best] ?? `LABEL_${best}`;
+    const type = mapLabel(label);
+    const score = 1 / sum;
+    if (off.continuation && open) {
+      // A sub-word always belongs to the word it continues.
+      open.end = off.end;
+      continue;
+    }
+    if (!type) {
+      open = null;
+      continue;
+    }
+    const begins = /^[BS]-/.test(label);
+    if (open && open.type === type && !begins) {
+      open.end = off.end;
+      open.score = Math.min(open.score ?? 1, score);
+    } else {
+      open = { start: off.start, end: off.end, type, source: 'ner', score };
+      spans.push(open);
+    }
+  }
+  // Grow each span to whole words so a name is never half masked (not for CJK).
+  for (const s of spans) {
+    while (s.start > 0 && /[\p{L}\p{N}]/u.test(text[s.start - 1]!) && !/[㐀-鿿]/u.test(text[s.start - 1]!)) s.start--;
+    while (s.end < text.length && /[\p{L}\p{N}]/u.test(text[s.end]!) && !/[㐀-鿿]/u.test(text[s.end]!)) s.end++;
+  }
+  return spans;
 }

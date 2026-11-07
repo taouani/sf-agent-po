@@ -11,6 +11,7 @@ in the plan.
 | 3. SQLite (`sqlite/`) | `node:sqlite` or `better-sqlite3`: FTS5 (including Chinese), JSON, several processes writing, speed on a 10,000-component index? | Locally and in GitHub Actions |
 | 4. Host checks (`host-kit/`) | Do Copilot, Cursor and Claude Code show images from tools, support elicitation and survive a long approval wait? Does the Confluence draw.io app render a diagram we create through the API? | By hand, see `host-kit/README.md` |
 | 5. Model licence | May we redistribute the detection model and use it commercially? | Part of spike 1 |
+| 6. Model runtime (`runtime/`) | Can the detection model run on the WebAssembly build of ONNX Runtime instead of the native one (about 550 MB per install), with the same results and acceptable speed? | GitHub Actions (needs huggingface.co) |
 
 ## Running locally
 
@@ -21,6 +22,7 @@ npm run typecheck && npm run check   # rule and alignment checks, no network
 npm run sqlite                        # spike 3
 npm run ocr                           # spike 2
 npm run pii                           # spike 1, needs huggingface.co
+npm run runtime                       # spike 6, needs huggingface.co and the npm registry
 ```
 
 Reports are written to `spikes/out/` (ignored by git). In GitHub Actions they appear in the
