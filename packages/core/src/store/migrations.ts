@@ -1,0 +1,41 @@
+/**
+ * Schema migrations. Append only: never edit a migration that has shipped,
+ * add a new one instead. Each runs once per database, in a transaction.
+ */
+export interface Migration {
+  version: number;
+  name: string;
+  sql: string;
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: "contexts and documents",
+    sql: `
+      CREATE TABLE context (
+        name        TEXT PRIMARY KEY,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        settings    TEXT NOT NULL DEFAULT '{}'   -- JSON, e.g. the output language (FE3)
+      );
+
+      CREATE TABLE document (
+        context     TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        id          TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        metadata    TEXT NOT NULL DEFAULT '{}',  -- JSON
+        -- 0 until the masking layer (phase 2) has processed the content. Imported
+        -- contexts start at 0 so they are masked before any model sees them.
+        masked      INTEGER NOT NULL DEFAULT 0,
+        added_at    TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (context, id),
+        UNIQUE (context, source)
+      );
+    `,
+  },
+];
