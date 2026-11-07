@@ -51,6 +51,13 @@ describe("decoding the model's output", () => {
     const spans = decodeSpans(text, tokens, logitsFor([0, 0, 0, 1, 0, 0]), tokens.length, 5, id2label);
     expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["Margaux"]);
   });
+
+  it("leaves a title before a name visible", () => {
+    const text = "Appeler M. Karim Benali";
+    const tokens = ["[CLS]", "Appeler", "M", ".", "Karim", "Ben", "##ali", "[SEP]"];
+    const spans = decodeSpans(text, tokens, logitsFor([0, 0, 1, 2, 2, 2, 2, 0]), tokens.length, 5, id2label);
+    expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["Karim Benali"]);
+  });
 });
 
 describe("cutting text for the model", () => {

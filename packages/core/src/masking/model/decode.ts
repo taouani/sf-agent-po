@@ -13,6 +13,8 @@ export interface TokenOffset {
 const SPECIAL = /^(\[CLS\]|\[SEP\]|\[PAD\]|\[MASK\]|<s>|<\/s>|<pad>|<mask>)$/;
 const UNKNOWN = /^(\[UNK\]|<unk>)$/;
 const CJK = /[㐀-鿿]/u;
+/** Titles before a name, in English, French, German and Spanish. */
+const TITLE = /^(?:(?:M|MM|Mme|Mmes|Mlle|Mr|Mrs|Ms|Mx|Dr|Pr|Prof|Me|Sr|Sra|Srta)\.?|Sir|Dame|Lord|Lady|Madame|Mademoiselle|Monsieur|Docteur|Herr|Frau)\s+/u;
 
 /** Maps WordPiece, SentencePiece or byte-level tokens back to character offsets in `text`. */
 export function alignTokens(text: string, tokens: readonly string[]): (TokenOffset | null)[] {
@@ -111,11 +113,16 @@ export function decodeSpans(
       spans.push(open);
     }
   }
-  // Grow each span to whole words, so a name is never half masked (not for CJK).
+  // Grow each span to whole words, so a name is never half masked (not for CJK), and leave a
+  // leading title visible ("M. Karim Benali" masks "Karim Benali"): it is not personal data.
   const wordChar = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{N}]/u.test(ch) && !CJK.test(ch);
   for (const s of spans) {
     while (s.start > 0 && wordChar(text[s.start - 1])) s.start--;
     while (s.end < text.length && wordChar(text[s.end])) s.end++;
+    if (s.type === "PERSON") {
+      const title = TITLE.exec(text.slice(s.start, s.end));
+      if (title && title[0].length < s.end - s.start) s.start += title[0].length;
+    }
   }
   return spans;
 }
