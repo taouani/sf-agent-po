@@ -124,8 +124,17 @@ export const UNATTENDED =
  */
 export function withLanguage(prompt: string, language: string): string {
   if (language === "en") return prompt;
-  const name = new Intl.DisplayNames(["en"], { type: "language" }).of(language) ?? language;
-  return `${prompt}\n\nWrite everything you produce in ${name}.`;
+  return `${prompt}\n\nWrite everything you produce in ${languageName(language)}.`;
+}
+
+/**
+ * The languages the scenarios use are named from a table. Intl.DisplayNames
+ * covers the rest; its first use loads locale data, and a test calling it timed out on a busy Windows runner.
+ */
+const LANGUAGE_NAMES: Record<string, string> = { fr: "French", de: "German", it: "Italian", es: "Spanish", ja: "Japanese", zh: "Chinese" };
+
+function languageName(language: string): string {
+  return LANGUAGE_NAMES[language] ?? new Intl.DisplayNames(["en"], { type: "language" }).of(language) ?? language;
 }
 
 function toolCaller(client: Client): CallTool {
