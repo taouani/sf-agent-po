@@ -6,3 +6,5 @@ export { outsideCdataAndComments, parseMetadataXml } from "./xml.js";
 export { readFlow } from "./flows.js";
 export { classifyFile, registryTypeCount, type RegistryMatch, type RegistryType } from "./registry.js";
 export { REGISTRY_VERSION } from "./registry-data.js";
+export { apexCode, MAX_APEX_LENGTH, readApex, soqlFields } from "./apex.js";
+export { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";

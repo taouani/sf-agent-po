@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MetadataIndex, packagePath, parseMetadataXml, readFlow, scanProject, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -22,7 +22,10 @@ describe("classify", () => {
     expect(classify("x/objects/Account/validationRules/V.validationRule-meta.xml")).toEqual({ kind: "validationRule", object: "Account", child: "V" });
     expect(classify("src/objects/Claim__c.object")).toEqual({ kind: "mdapiObject", object: "Claim__c" });
     expect(classify("x/objects/Account/listViews/All.listView-meta.xml")).toBeUndefined();
-    expect(classify("x/classes/Foo.cls")).toBeUndefined();
+    expect(classify("x/classes/Foo.cls")).toEqual({ kind: "apexClass", object: "Foo" });
+    expect(classify("x/classes/Foo.cls-meta.xml")).toBeUndefined();
+    expect(classify("x/profiles/Admin.profile")).toEqual({ kind: "profile", object: "Admin" });
+    expect(classify("x/layouts/Account-Account Layout.layout-meta.xml")).toEqual({ kind: "layout", object: "Account-Account Layout" });
   });
 });
 
@@ -191,10 +194,14 @@ describe("flows", () => {
     const { components } = await scanProject(join(fixtures, "source"));
     const others = components.filter((c) => !["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"].includes(c.type) && !c.missing);
     expect(others.map((c) => `${c.type}:${c.name}`).sort()).toEqual([
+      "ApexClass:RenewalNotifier",
       "ApexClass:RenewalService",
+      "ApexTrigger:PolicyTrigger",
       "Layout:Policy__c-Policy Layout",
       "LightningComponentBundle:policyCard",
       "ListView:Policy__c.All",
+      "PermissionSet:Policy_Manager",
+      "PermissionSetGroup:Renewals",
       "Report:Sales/Pipeline",
       "ReportFolder:Sales",
     ]);
@@ -293,6 +300,100 @@ describe("flow references", () => {
   });
 });
 
+describe("Apex, permissions and layouts", () => {
+  const out = (edges: { from: { name: string }; to: { type: string; name: string }; kind: string }[], name: string) =>
+    edges
+      .filter((e) => e.from.name === name)
+      .map((e) => `${e.kind} ${e.to.type}:${e.to.name}`)
+      .sort();
+
+  it("reads what Apex queries, writes and calls, and what a trigger runs on", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const service = components.find((c) => c.name === "RenewalService")!;
+    expect(service).toMatchObject({ type: "ApexClass", attrs: { kind: "class", sharing: "with", queries: 2, dml: 4 }, text: "" });
+    // Comments are not read: they can name people, and what they mention is not used.
+    expect(JSON.stringify(service)).not.toContain("Dupont");
+    expect(out(edges, "RenewalService")).toEqual(
+      [
+        "calls ApexClass:RenewalNotifier",
+        "calls Flow:Policy_Renewal",
+        "reads CustomField:Account.Segment__c",
+        "reads CustomField:Policy__c.Holder__c",
+        "reads CustomField:Policy__c.Id",
+        "reads CustomField:Policy__c.Name",
+        "reads CustomField:Policy__c.Premium__c",
+        "reads CustomField:Policy__c.Status__c",
+        "reads CustomField:Task.ActivityDate",
+        "reads CustomField:Task.Id",
+        "reads CustomField:Task.WhatId",
+        "reads CustomLabel:Renewal_Segment",
+        "reads CustomObject:Policy__c",
+        "reads CustomObject:Task",
+        "writes CustomField:Account.Name",
+        "writes CustomField:Account.Segment__c",
+        "writes CustomField:Claim__c.Amount__c",
+        "writes CustomField:Claim__c.Policy__c",
+        "writes CustomField:Policy__c.Status__c",
+        "writes CustomObject:Account",
+        "writes CustomObject:Claim__c",
+        "writes CustomObject:Policy__c",
+        "writes CustomObject:Task",
+        "reads CustomField:Account.Industry",
+      ].sort(),
+    );
+    expect(components.find((c) => c.name === "PolicyTrigger")).toMatchObject({ type: "ApexTrigger", attrs: { object: "Policy__c", events: ["before insert", "after update"] } });
+    expect(out(edges, "PolicyTrigger")).toEqual([
+      "calls ApexClass:RenewalService",
+      "reads CustomField:Policy__c.Premium__c",
+      "triggers_on CustomObject:Policy__c",
+      "writes CustomField:Policy__c.Premium__c",
+      "writes CustomObject:Policy__c",
+    ]);
+  });
+
+  it("reads what permission sets grant, what groups include and what layouts show", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const ps = components.find((c) => c.name === "Policy_Manager")!;
+    expect(ps).toMatchObject({
+      type: "PermissionSet",
+      label: "Policy Manager",
+      attrs: { activationRequired: false, objects: { Policy__c: "CRE" }, fields: { "Policy__c.Status__c": "edit", "Policy__c.Premium__c": "read" }, userPermissions: ["RunReports"] },
+      text: "For the renewals team led by Jeanne Dupont",
+    });
+    expect(out(edges, "Policy_Manager")).toEqual([
+      "grants ApexClass:RenewalService",
+      "grants CustomField:Policy__c.Premium__c",
+      "grants CustomField:Policy__c.Status__c",
+      "grants CustomObject:Policy__c",
+      "grants Flow:Policy_Renewal",
+    ]);
+    expect(out(edges, "Renewals")).toEqual(["includes PermissionSet:Policy_Manager"]);
+    expect(components.find((c) => c.type === "Layout")).toMatchObject({ parent: "Policy__c", attrs: { object: "Policy__c", required: ["Name"], readonly: ["Premium__c"] } });
+    expect(out(edges, "Policy__c-Policy Layout")).toEqual([
+      "part_of CustomObject:Policy__c",
+      "shows CustomField:Claim__c.Policy__c",
+      "shows CustomField:Policy__c.Name",
+      "shows CustomField:Policy__c.Premium__c",
+      "shows CustomField:Policy__c.Status__c",
+    ]);
+  });
+
+  it("scans Apex queries and code without being misled by strings, comments or keywords", () => {
+    expect(soqlFields("SELECT Id, toLabel(Status), COUNT(Amount__c) total, (SELECT Id FROM Contacts) FROM Account WHERE Name LIKE :n AND CreatedDate = LAST_N_DAYS:7 ORDER BY Owner.Name DESC NULLS LAST")).toEqual({
+      object: "Account",
+      fields: ["Id", "Status", "Amount__c", "Name", "CreatedDate", "Owner.Name"],
+    });
+    expect(apexCode("a = 'it\\'s // not'; // x\n/* y */b")).toBe("a = '            '; // x\n/* y */b".replace("// x", "    ").replace("/* y */", "       "));
+    const c = readApex("ApexClass", "C", "public class C { void m(User u, Foo f) { return u; } void update(List<X> l) {} String s = 'insert acc;'; }", "classes/C.cls");
+    // Only classes the project might have are named, and only linked if it has them.
+    expect(c.refs!.every((r) => r.kind === "calls" && r.known)).toBe(true);
+    expect(linkObjects([c]).edges).toEqual([]);
+    const huge = readApex("ApexClass", "Big", "x".repeat(MAX_APEX_LENGTH + 1), "classes/Big.cls");
+    expect(huge).toMatchObject({ attrs: { tooLarge: true } });
+    expect(huge.refs).toBeUndefined();
+  });
+});
+
 describe("formulaFields", () => {
   const fields = new Map<string, Map<string, ParsedComponent>>([
     ["case", new Map([["contract__c", { type: "CustomField", name: "Case.Contract__c", attrs: { referenceTo: ["Contract__c"] }, text: "" }]])],
@@ -364,8 +465,10 @@ describe("MetadataIndex", () => {
       "Policy__c.Holder__c",
       "Policy__c.Holder_Industry__c",
       "Policy__c.Id",
+      "Policy__c.Name",
       "Policy__c.Premium__c",
       "Policy__c.Status__c",
+      "Policy__c-Policy Layout",
       "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
@@ -373,7 +476,15 @@ describe("MetadataIndex", () => {
 
     const premium = index.component(snap.id, "CustomField", "Policy__c.Premium__c")!;
     const near = index.related(premium.id);
-    expect(near.map((r) => `${r.direction} ${r.kind} ${r.component.name}`)).toEqual(["out part_of Policy__c", "in reads Policy__c.Premium_Required"]);
+    expect(near.map((r) => `${r.direction} ${r.kinds.join("+")} ${r.component.name}`)).toEqual([
+      "out part_of Policy__c",
+      "in reads RenewalService",
+      "in writes+reads PolicyTrigger",
+      "in shows Policy__c-Policy Layout",
+      "in grants Policy_Manager",
+      "in reads Policy__c.Premium_Required",
+    ]);
+    expect(near.find((r) => r.component.name === "PolicyTrigger")?.kind).toBe("writes");
     // Two hops out from the formula field: through Account to its owner field and User.
     const formula = index.component(snap.id, "CustomField", "Policy__c.Holder_Industry__c")!;
     const deep = index.related(formula.id, { depth: 2 }).filter((r) => r.direction === "out");

@@ -129,10 +129,16 @@ const STANDARD_RELATIONSHIPS: Record<string, string | null> = {
 /** Standard objects a relationship of the same name leads to. */
 const STANDARD_OBJECTS = new Set(
   [
-    "Account", "Asset", "Campaign", "Case", "Contact", "Contract", "Individual", "Lead", "Opportunity", "Order", "Pricebook2",
-    "Product2", "Profile", "Quote", "RecordType", "User", "UserRole", "WorkOrder", "ServiceContract", "Entitlement",
+    "Account", "AccountContactRelation", "Asset", "AssignedResource", "Attachment", "BusinessHours", "Campaign", "CampaignMember", "Case",
+    "CaseComment", "Contact", "ContentDocument", "ContentDocumentLink", "ContentVersion", "Contract", "EmailMessage", "Entitlement", "Event",
+    "FeedItem", "Group", "GroupMember", "Individual", "Lead", "Location", "Note", "Opportunity", "OpportunityContactRole", "OpportunityLineItem",
+    "Order", "OrderItem", "Organization", "PermissionSet", "PermissionSetAssignment", "Pricebook2", "PricebookEntry", "Product2", "Profile",
+    "Quote", "QuoteLineItem", "RecordType", "ServiceAppointment", "ServiceContract", "ServiceResource", "Task", "User", "UserRole", "WorkOrder",
+    "WorkOrderLineItem", "WorkType",
   ].map((o) => o.toLowerCase()),
 );
+/** A standard object common enough that code naming it means the object (Account, Task). */
+export const isStandardObject = (name: string) => STANDARD_OBJECTS.has(name.toLowerCase());
 
 const FORMULA_WORDS = new Set(["true", "false", "null", "and", "or", "not"]);
 
@@ -267,14 +273,15 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     for (const ref of c.refs ?? []) {
       if ("type" in ref) {
         const types = typeof ref.type === "string" ? [ref.type] : ref.type;
-        const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? types[0];
+        const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? (ref.known ? undefined : types[0]);
         if (type) edges.push({ from, to: need(type, ref.name), kind: ref.kind });
-      } else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
+      } else if (ref.known && !objectNamed(ref.object)) continue;
+      else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
       else {
         const fields = formulaFields(ref.path, objectNamed(ref.object) ?? ref.object, fieldsOf, objectNamed);
-        // A path through relationships reads each lookup; only the field at its end is
-        // written, and with it a record of that field's object.
-        fields.forEach((field, i) => readsField(from, field, ref.kind === "writes" && i === fields.length - 1 ? "writes" : "reads"));
+        // A path through relationships reads each lookup; the field at its end is what the
+        // reference is about (written, granted, shown); a write writes a record of its object.
+        fields.forEach((field, i) => readsField(from, field, i === fields.length - 1 ? ref.kind : "reads"));
         const last = fields.at(-1);
         if (ref.kind === "writes" && last && last.lastIndexOf(".") > 0) edges.push({ from, to: need("CustomObject", last.slice(0, last.lastIndexOf("."))), kind: "writes" });
       }

@@ -54,9 +54,15 @@ export interface IndexedComponent {
   text: string;
 }
 
+/** Which link to name first when there are several: what changes data before what reads it. */
+const KIND_ORDER: readonly EdgeKind[] = ["writes", "triggers_on", "calls", "reads", "grants", "shows", "references", "includes", "part_of"];
+
 export interface Related {
   component: IndexedComponent;
+  /** The strongest link (writes before reads): the first of `kinds`. */
   kind: EdgeKind;
+  /** Every kind of link at that distance. */
+  kinds: EdgeKind[];
   /** "out": the component depends on this one; "in": this one depends on the component. */
   direction: "out" | "in";
   depth: number;
@@ -275,18 +281,29 @@ export class MetadataIndex {
         SELECT e.src, e.kind, w.direction, w.depth + 1 FROM walk w JOIN edge e ON e.dst = w.id
           WHERE w.direction = 'in' AND w.depth < ? ${kindFilter}
       )
-      SELECT ${COLUMNS}, w.kind AS edge_kind, w.direction, min(w.depth) AS depth
+      SELECT ${COLUMNS}, group_concat(DISTINCT w.kind) AS edge_kinds, w.direction, w.depth
       FROM walk w JOIN component c ON c.id = w.id
       WHERE w.id != ?
-      GROUP BY c.id, w.direction
-      ORDER BY depth, w.direction DESC, c.type, c.name`;
+      GROUP BY c.id, w.direction, w.depth
+      ORDER BY w.depth, w.direction DESC, c.type, c.name`;
     const rows = this.db
       .prepare(sql)
       .all(componentId, ...kindParams, componentId, ...kindParams, depth, ...kindParams, depth, ...kindParams, componentId) as unknown as (ComponentRow & {
-      edge_kind: EdgeKind;
+      edge_kinds: string;
       direction: "out" | "in";
       depth: number;
     })[];
-    return rows.map((r) => ({ component: toComponent(r), kind: r.edge_kind, direction: r.direction, depth: r.depth }));
+    // Rows come shortest first: each component is kept at its shortest distance, with every
+    // way it is linked there (a trigger that reads and writes a field).
+    const seen = new Set<string>();
+    const out: Related[] = [];
+    for (const r of rows) {
+      const key = `${r.id}:${r.direction}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const kinds = (r.edge_kinds.split(",") as EdgeKind[]).sort((a, b) => KIND_ORDER.indexOf(a) - KIND_ORDER.indexOf(b));
+      out.push({ component: toComponent(r), kind: kinds[0]!, kinds, direction: r.direction, depth: r.depth });
+    }
+    return out;
   }
 }
