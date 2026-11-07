@@ -230,6 +230,10 @@ The new code lives in npm workspaces under `packages/`:
   every later document, even without the model (one-word names only in their own case).
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
+  Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into
+  Markdown that keeps its shape (headings, lists and tables; slides with their titles and
+  notes; sheets by name; a diagram's shapes and connections), with no native code. Scanned
+  PDFs and images need OCR, which comes with image redaction.
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
   the MCP server with Anthropic, OpenAI or xAI models and has a judge model score the result.
   See [packages/eval/README.md](packages/eval/README.md).
