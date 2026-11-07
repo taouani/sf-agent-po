@@ -20,6 +20,8 @@ New here? The [user guide](docs/user-guide.md) walks through installing the serv
 | 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Done |
 | 4 | Per-host packaging (Claude Code, Cursor, Copilot), sample scenarios, industry templates | Done |
 
+That was the 0.x server. The v1 rebuild (`sf-agent-po@next`) follows the [v1 plan](docs/plan.md): phases 0 to 3 are done apart from the evaluation baseline (masking, approval, metadata index, scope and impact analysis), and phase 4, guided workflows, is next.
+
 ## Tools
 
 | Tool | What it does |
