@@ -7,6 +7,7 @@ import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer } from "../src/index.js";
+import { trimDetails } from "../src/metadata-tools.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -45,17 +46,19 @@ function project(): string {
   );
   w("classes/PolicyService.cls", "public class PolicyService { void x() { Policy__c p = [SELECT Premium__c FROM Policy__c LIMIT 1]; } }");
   w("classes/PolicyService.cls-meta.xml", "<ApexClass/>");
+  const perms = Array.from({ length: 500 }, (_, i) => `<fieldPermissions><field>Claim__c.F${i}__c</field><readable>true</readable><editable>false</editable></fieldPermissions>`).join("");
+  w("profiles/Admin.profile", `<?xml version="1.0"?><Profile><custom>false</custom>${perms}</Profile>`);
   return root;
 }
 
-async function connect() {
+async function connect(sf?: (args: string[]) => Promise<unknown>) {
   const db = new Database(":memory:");
   const vault = new Vault(db, newVaultKey());
   const masker = new Masker({ vault, model: fakeModel(["Karim Benali", "Karim"]) });
   const index = new MetadataIndex(db);
   const workspace = mkdtempSync(path.join(tmpdir(), "sf-agent-ws-"));
   dirs.push(workspace);
-  const indexer = new BackgroundIndexer(index, { workspace });
+  const indexer = new BackgroundIndexer(index, { workspace, ...(sf ? { sf } : {}) });
   const approval = new ApprovalServer();
   const server = createServer({
     contexts: new ContextRepository(db),
@@ -118,7 +121,7 @@ describe("metadata tools", () => {
 
     const summary = await call("metadata_summary", { context: "acme" });
     expect(summary.text).toContain("- CustomField: 2");
-    expect(summary.text).toContain('- Policy__c "Policy": 2 fields, 0 validation rules, 1 record-triggered flows, 0 Apex triggers');
+    expect(summary.text).toContain('- Policy__c "Policy": 2 fields, 0 validation rules, 1 flows run on its records, 0 Apex triggers');
 
     const search = await call("metadata_search", { context: "acme", query: "Status" });
     expect(search.text).toContain('- CustomField Policy__c.Status__c "Status for [PERSON_1]" [Picklist]');
@@ -142,6 +145,42 @@ describe("metadata tools", () => {
 
     const missing = await call("metadata_component", { context: "acme", type: "CustomField", name: "Policy__c.Statu__c" });
     expect(missing.text).toContain("No CustomField named Policy__c.Statu__c");
+  });
+
+  it("open a report by the masked name they listed it under", async () => {
+    const { call, index } = await connect();
+    await indexProject(index, project());
+    const reports = await call("metadata_search", { context: "acme", query: "Accounts", types: ["Report"] });
+    const name = /- Report (\S+)/.exec(reports.text)?.[1];
+    expect(name).toMatch(/\[PERSON_\d+\]/);
+    const opened = await call("metadata_component", { context: "acme", type: "Report", name: name! });
+    expect(opened.isError).toBeFalsy();
+    expect(opened.text).toContain(`- Report ${name}`);
+    expect(opened.text).not.toContain("Karim");
+    // A search with the pseudonym finds it too.
+    expect((await call("metadata_search", { context: "acme", query: name!.split("/")[0]!, types: ["Report"] })).text).toContain("1 match");
+  });
+
+  it("cut long details, such as a profile's field permissions", async () => {
+    const { call, index } = await connect();
+    await indexProject(index, project());
+    const profile = await call("metadata_component", { context: "acme", type: "Profile", name: "Admin" });
+    expect(profile.text).toContain("460 more entries");
+    expect(profile.text.length).toBeLessThan(20_000);
+    expect(trimDetails({ a: Array.from({ length: 45 }, (_, i) => i) })).toEqual({ a: [...Array.from({ length: 40 }, (_, i) => i), "and 5 more"] });
+  });
+
+  it("mask the error of a failed run", async () => {
+    const { call, indexer } = await connect(async (args) => {
+      if (args[1] === "display") return { id: "00D000000000001AAA", alias: "uat" };
+      throw new Error("Entity of type 'Report' named 'Karim_Folder/Karim_Accounts' cannot be found");
+    });
+    await call("metadata_index", { org: "uat" });
+    await indexer.settle();
+    const sources = await call("metadata_sources");
+    expect(sources.text).toContain("failed");
+    expect(sources.text).toContain("[PERSON_");
+    expect(sources.text).not.toContain("Karim");
   });
 
   it("refuse a source that is not indexed", async () => {

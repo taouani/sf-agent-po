@@ -538,14 +538,15 @@ describe("MetadataIndex", () => {
     expect(index.children(snap.id, "policy__c").map((c) => c.name)).toEqual([
       "Policy__c.Holder__c",
       "Policy__c.Holder_Industry__c",
-      "Policy__c.Id",
-      "Policy__c.Name",
       "Policy__c.Premium__c",
       "Policy__c.Status__c",
       "Policy__c-Policy Layout",
       "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
+      // Standard fields only referenced come after what the project holds.
+      "Policy__c.Id",
+      "Policy__c.Name",
     ]);
 
     const premium = index.component(snap.id, "CustomField", "Policy__c.Premium__c")!;

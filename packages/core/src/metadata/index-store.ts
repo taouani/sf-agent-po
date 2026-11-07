@@ -74,7 +74,7 @@ export interface ObjectSummary {
   label?: string;
   fields: number;
   rules: number;
-  /** Record-triggered flows and Apex triggers that run on its records. */
+  /** Flows (record-triggered or scheduled, any status) and Apex triggers that run on its records. */
   flows: number;
   triggers: number;
   /** Components that link to it, other than its own children. */
@@ -249,11 +249,11 @@ export class MetadataIndex {
     return (this.db.prepare("SELECT * FROM metadata_snapshot ORDER BY id DESC").all() as unknown as SnapshotRow[]).map(toSnapshot);
   }
 
-  /** A component by type and API name; the case of the name does not matter (Salesforce ignores it). */
+  /** A component by type and API name; the case of the name does not matter (the column ignores it, as Salesforce does). */
   component(snapshot: number, type: ComponentType, name: string): IndexedComponent | undefined {
     const r = this.db
-      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ? COLLATE NOCASE ORDER BY c.name = ? DESC LIMIT 1`)
-      .get(snapshot, type, name, name) as ComponentRow | undefined;
+      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ?`)
+      .get(snapshot, type, name) as ComponentRow | undefined;
     return r && toComponent(r);
   }
 
@@ -264,7 +264,7 @@ export class MetadataIndex {
   children(snapshot: number, parent: string, parentType: ComponentType = "CustomObject"): IndexedComponent[] {
     return (
       this.db
-        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent_type = ? AND c.parent = ? ORDER BY c.type, c.name`)
+        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent_type = ? AND c.parent = ? ORDER BY c.present DESC, c.type, c.name`)
         .all(snapshot, parentType, parent) as unknown as ComponentRow[]
     ).map(toComponent);
   }
@@ -278,8 +278,8 @@ export class MetadataIndex {
     const rows = this.db
       .prepare(
         `SELECT o.name, o.label,
-           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'CustomField') AS fields,
-           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'ValidationRule') AS rules,
+           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'CustomField' AND f.present = 1) AS fields,
+           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'ValidationRule' AND f.present = 1) AS rules,
            (SELECT count(*) FROM edge e JOIN component s ON s.id = e.src WHERE e.dst = o.id AND e.kind = 'triggers_on' AND s.type = 'Flow') AS flows,
            (SELECT count(*) FROM edge e JOIN component s ON s.id = e.src WHERE e.dst = o.id AND e.kind = 'triggers_on' AND s.type = 'ApexTrigger') AS triggers,
            (SELECT count(DISTINCT e.src) FROM edge e WHERE e.dst = o.id AND e.kind != 'part_of') AS linked

@@ -40,6 +40,27 @@ const MAX_TEXT = 2_000;
 const MAX_RELATED = 150;
 /** Children (fields, rules...) listed for one component. */
 const MAX_CHILDREN = 300;
+/** Entries kept of each list or map in a component's details (a profile's field permissions). */
+const MAX_DETAIL_ENTRIES = 40;
+/** How much of a component's details is shown, as JSON. */
+const MAX_DETAILS = 6_000;
+
+/**
+ * A component's details with long lists and maps cut to their first entries, and a count of
+ * the rest: a profile lists every field of the org.
+ */
+export function trimDetails(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const kept = value.slice(0, MAX_DETAIL_ENTRIES).map(trimDetails);
+    return value.length > kept.length ? [...kept, `and ${value.length - kept.length} more`] : kept;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value);
+    const kept = entries.slice(0, MAX_DETAIL_ENTRIES).map(([k, v]) => [k, trimDetails(v)] as const);
+    return Object.fromEntries(entries.length > kept.length ? [...kept, ["(more)", `${entries.length - kept.length} more entries`]] : kept);
+  }
+  return value;
+}
 
 /** Masks pieces of text for a context, each distinct piece once. */
 class Pieces {
@@ -62,6 +83,11 @@ class Pieces {
   /** A component's name: masked for types named like text. */
   name(type: string, name: string): Promise<string> {
     return NAMED_LIKE_TEXT.has(type) ? this.mask(name) : Promise.resolve(name);
+  }
+
+  /** What the model wrote (a masked report name, a query), with the real values put back, to look it up. */
+  real(value: string): string {
+    return this.masker.unmask(this.context, value).text;
   }
 
   /** Every string in a value (attrs hold formulas, picklist values, help text), masked. */
@@ -95,9 +121,10 @@ function describeSource(s: SnapshotInfo): string {
   return `${s.source} (${s.kind}, ${total(s)} components, indexed ${s.finishedAt ?? s.startedAt}${s.kind === "repo" && s.revision ? `, commit ${s.revision.slice(0, 12)}` : ""})`;
 }
 
-function describeJob(j: IndexJob): string {
+/** A run, with its progress line or error masked: an error can quote a report's name or the CLI's output. */
+async function describeJob(pieces: Pieces, j: IndexJob): Promise<string> {
   const when = j.finishedAt ? `finished ${j.finishedAt}` : `started ${j.startedAt}`;
-  return `${j.target}: ${j.state}, ${when}${j.message ? `: ${j.message}` : ""}`;
+  return `${j.target}: ${j.state}, ${when}${j.message ? `: ${await pieces.mask(j.message)}` : ""}`;
 }
 
 const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash"); the newest one when omitted.');
@@ -130,14 +157,15 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     {
       title: "List indexed orgs and projects",
       description: "Lists the orgs and project folders in the metadata index, and the indexing runs since the server started.",
-      inputSchema: {},
+      inputSchema: { context: contextName },
       annotations: { readOnlyHint: true },
     },
-    guard(async () => {
+    guard(async ({ context }: { context: string }) => {
       const ready = readySources(index);
       const jobs = indexer.list();
+      const pieces = new Pieces(kit.masker, context);
       const lines = [ready.length ? `Indexed:\n${ready.map((s) => `- ${describeSource(s)}`).join("\n")}` : "Nothing is indexed yet."];
-      if (jobs.length) lines.push(`Runs since the server started:\n${jobs.map((j) => `- ${describeJob(j)}`).join("\n")}`);
+      if (jobs.length) lines.push(`Runs since the server started:\n${(await Promise.all(jobs.map(async (j) => `- ${await describeJob(pieces, j)}`))).join("\n")}`);
       return text(lines.join("\n\n"));
     }),
   );
@@ -147,7 +175,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     {
       title: "Summarize an org or a project",
       description:
-        "Gives an overview of an indexed org or project: how many components of each type, and the busiest objects (fields, validation rules, record-triggered flows and Apex triggers on them). " +
+        "Gives an overview of an indexed org or project: how many components of each type, and the busiest objects (fields, validation rules, and the flows and Apex triggers that run on their records). " +
         "Start here before a design, then look closer with metadata_search and metadata_component. Labels are masked like any input.",
       inputSchema: { context: contextName, source: sourceArg, objects: z.number().int().min(1).max(200).default(30).describe("How many objects to list.") },
       annotations: { readOnlyHint: true },
@@ -160,7 +188,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       const rows = await Promise.all(
         busiest.map(async (o) => {
           const label = o.label ? ` "${await pieces.mask(o.label)}"` : "";
-          return `- ${o.name}${label}: ${o.fields} fields, ${o.rules} validation rules, ${o.flows} record-triggered flows, ${o.triggers} Apex triggers, ${o.linked} components link to it`;
+          return `- ${o.name}${label}: ${o.fields} fields, ${o.rules} validation rules, ${o.flows} flows run on its records, ${o.triggers} Apex triggers, ${o.linked} components link to it`;
         }),
       );
       const lines = [
@@ -191,9 +219,9 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     },
     guard(async ({ context, source, query, types, limit }: { context: string; source?: string; query: string; types?: string[]; limit: number }) => {
       const snap = pick(index, source);
-      const found = index.search(snap.id, query, { types: types as ComponentType[] | undefined, limit });
-      if (!found.length) return text(`Nothing in ${snap.source} matches "${query}".`);
       const pieces = new Pieces(kit.masker, context);
+      const found = index.search(snap.id, pieces.real(query), { types: types as ComponentType[] | undefined, limit });
+      if (!found.length) return text(`Nothing in ${snap.source} matches "${query}".`);
       const lines = await Promise.all(found.map((c) => line(pieces, c)));
       return text(`${found.length} match(es) in ${snap.source}:\n${lines.join("\n")}`);
     }),
@@ -219,17 +247,21 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     guard(
       async ({ context, source, type, name, depth, kinds }: { context: string; source?: string; type: string; name: string; depth: number; kinds?: (typeof EDGE_KINDS)[number][] }) => {
         const snap = pick(index, source);
-        const c = index.component(snap.id, type as ComponentType, name);
+        const pieces = new Pieces(kit.masker, context);
+        // A report's name was masked when it was listed: the model passes the masked one back.
+        const real = pieces.real(name);
+        const c = index.component(snap.id, type as ComponentType, real);
         if (!c) {
-          const near = index.search(snap.id, name.split(".").pop() ?? name, { limit: 5 });
-          const pieces = new Pieces(kit.masker, context);
+          const near = index.search(snap.id, real.split(/[./]/).pop() || real, { limit: 5 });
           const hint = near.length ? ` Close matches:\n${(await Promise.all(near.map((n) => line(pieces, n)))).join("\n")}` : "";
           return text(`No ${type} named ${name} in ${snap.source}.${hint}`);
         }
-        const pieces = new Pieces(kit.masker, context);
         const out: string[] = [`${await line(pieces, c)}`, `Source: ${snap.source}`];
         if (c.missing) out.push("Not in the source: it is only referenced (a standard object or field).");
-        if (Object.keys(c.attrs).length) out.push(`Details: ${JSON.stringify(await pieces.deep(c.attrs))}`);
+        if (Object.keys(c.attrs).length) {
+          const details = JSON.stringify(await pieces.deep(trimDetails(c.attrs)));
+          out.push(details.length > MAX_DETAILS ? `Details (first ${MAX_DETAILS} characters): ${details.slice(0, MAX_DETAILS)}` : `Details: ${details}`);
+        }
         if (c.text.trim()) {
           const t = await pieces.mask(c.text.length > MAX_TEXT ? c.text.slice(0, MAX_TEXT) : c.text);
           out.push(`Text${c.text.length > MAX_TEXT ? ` (first ${MAX_TEXT} characters)` : ""}:\n${t}`);
@@ -250,7 +282,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
   );
 }
 
-/** One component on one line: type, API name, label and parent. */
+/** One component on one line: type, API name, label, and its kind (a field's type). */
 async function line(pieces: Pieces, c: IndexedComponent): Promise<string> {
   const name = await pieces.name(c.type, c.name);
   const label = c.label ? ` "${await pieces.mask(c.label)}"` : "";
