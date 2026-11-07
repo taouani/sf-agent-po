@@ -8,6 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { atlassianConfigFromEnv, AtlassianClient } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, Masker, openVault } from "@sf-agent-po/core";
 import { ApprovalServer } from "./approval/server.js";
+import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
 import { createServer } from "./server.js";
 import { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";
 
@@ -47,4 +48,24 @@ async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
-await main();
+/** `init` writes the agent files for the user's AI tools into a project; with no command, the server starts. */
+async function init(argv: string[]): Promise<void> {
+  try {
+    const opts = parseInitArgs(argv);
+    if ("help" in opts) return console.log(opts.help);
+    const report = await runInit(opts);
+    for (const line of report) console.log(line);
+    if (report.some((line) => line.startsWith("failed"))) process.exitCode = 1;
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+const command = process.argv[2];
+if (command === "init") await init(process.argv.slice(3));
+else if (command !== undefined) {
+  // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
+  console.error(`Unknown command "${command}". Run sf-agent-po-next with no arguments to start the MCP server.\n\n${USAGE}`);
+  process.exitCode = 1;
+} else await main();
