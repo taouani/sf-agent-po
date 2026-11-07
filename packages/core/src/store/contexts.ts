@@ -34,6 +34,15 @@ export type NewDocument = Pick<SourceDocument, "kind" | "title" | "source" | "co
   masked?: boolean;
 };
 
+/** A whole context as the importer hands it over, with its original dates. */
+export interface ImportedContext {
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  settings?: Record<string, unknown>;
+  documents: (NewDocument & { addedAt: string })[];
+}
+
 export interface ContextInfo {
   name: string;
   createdAt: string;
@@ -168,6 +177,27 @@ export class ContextRepository {
       const { changes } = this.db.prepare("DELETE FROM document WHERE context = ? AND id = ?").run(name, id);
       if (changes > 0) this.touch(name, new Date().toISOString());
       return changes > 0;
+    });
+  }
+
+  /**
+   * Imports a whole context with its own dates, in one transaction, for the
+   * 0.x JSON importer. Documents keep their id, which depends only on the
+   * source. An existing context is left alone unless `replace` is set, in
+   * which case it is deleted first. Returns false when it was left alone.
+   */
+  importContext(ctx: ImportedContext, { replace = false } = {}): boolean {
+    validateContextName(ctx.name);
+    return this.database.write(() => {
+      if (this.get(ctx.name)) {
+        if (!replace) return false;
+        this.db.prepare("DELETE FROM context WHERE name = ?").run(ctx.name);
+      }
+      this.db
+        .prepare("INSERT INTO context (name, created_at, updated_at, settings) VALUES (?, ?, ?, ?)")
+        .run(ctx.name, ctx.createdAt, ctx.updatedAt, JSON.stringify(ctx.settings ?? {}));
+      for (const d of ctx.documents) this.put(ctx.name, d, d.addedAt, d.addedAt);
+      return true;
     });
   }
 

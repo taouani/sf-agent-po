@@ -195,5 +195,7 @@ The new code lives in npm workspaces under `packages/`:
 
 - `packages/core`: the workspace database (SQLite through `node:sqlite`, with migrations).
   Later it also holds masking, the metadata index and the workflow engine. It needs Node 24.
+  `importLegacyWorkspace` copies the 0.x contexts (`.sf-agent/contexts/*.json`) into the
+  database, keeping document ids and dates. It only reads the JSON files.
 
 `npm test` and `npm run typecheck` cover both the current server and the packages.

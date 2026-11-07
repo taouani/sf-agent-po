@@ -7,6 +7,8 @@ export {
   validateContextName,
   type ContextInfo,
   type DocumentKind,
+  type ImportedContext,
   type NewDocument,
   type SourceDocument,
 } from "./store/contexts.js";
+export { importLegacyWorkspace, parseLegacyContext, type ImportReport } from "./store/import.js";
