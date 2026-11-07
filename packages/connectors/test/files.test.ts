@@ -20,7 +20,9 @@ describe("loadLocalDocuments", () => {
   });
 
   it("decodes nested multipart, quoted-printable bodies, encoded headers and attachments", async () => {
-    const [doc] = await loadLocalDocuments(path.join(inputs, "pi-planning-decisions.eml"));
+    const docs = await loadLocalDocuments(path.join(inputs, "pi-planning-decisions.eml"));
+    expect(docs).toHaveLength(1);
+    const doc = docs[0]!;
     expect(doc.title).toBe("PI planning – decisions");
     expect(doc.content).toBe("Renewal portal is committed for PI 4.\nAgents get a dashboard of renewals due in 30 days.");
     expect(doc.metadata).toMatchObject({
@@ -31,7 +33,9 @@ describe("loadLocalDocuments", () => {
   });
 
   it("applies an explicit kind", async () => {
-    const [doc] = await loadLocalDocuments(path.join(inputs, "kickoff-notes.md"), "meeting-notes");
+    const docs = await loadLocalDocuments(path.join(inputs, "kickoff-notes.md"), "meeting-notes");
+    expect(docs.map((d) => d.kind)).toEqual(["meeting-notes"]);
+    const doc = docs[0]!;
     expect(doc.kind).toBe("meeting-notes");
   });
 

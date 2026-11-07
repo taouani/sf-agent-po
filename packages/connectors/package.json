@@ -17,11 +17,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit --rootDir .. --customConditions @sf-agent-po/source"
+    "typecheck": "tsc -p tsconfig.check.json"
   },
   "dependencies": {
     "@sf-agent-po/core": "0.0.0",
     "marked": "^18.1.1",
     "postal-mime": "^4.1.4"
+  },
+  "devDependencies": {
+    "fast-xml-parser": "^5.11.2"
   }
 }

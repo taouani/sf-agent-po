@@ -203,4 +203,5 @@ The new code lives in npm workspaces under `packages/`:
 The connectors started as copies of the 0.x modules in `src/`, which stay as they are so the
 current server keeps working. A fix to one of them belongs in both places until v1 replaces 0.x.
 
-`npm test` and `npm run typecheck` cover both the current server and the packages.
+`npm test` and `npm run typecheck` cover both the current server and the packages; in the packages,
+`typecheck` also checks the tests (`tsconfig.check.json`).
