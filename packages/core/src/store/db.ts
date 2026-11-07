@@ -15,12 +15,18 @@ export class Database {
   constructor(readonly file: string, migrations: readonly Migration[] = MIGRATIONS) {
     if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
     this.db = new DatabaseSync(file, { timeout: 5000 });
-    // The busy timeout must be set before anything that needs a lock (such as
-    // switching to WAL), or a second process fails at once with "database is locked".
-    this.db.exec("PRAGMA busy_timeout = 5000");
-    if (file !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
-    migrate(this, migrations);
+    try {
+      // The busy timeout must be set before anything that needs a lock (such as
+      // switching to WAL), or a second process fails at once with "database is locked".
+      this.db.exec("PRAGMA busy_timeout = 5000");
+      if (file !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
+      this.db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
+      migrate(this, migrations);
+    } catch (err) {
+      // Release the file: on Windows an open handle keeps it locked.
+      this.db.close();
+      throw err;
+    }
   }
 
   /**
