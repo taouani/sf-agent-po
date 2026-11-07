@@ -1,0 +1,33 @@
+{
+  "name": "sf-agent-po-spikes",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Phase 0 technical spikes for sf-agent-po v1. Not shipped.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "ocr": "node ocr/run.ts",
+    "sqlite": "node sqlite/run.ts",
+    "pii": "node pii/run.ts",
+    "host-kit": "node host-kit/server.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "node pii/align.check.ts && node pii/rules.check.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.2",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/fra": "1.0.0",
+    "better-sqlite3": "13.0.3",
+    "sharp": "0.35.5",
+    "tesseract.js": "7.0.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^7.0.2"
+  }
+}

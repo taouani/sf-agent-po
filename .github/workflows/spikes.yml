@@ -1,0 +1,84 @@
+name: Spikes
+
+on:
+  pull_request:
+    paths:
+      - 'spikes/**'
+      - '.github/workflows/spikes.yml'
+  workflow_dispatch:
+    inputs:
+      pii_models:
+        description: 'Models for spike 1, as id@dtype separated by commas (empty for the defaults)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: spikes
+
+jobs:
+  portable:
+    name: OCR and SQLite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: spikes/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check
+      - run: npm run sqlite
+      - run: npm run ocr
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-results-${{ matrix.os }}
+          path: |
+            spikes/out/*.md
+            spikes/out/*.json
+            spikes/out/redacted/
+
+  pii:
+    name: PII detection and licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: spikes/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: spikes/out/hf-cache
+          # One cache per model list; other lists start from the nearest one and add what is missing.
+          # Caches saved on a pull request are only visible to that pull request's runs.
+          key: hf-models-v1-${{ inputs.pii_models || 'default' }}
+          restore-keys: hf-models-v1-
+      - run: npm ci
+      - run: npm run pii
+        env:
+          PII_MODELS: ${{ inputs.pii_models }}
+      - name: OCR redaction with the model added
+        run: npm run ocr
+        env:
+          OCR_NER_MODEL: Xenova/bert-base-multilingual-cased-ner-hrl@q8
+          OCR_VARIANTS: 4.0.0_best_int
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-results-pii
+          path: |
+            spikes/out/*.md
+            spikes/out/*.json
+            spikes/out/redacted/
