@@ -33,6 +33,8 @@ interface Score {
   byLang: Record<string, { full: number; total: number }>;
   byType: Record<string, { full: number; total: number }>;
   person: Record<string, { full: number; total: number }>;
+  maskedChars: number; // non-space characters masked
+  maskedOutside: number; // of which outside every gold entity (over-masking)
   falsePositives: string[];
   domainMasks: string[];
   msPerSample: number;
@@ -46,6 +48,8 @@ async function evaluate(label: string, detect: Detector): Promise<Score> {
     byLang: {},
     byType: {},
     person: {},
+    maskedChars: 0,
+    maskedOutside: 0,
     falsePositives: [],
     domainMasks: [],
     msPerSample: 0,
@@ -73,6 +77,14 @@ async function evaluate(label: string, detect: Detector): Promise<Score> {
         if (c === 1) bp.full++;
       }
     }
+    // Over-masking: masked characters that belong to no gold entity, even inside a span that
+    // also covers one ("Mme Hélène Garnier au" counts "Mme" and "au").
+    for (const sp of spans)
+      for (let i = sp.start; i < sp.end; i++) {
+        if (/\s/.test(s.text[i]!)) continue;
+        score.maskedChars++;
+        if (!s.gold.some((g) => g.start <= i && i < g.end)) score.maskedOutside++;
+      }
     for (const sp of spans) {
       if (s.gold.some((g) => sp.start < g.end && g.start < sp.end)) continue;
       const entry = `${sp.type} "${s.text.slice(sp.start, sp.end)}" (${s.lang})`;
@@ -153,7 +165,8 @@ for (const c of configs) {
   try {
     model = await loadNer(c.id, c.dtype, CACHE);
   } catch (e) {
-    loadInfo.push([`${c.id}@${c.dtype}`, 'failed to load', (e as Error).message.slice(0, 160), '']);
+    loadInfo.push([`${c.id}@${c.dtype}`, 'failed to load', (e as Error).message.slice(0, 160), '', '']);
+    process.exitCode = 1; // never let CI look green with rules-only results
     continue;
   }
   const loadMs = Math.round(performance.now() - t0);
@@ -164,13 +177,14 @@ for (const c of configs) {
       dropAllowlisted(s.text, [...rulesAndDict(s), ...(await model.detect(s.text))]),
     ),
   );
+  loadInfo[loadInfo.length - 1]!.push(pct(model.stats.unaligned, model.stats.tokens));
 }
 
 const types = [...new Set(SAMPLES.flatMap((s) => s.gold.map((g) => g.type)))];
 let md = `## Spike 1: PII detection (${platform()})\n\n`;
 md += `${SAMPLES.length} sentences (${SAMPLES.filter((s) => s.gold.length === 0).length} with no personal data). "Full" means every character of the entity is masked.\n\n`;
 md += table(
-  ['Detector', 'Required types, full', 'Required, at least half', 'EN', 'FR', 'ZH', 'Persons EN / FR / ZH', 'False positives', 'Domain terms masked', 'ms per sentence'],
+  ['Detector', 'Required types, full', 'Required, at least half', 'EN', 'FR', 'ZH', 'Persons EN / FR / ZH', 'False positives', 'Domain terms masked', 'Masked chars outside entities', 'ms per sentence'],
   results.map((r) => [
     r.label,
     pct(r.required.full, r.required.total),
@@ -181,12 +195,13 @@ md += table(
     ['en', 'fr', 'zh'].map((l) => `${r.person[l]?.full ?? 0}/${r.person[l]?.total ?? 0}`).join(' · '),
     r.falsePositives.length,
     r.domainMasks.length,
+    pct(r.maskedOutside, r.maskedChars),
     r.msPerSample.toFixed(1),
   ]),
 );
 md += '\n\n### Full-coverage recall by type\n\n';
 md += table(['Detector', ...types], results.map((r) => [r.label, ...types.map((t) => `${r.byType[t]?.full ?? 0}/${r.byType[t]?.total ?? 0}`)]));
-md += '\n\n### Model loading\n\n' + table(['Model', 'Load time', 'Labels', 'Size'], loadInfo);
+md += '\n\n### Model loading\n\n' + table(['Model', 'Load time', 'Labels', 'Size', 'Tokens not mapped to text'], loadInfo);
 md += '\n\n### Licences (spike 5)\n\n' + (await licences([...new Set(configs.map((c) => c.id))]));
 md += '\n\n### Other candidates on the Hub\n\n' + (await discover());
 let details = md + '\n\n## Details\n';
@@ -195,4 +210,4 @@ for (const r of results) {
   details += r.masked.map((m) => `- ${m}`).join('\n') + '\n';
 }
 writeReport('pii', md, results);
-writeReport('pii-details', details);
+writeReport('pii-details', details, undefined, { summary: false });

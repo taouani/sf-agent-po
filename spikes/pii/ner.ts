@@ -68,6 +68,8 @@ export interface NerModel {
   id: string;
   dtype: string;
   labels: string[];
+  /** Tokens seen, and those that could not be mapped back to the text (their labels are lost). */
+  stats: { tokens: number; unaligned: number };
   detect(text: string): Promise<Span[]>;
 }
 
@@ -76,10 +78,12 @@ export async function loadNer(id: string, dtype: string, cacheDir?: string): Pro
   const tokenizer = await AutoTokenizer.from_pretrained(id);
   const model = await AutoModelForTokenClassification.from_pretrained(id, { dtype: dtype as never });
   const id2label: Record<string, string> = (model as any).config.id2label ?? {};
+  const stats = { tokens: 0, unaligned: 0 };
   return {
     id,
     dtype,
     labels: Object.values(id2label),
+    stats,
     async detect(text: string): Promise<Span[]> {
       const enc = (tokenizer as any)._tokenizer.encode(text) as { ids: number[]; tokens: string[] };
       if (enc.ids.length > 512) throw new Error(`text too long for one window: ${enc.ids.length} tokens`);
@@ -88,6 +92,11 @@ export async function loadNer(id: string, dtype: string, cacheDir?: string): Pro
       const [, seqLen, numLabels] = logits.dims as number[];
       const data = logits.data as Float32Array;
       const offsets = alignTokens(text, enc.tokens);
+      for (const [i, tok] of enc.tokens.entries()) {
+        if (SPECIAL.test(tok)) continue;
+        stats.tokens++;
+        if (!offsets[i]) stats.unaligned++;
+      }
       const spans: Span[] = [];
       let open: Span | null = null;
       for (let t = 0; t < seqLen!; t++) {

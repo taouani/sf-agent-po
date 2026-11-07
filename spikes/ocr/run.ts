@@ -83,18 +83,60 @@ async function detect(text: string): Promise<Span[]> {
   return mergeSpans(dropAllowlisted(text, spans));
 }
 
+interface Grey {
+  data: Buffer;
+  width: number;
+  height: number;
+}
+
+async function grey(file: string): Promise<Grey> {
+  const { data, info } = await sharp(file).greyscale().raw().toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height };
+}
+
+const INK = 160; // darker than this is text
+
+function inBoxes(x: number, y: number, boxes: OcrWord['bbox'][]): boolean {
+  return boxes.some((b) => x >= b.x0 - pad(b) && x <= b.x1 + pad(b) && y >= b.y0 - pad(b) && y <= b.y1 + pad(b));
+}
+
 /** Share of a mask's ink pixels that fall inside the redaction boxes. */
-async function covered(maskFile: string, boxes: OcrWord['bbox'][]): Promise<number> {
-  const { data, info } = await sharp(maskFile).greyscale().raw().toBuffer({ resolveWithObject: true });
+function covered(mask: Grey, boxes: OcrWord['bbox'][]): number {
   let ink = 0;
   let hit = 0;
-  for (let y = 0; y < info.height; y++)
-    for (let x = 0; x < info.width; x++) {
-      if (data[y * info.width + x]! > 160) continue;
+  for (let y = 0; y < mask.height; y++)
+    for (let x = 0; x < mask.width; x++) {
+      if (mask.data[y * mask.width + x]! > INK) continue;
       ink++;
-      if (boxes.some((b) => x >= b.x0 - pad(b) && x <= b.x1 + pad(b) && y >= b.y0 - pad(b) && y <= b.y1 + pad(b))) hit++;
+      if (inBoxes(x, y, boxes)) hit++;
     }
   return ink === 0 ? 1 : hit / ink;
+}
+
+/**
+ * Over-redaction: share of the image's other text (ink that belongs to no sensitive string)
+ * that ended up under a black box. Pixels next to sensitive ink are skipped (anti-aliasing).
+ */
+function otherInkCovered(image: Grey, masks: Grey[], boxes: OcrWord['bbox'][]): number {
+  const nearSensitive = (x: number, y: number) =>
+    masks.some((m) => {
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < m.width && yy < m.height && m.data[yy * m.width + xx]! < 230) return true;
+        }
+      return false;
+    });
+  let ink = 0;
+  let hit = 0;
+  for (let y = 0; y < image.height; y++)
+    for (let x = 0; x < image.width; x++) {
+      if (image.data[y * image.width + x]! > INK || nearSensitive(x, y)) continue;
+      ink++;
+      if (inBoxes(x, y, boxes)) hit++;
+    }
+  return ink === 0 ? 0 : hit / ink;
 }
 
 const fixturesDir = join(import.meta.dirname, 'fixtures');
@@ -134,20 +176,22 @@ for (const variant of VARIANTS) {
 
     let full = 0;
     const perString: { value: string; covered: number; readByOcr: boolean }[] = [];
+    const masks = await Promise.all(f.sensitive.map((_, i) => grey(join(fixturesDir, maskName(f.file, i)))));
+    const overRedacted = otherInkCovered(await grey(join(fixturesDir, f.file)), masks, boxes);
     for (const [i, s] of f.sensitive.entries()) {
-      const c = await covered(join(fixturesDir, maskName(f.file, i)), boxes);
+      const c = covered(masks[i]!, boxes);
       const readByOcr = text.replace(/\s/g, '').includes(s.replace(/\s/g, ''));
       perString.push({ value: s, covered: c, readByOcr });
       if (c >= 0.98) full++;
       else misses.push(`${variant} ${f.file}: "${s}" ${Math.round(c * 100)}% covered, OCR ${readByOcr ? 'read it' : 'misread it'}`);
     }
-    results.push({ variant, file: f.file, ocrText: text, perString, boxes: boxes.length, initMs, ocrMs });
-    rows.push([variant, f.file, pct(full, f.sensitive.length), `${Math.round(initMs)} ms`, `${Math.round(ocrMs)} ms`, Math.round(data.confidence)]);
+    results.push({ variant, file: f.file, ocrText: text, perString, boxes: boxes.length, overRedacted, initMs, ocrMs });
+    rows.push([variant, f.file, pct(full, f.sensitive.length), `${(overRedacted * 100).toFixed(1)}%`, `${Math.round(initMs)} ms`, `${Math.round(ocrMs)} ms`, Math.round(data.confidence)]);
   }
 }
 
 let md = `## Spike 2: image redaction with OCR (${platform()})\n\n`;
 md += `Detection: rules + known names${detectModel ? ` + model ${process.env.OCR_NER_MODEL}` : ' (no model)'}. A string counts as redacted when at least 98% of its pixels are under a black box.\n\n`;
-md += table(['Language data', 'Image', 'Sensitive strings redacted', 'Worker start', 'OCR', 'OCR confidence'], rows);
+md += table(['Language data', 'Image', 'Sensitive strings redacted', 'Other text blacked out', 'Worker start', 'OCR', 'OCR confidence'], rows);
 md += `\n\n${misses.length ? 'Not fully redacted:\n\n' + misses.map((m) => `- ${m}`).join('\n') : 'Every sensitive string was fully redacted.'}\n`;
 writeReport(`ocr-${process.platform}`, md, results);

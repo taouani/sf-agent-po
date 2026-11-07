@@ -4,10 +4,15 @@ import { join } from 'node:path';
 
 export const OUT_DIR = join(import.meta.dirname, '..', 'out');
 
-export function writeReport(name: string, markdown: string, data?: unknown): void {
+/**
+ * Saves a report to out/. A summary is also printed and added to the GitHub Actions job summary;
+ * a detail report (`summary: false`) only goes to out/, which CI uploads as an artifact.
+ */
+export function writeReport(name: string, markdown: string, data?: unknown, { summary = true } = {}): void {
   mkdirSync(OUT_DIR, { recursive: true });
   writeFileSync(join(OUT_DIR, `${name}.md`), markdown);
   if (data !== undefined) writeFileSync(join(OUT_DIR, `${name}.json`), JSON.stringify(data, null, 2));
+  if (!summary) return;
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdown}\n`);
   console.log(markdown);
 }

@@ -15,7 +15,7 @@ process.on('warning', (w) => warnings.push(`${w.name}: ${w.message}`));
 
 const COMPONENTS = Number(process.env.SQLITE_COMPONENTS ?? 10000);
 const WRITERS = 4;
-const WRITES_PER_WRITER = 250;
+const WRITES_PER_WRITER = 500;
 
 function schema(db: Db, tokenizer: string): void {
   db.exec(`
@@ -92,16 +92,18 @@ async function check(driver: DriverName): Promise<Record<string, string | number
   r.journal = db.prepare('PRAGMA journal_mode').get().journal_mode;
 
   // FTS5 tokenizers: unicode61 for Latin text, trigram for Chinese (no word segmentation).
-  for (const tok of ['unicode61 remove_diacritics 2', 'trigram']) {
+  const tokenizers = ['unicode61 remove_diacritics 2', 'trigram', 'trigram remove_diacritics 1'];
+  for (const [i, tok] of tokenizers.entries()) {
     try {
-      db.exec(`CREATE VIRTUAL TABLE t_${tok.split(' ')[0]} USING fts5(x, tokenize='${tok}')`);
-      r[`fts5 ${tok.split(' ')[0]}`] = 'yes';
+      db.exec(`CREATE VIRTUAL TABLE t_${i} USING fts5(x, tokenize='${tok}')`);
+      r[`fts5 ${tok}`] = 'yes';
     } catch (e) {
-      r[`fts5 ${tok.split(' ')[0]}`] = `no (${(e as Error).message})`;
+      r[`fts5 ${tok}`] = `no (${(e as Error).message})`;
     }
   }
-  const trigram = r['fts5 trigram'] === 'yes';
-  schema(db, trigram ? 'trigram' : 'unicode61 remove_diacritics 2');
+  const tokenizer = tokenizers.reverse().find((t) => r[`fts5 ${t}`] === 'yes')!;
+  r['tokenizer used'] = tokenizer;
+  schema(db, tokenizer);
   r.json = db.prepare(`select json_extract('{"a":{"b":2}}', '$.a.b') v`).get().v === 2 ? 'yes' : 'no';
 
   const [counts, insertMs] = time(() => populate(db));
@@ -122,27 +124,36 @@ async function check(driver: DriverName): Promise<Record<string, string | number
   const [hop, hopMs] = time(() => twoHop.get(JSON.stringify(seeds)));
   r['2-hop scope'] = `${hop.n} components in ${hopMs.toFixed(1)} ms`;
 
+  // Expected hits: 10,000 rows mention "clienteling"; labels are 6,000 English "Client preference",
+  // 3,000 French "Préférence client" and 1,000 Chinese "客户偏好".
   const fts = db.prepare('select count(*) n from component_fts where component_fts match ?');
-  const [en, enMs] = time(() => fts.get('"clienteling"').n);
-  r['FTS english'] = `${en} hits, ${enMs.toFixed(1)} ms`;
-  const [fr] = time(() => fts.get(trigram ? '"Préférence"' : 'Préférence').n);
-  r['FTS accents'] = `${fr} hits`;
-  const [zh] = time(() => fts.get(trigram ? '"客户偏好"' : '客户偏好').n);
-  r['FTS chinese'] = `${zh} hits`;
+  const q = (term: string) => {
+    const [n, ms] = time(() => fts.get(`"${term}"`).n as number);
+    return `${n} hits, ${ms.toFixed(1)} ms`;
+  };
+  r['FTS "clienteling" (expect 10000)'] = q('clienteling');
+  r['FTS "préférence" (expect 9000)'] = q('préférence');
+  r['FTS "preference", no accent (expect 9000)'] = q('preference');
+  r['FTS "客户偏好", 4 chars (expect 1000)'] = q('客户偏好');
+  r['FTS "客户", 2 chars (expect 1000)'] = q('客户');
+  const like = db.prepare("select count(*) n from component where label like '%' || ? || '%'");
+  const [ln, lms] = time(() => like.get('客户').n as number);
+  r['LIKE fallback "客户" (expect 1000)'] = `${ln} hits, ${lms.toFixed(1)} ms`;
   db.close();
 
   // Several processes writing at once (host processes + background indexer).
   const [writers, wMs] = await (async () => {
-    const t0 = performance.now();
+    // All writers wait for the same start time so their write windows really overlap.
+    const startAt = Date.now() + 2000;
     const out = await Promise.all(
       Array.from({ length: WRITERS }, (_, i) =>
-        run(process.execPath, [join(import.meta.dirname, 'writer.ts'), driver, file, String(i), String(WRITES_PER_WRITER)]).then(
+        run(process.execPath, [join(import.meta.dirname, 'writer.ts'), driver, file, String(i), String(WRITES_PER_WRITER), String(startAt)]).then(
           (p) => JSON.parse(p.stdout) as { errors: number },
           (e) => ({ errors: WRITES_PER_WRITER, failure: String(e.stderr || e.message).slice(0, 200) }),
         ),
       ),
     );
-    return [out, performance.now() - t0] as const;
+    return [out, Date.now() - startAt] as const; // time from the shared start
   })();
   const check = open(driver, file);
   const rows = check.prepare('select count(*) n from feedback').get().n;

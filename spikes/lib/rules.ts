@@ -62,7 +62,7 @@ const RULES: Rule[] = [
   // Secrets first so a token is not half-claimed by another rule.
   { type: 'SECRET', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
   { type: 'SECRET', pattern: /\bATATT[A-Za-z0-9_\-=]{20,}/g }, // Atlassian API token
-  { type: 'SECRET', pattern: /\b00D[A-Za-z0-9]{12,15}![A-Za-z0-9._]{20,}/g }, // Salesforce session id
+  { type: 'SECRET', pattern: /\b00D[A-Za-z0-9]{12,15}![A-Za-z0-9._]{19,}[A-Za-z0-9]/g }, // Salesforce session id
   { type: 'SECRET', pattern: /\bAKIA[0-9A-Z]{16}\b/g },
   { type: 'SECRET', pattern: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g },
   { type: 'SECRET', pattern: /\bxox[abpr]-[A-Za-z0-9-]{10,}/g },
@@ -70,7 +70,10 @@ const RULES: Rule[] = [
   {
     type: 'SECRET',
     pattern:
-      /(?:password|passwd|pwd|secret|client[_ ]secret|api[_ -]?key|token|mot de passe|密码|口令)[^:=：\n]{0,40}?\s*(?:\bis\b|\best\b|=|:|：)\s*(?<value>[^\s,;，。]{4,})/giu,
+      // Keyword as a whole word (ASCII boundaries only, since Chinese has no spaces), a separator,
+      // then a value with a digit or an inner symbol, so "the token is valid" or "the secretary
+      // is Marie" are not secrets. Known gap: a letters-only password is missed.
+      /(?<![A-Za-z0-9])(?:password|passwd|pwd|secret|client[_ ]secret|api[_ -]?key|token|mot de passe|密码|口令)(?![A-Za-z0-9])[^:=：\n]{0,40}?\s*(?:\bis\b|\best\b|=|:|：)\s*(?<value>(?=[^\s,;，。]*(?:\p{N}|[\p{P}\p{S}](?=[^\s,;，。])))[^\s,;，。]{3,}[^\s,;，。.])/giu,
   },
   { type: 'SECRET', pattern: /\bhttps?:\/\/[^\s:/@]+:(?<value>[^\s@/]+)@/g }, // password in URL
   { type: 'EMAIL', pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g },
@@ -91,14 +94,27 @@ export function detectWithRules(text: string): Span[] {
   for (const rule of RULES) {
     rule.pattern.lastIndex = 0;
     for (const m of text.matchAll(rule.pattern)) {
-      if (rule.validate && !rule.validate(m[0])) continue;
+      let value = m[0];
+      if (rule.validate && !rule.validate(value)) {
+        // The greedy pattern may have swallowed a trailing group ("4111 1111 1111 1111 12/27"):
+        // retry shorter prefixes that end before a separator.
+        let shorter: string | undefined;
+        for (let cut = value.search(/[ .-][^ .-]*$/); cut > 0; cut = value.slice(0, cut).search(/[ .-][^ .-]*$/)) {
+          if (rule.validate(value.slice(0, cut))) {
+            shorter = value.slice(0, cut);
+            break;
+          }
+        }
+        if (!shorter) continue;
+        value = shorter;
+      }
       const start = m.index!;
       const group = m.groups?.value;
       if (group !== undefined) {
         const offset = m[0].lastIndexOf(group);
         spans.push({ start: start + offset, end: start + offset + group.length, type: rule.type, source: 'rule' });
       } else {
-        spans.push({ start, end: start + m[0].length, type: rule.type, source: 'rule' });
+        spans.push({ start, end: start + value.length, type: rule.type, source: 'rule' });
       }
     }
   }

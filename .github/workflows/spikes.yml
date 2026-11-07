@@ -61,7 +61,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: spikes/out/hf-cache
-          key: hf-models-v1
+          # One cache per model list; other lists start from the nearest one and add what is missing.
+          # Caches saved on a pull request are only visible to that pull request's runs.
+          key: hf-models-v1-${{ inputs.pii_models || 'default' }}
+          restore-keys: hf-models-v1-
       - run: npm ci
       - run: npm run pii
         env:

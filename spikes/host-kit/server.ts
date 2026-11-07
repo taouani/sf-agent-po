@@ -68,7 +68,8 @@ server.registerTool(
 
 function openBrowser(url: string): void {
   const [cmd, args] =
-    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    // The empty argument is start's window title; Node passes it to cmd as "".
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   spawn(cmd, args as string[], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
 }
 
