@@ -251,6 +251,22 @@ export class Masker {
   }
 
   /**
+   * Masks what the agents wrote (a design, a backlog) before it is stored: personal data
+   * they wrote in clear is masked like any input, and the pseudonyms they used are kept as
+   * they are, so publishing puts their real values back. (An input's pseudonym-like text, by
+   * contrast, is masked as a literal: there it is text someone wrote.)
+   */
+  async maskOutput(context: string, text: string): Promise<{ text: string; report: MaskReport }> {
+    const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
+    if (!text.trim()) return { text, report };
+    const labels = pseudonymLikeSpans(text);
+    const spans = (await this.spansFor(context, text, [], report)).filter((s) => !labels.some((l) => s.start < l.end && l.start < s.end));
+    report.counts = {};
+    for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
+    return { text: this.opts.vault.mask(context, text, spans, { literals: false }), report };
+  }
+
+  /**
    * Masks an image (PNG or JPEG): the OCR reads its text, the same detection as for
    * documents finds what to hide, and every word that holds some of it is blacked out, as is
    * text that looks like a pseudonym (a model could copy it, and publishing would turn it

@@ -243,7 +243,8 @@ export class Vault {
    * Replaces each span of `text` with its pseudonym, in one transaction. Text that already
    * looks like a pseudonym is masked too, as a literal, so unmasking gives it back as written.
    */
-  mask(context: string, text: string, spans: readonly Span[]): string {
+  mask(context: string, text: string, spans: readonly Span[], { literals: hideLabels = true }: { literals?: boolean } = {}): string {
+    if (!hideLabels) return this.database.write(() => replaceSpans(text, spans, (type, original) => this.pseudonymIn(context, type, original)));
     const literals: Span[] = [...text.matchAll(LABEL_IN_TEXT)]
       .map((m) => ({ start: m.index, end: m.index + m[0].length, type: LITERAL, source: "rule" as const }))
       .filter((l) => !spans.some((s) => s.start < l.end && l.start < s.end));

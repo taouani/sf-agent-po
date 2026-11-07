@@ -279,3 +279,15 @@ describe("values the user declares", () => {
     expect((await masker.mask("acme", "project Bluebird")).text).toBe("project [PERSON_1]");
   });
 });
+
+describe("masking what the agents wrote", () => {
+  it("keeps the pseudonyms they used and masks what they wrote in clear", async () => {
+    const { masker } = setup(fakeModel(["Karim Benali", "Lea Martin"]));
+    const input = await masker.mask("acme", "Karim Benali asked for it.");
+    expect(input.text).toBe("[PERSON_1] asked for it.");
+    const out = await masker.maskOutput("acme", "Owner: [PERSON_1]. Reviewer: Lea Martin (lea@example.com). Unknown: [PERSON_9].");
+    expect(out.text).toBe("Owner: [PERSON_1]. Reviewer: [PERSON_2] ([EMAIL_1]). Unknown: [PERSON_9].");
+    expect(out.report.counts).toEqual({ PERSON: 1, EMAIL: 1 });
+    expect(masker.unmask("acme", out.text)).toEqual({ text: "Owner: Karim Benali. Reviewer: Lea Martin (lea@example.com). Unknown: [PERSON_9].", kept: ["[PERSON_9]"] });
+  });
+});

@@ -252,7 +252,12 @@ The new code lives in npm workspaces under `packages/`:
   browser itself (the link is never handed to the host, where the model might read it) and
   reports progress while it works or waits. Turning input review off needs the user's
   approval on the page. A folder gives at most 20 images per call. The name detection model
-  loads on first use; if it cannot, nothing is added. It also holds the approval page (AR5): a small
+  loads on first use; if it cannot, nothing is added. `design_save` stores a design masked:
+  the pseudonyms the agent used stay, names it wrote in clear are masked (`Masker.maskOutput`).
+  `confluence_publish` puts the real values back only for the write: the user sees the page
+  title, body and target with the real values on the approval page, secrets stay masked, and
+  exactly what they approved is written. The model gets back the masked title and a page link
+  without its title part. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
