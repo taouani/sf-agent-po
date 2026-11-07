@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { AtlassianClient } from "@sf-agent-po/connectors";
+import { AtlassianError, type AtlassianClient } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer, pageLink, requestDigest, type ApprovalRequest, type Decision, type Reviewer } from "../src/index.js";
@@ -23,7 +23,7 @@ function fakeConfluence() {
     getSpaceId: async (key: string) => (key === "ENG" ? "1" : Promise.reject(new Error(`Confluence space "${key}" was not found`))),
     getPageSummary: async (id: string) => {
       const p = pages.get(id);
-      if (!p) throw new Error("not found");
+      if (!p) throw new AtlassianError("Page not found: Call with Karim Benali", 404);
       return { pageId: id, title: p.title, spaceId: p.spaceId, version: p.version, url: url(id, p.title) };
     },
     createPage: async (input: { spaceId: string; title: string; storage: string }) => {
@@ -77,7 +77,7 @@ async function connect(answers: (Partial<Omit<Decision, "digest">> | ((req: Appr
   };
   // An input, so the context knows Karim Benali as [PERSON_1].
   await call("context_add_text", { context: "acme", title: "Call", content: "Karim Benali owns the VIP flag. Login secret: password: hunter22x", kind: "meeting-notes" });
-  return { call, contexts, seen, confluence, masker };
+  return { call, contexts, seen, confluence, masker, vault };
 }
 
 const design = "# VIP flag\n\nOwner: [PERSON_1]. Reviewer: Lea Martin. Service login stays [SECRET_1].";
@@ -166,4 +166,62 @@ describe("publishing to Confluence", () => {
     expect(pageLink("https://x.atlassian.net/wiki/spaces/ENG/pages/123/Call+with+Karim?focus=1")).toBe("https://x.atlassian.net/wiki/spaces/ENG/pages/123?focus=1");
     expect(pageLink("https://x.atlassian.net/wiki/pages/viewpage.action?pageId=5")).toBe("https://x.atlassian.net/wiki/pages/viewpage.action?pageId=5");
   });
+
+  it("puts values in so that they cannot change the page: tables, newlines, links, XML", async () => {
+    const { call, confluence, masker } = await connect();
+    masker.remember("acme", [{ type: "PERSON", value: "*Jean* | Roux & <Co>" }, { type: "ADDRESS", value: "12 rue X\n75001 Paris" }, { type: "PERSON", value: "[x](http://evil)" }]);
+    const content = "| Owner | Address |\n| --- | --- |\n| [PERSON_2] | [ADDRESS_1] |\n\nSee [PERSON_3].\n\n```\ncode [PERSON_2] ]]> end\n```";
+    const saved = await call("design_save", { context: "acme", title: "Owners", designType: "detailed", content });
+    const id = /as (doc-\w+)/.exec(saved.text)![1]!;
+    await call("confluence_publish", { context: "acme", artifactId: id, spaceKey: "ENG" });
+    const storage = confluence.writes[0]!.storage;
+    expect(storage).toContain("<td>*Jean* | Roux &amp; &lt;Co&gt;</td>");
+    expect(storage).toContain("12 rue X\n75001 Paris");
+    expect(storage.match(/<td>/g)).toHaveLength(2);
+    expect(storage).not.toContain("<a ");
+    expect(storage).toContain("*Jean* | Roux & <Co>"); // verbatim in the code block's CDATA
+  });
+
+  it("masks a name the user wrote in their comment, however short", async () => {
+    const { call, masker } = await connect([{ status: "rejected", comment: "Ask Li about it." }]);
+    masker.remember("acme", [{ type: "PERSON", value: "Li" }]);
+    const saved = await call("design_save", { context: "acme", title: "Short", designType: "detailed", content: "Owner: [PERSON_2]." });
+    const id = /as (doc-\w+)/.exec(saved.text)![1]!;
+    const r = await call("confluence_publish", { context: "acme", artifactId: id, spaceKey: "ENG" });
+    expect(r.text).toContain("Their comment: Ask [PERSON_2] about it.");
+  });
+
+  it("takes over a 0.x design without its clear metadata, and keeps its page", async () => {
+    const { call, contexts, confluence } = await connect();
+    confluence.pages.set("55", { title: "Portal design", storage: "", version: 1, spaceId: "1" });
+    contexts.addDocuments("acme", [
+      {
+        kind: "design",
+        title: "Portal design",
+        source: "artifact:design:high-level:portal-design",
+        content: "Owner: Karim Benali",
+        metadata: { artifact: true, version: 2, status: "published", owner: "Karim Benali", confluence: { pageId: "55", url: "https://x/wiki/spaces/ENG/pages/55/Portal+design+for+Karim+Benali", pageVersion: 1, artifactVersion: 2, publishedAt: "2026-10-01" } },
+      },
+    ]);
+    const saved = await call("design_save", { context: "acme", title: "Portal design", designType: "high-level", content: "Owner: [PERSON_1]" });
+    expect(saved.text).toContain("version 3");
+    expect(saved.text).toContain("https://x/wiki/spaces/ENG/pages/55 (status: changed)");
+    const doc = contexts.documents("acme").find((d) => d.kind === "design")!;
+    expect(doc.masked).toBe(true);
+    expect(JSON.stringify(doc.metadata)).not.toContain("Karim");
+    const r = await call("confluence_publish", { context: "acme", artifactId: doc.id });
+    expect(r.text).toContain("Updated the Confluence page");
+    expect(confluence.writes.at(-1)).toMatchObject({ pageId: "55" });
+  });
+
+  it("tells the model only the status of a Confluence error", async () => {
+    const { call } = await connect();
+    const saved = await call("design_save", { context: "acme", title: "VIP flag", designType: "high-level", content: design });
+    const id = /as (doc-\w+)/.exec(saved.text)![1]!;
+    const r = await call("confluence_publish", { context: "acme", artifactId: id, pageId: "999" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("HTTP 404");
+    expect(r.text).not.toContain("Call with");
+  });
 });
+

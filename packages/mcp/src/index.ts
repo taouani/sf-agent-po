@@ -17,5 +17,5 @@ export { Intake, IntakeError, MAX_ROUNDS, pageReviewer, reviewText, type ImageIn
 export { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 export { createServer, describeDoc, MAX_IMAGES, type ServerOptions } from "./server.js";
 export { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";
-export { artifactSource, getArtifact, KeyedLock, saveArtifact, updateArtifactMeta, type Artifact, type ArtifactMeta } from "./artifacts.js";
-export { pageLink, registerPublishTools, type PublishKit } from "./publish.js";
+export { artifactSource, getArtifact, KeyedLock, pageLink, saveArtifact, updateArtifactMeta, type Artifact, type ArtifactMeta } from "./artifacts.js";
+export { registerPublishTools, unmaskStorage, type PublishKit } from "./publish.js";

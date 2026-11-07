@@ -55,7 +55,11 @@ export function artifactSource(kind: DocumentKind, title: string, artifactType?:
 /** Saves an artifact, bumping its version when the content changed and keeping where it was published. */
 export function saveArtifact(contexts: ContextRepository, context: string, input: SaveArtifactInput): Artifact {
   const source = artifactSource(input.kind, input.title, input.artifactType);
-  return contexts.upsertDocument(context, source, (existing) => {
+  return contexts.upsertDocument(context, source, (found) => {
+    // An artifact imported from 0.x and not masked yet: its metadata is in clear. Only where it
+    // was published is kept (ids and numbers, and the link without its title part), so the
+    // next publish updates the same page.
+    const existing = found && !found.masked ? { ...found, content: "", metadata: legacyMeta(found.metadata) } : found;
     const prev = existing?.metadata as ArtifactMeta | undefined;
     const fingerprint = input.fingerprint ?? hash(input.content);
     const changed = !existing || (prev?.fingerprint ?? hash(existing.content)) !== fingerprint;
@@ -74,6 +78,21 @@ export function saveArtifact(contexts: ContextRepository, context: string, input
     return { kind: input.kind, title: input.title, source, content: input.content, metadata, masked: true };
   }) as Artifact;
 }
+
+/** What can be kept of a 0.x artifact's metadata: its version and Confluence page, nothing in clear. */
+function legacyMeta(meta: Record<string, unknown>): Partial<ArtifactMeta> {
+  const old = meta as Partial<ArtifactMeta>;
+  const c = old.confluence;
+  return {
+    artifact: true,
+    version: typeof old.version === "number" ? old.version : 0,
+    status: c ? "published" : "draft",
+    ...(c && { confluence: { pageId: String(c.pageId), url: pageLink(String(c.url)), pageVersion: Number(c.pageVersion), artifactVersion: Number(c.artifactVersion), publishedAt: String(c.publishedAt) } }),
+  };
+}
+
+/** A page link without its title part ("/pages/123/Call+with+Karim"), which may hold a real name. */
+export const pageLink = (url: string) => url.replace(/(\/pages\/\d+)\/[^?#]*/, "$1");
 
 export function getArtifact(contexts: ContextRepository, context: string, id: string): Artifact {
   const doc = contexts.getDocument(context, id);

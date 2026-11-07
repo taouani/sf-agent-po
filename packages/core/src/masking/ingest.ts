@@ -260,7 +260,29 @@ export class Masker {
     const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
     if (!text.trim()) return { text, report };
     const labels = pseudonymLikeSpans(text);
-    const spans = (await this.spansFor(context, text, [], report)).filter((s) => !labels.some((l) => s.start < l.end && l.start < s.end));
+    // A span that runs into a pseudonym ("[SECRET_1]hunter22", "[PERSON_1] Benali") is cut
+    // around it, and the rest masked: dropping it whole would leave that rest in clear.
+    const spans: Span[] = [];
+    for (const s of await this.spansFor(context, text, [], report)) {
+      let start = s.start;
+      for (const l of labels.filter((l) => s.start < l.end && l.start < s.end).sort((a, b) => a.start - b.start)) {
+        if (l.start > start) spans.push({ ...s, start, end: l.start });
+        start = Math.max(start, l.end);
+      }
+      if (start < s.end) spans.push({ ...s, start });
+    }
+    for (let i = spans.length - 1; i >= 0; i--) {
+      const s = spans[i]!;
+      const piece = text.slice(s.start, s.end);
+      // Trim what is left around a cut ("] Benali" gives "Benali"); a piece with no letter or digit is not masked.
+      const lead = piece.length - piece.replace(/^[\s\p{P}]+/u, "").length;
+      const trail = piece.length - piece.replace(/[\s\p{P}]+$/u, "").length;
+      if (s.type !== "SECRET") {
+        s.start += lead;
+        s.end -= trail;
+      }
+      if (s.end <= s.start || !/[\p{L}\p{N}]/u.test(text.slice(s.start, s.end))) spans.splice(i, 1);
+    }
     report.counts = {};
     for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
     return { text: this.opts.vault.mask(context, text, spans, { literals: false }), report };
@@ -406,9 +428,14 @@ export class Masker {
    * or a file. Secrets stay masked by default; `kept` lists the pseudonyms left in the text
    * (kept types, or labels this context does not know) so the approval page can show them.
    */
-  unmask(context: string, text: string, { keep = NEVER_UNMASKED }: { keep?: readonly string[] } = {}): { text: string; kept: string[] } {
+  unmask(
+    context: string,
+    text: string,
+    { keep = NEVER_UNMASKED, escape }: { keep?: readonly string[]; escape?: (value: string) => string } = {},
+  ): { text: string; kept: string[]; revealed: { type: string; value: string }[] } {
     const kept = new Set<string>();
-    const out = this.opts.vault.unmask(context, text, { keep, kept });
-    return { text: out, kept: [...kept] };
+    const revealed = new Map<string, { type: string; value: string }>();
+    const out = this.opts.vault.unmask(context, text, { keep, kept, escape, revealed });
+    return { text: out, kept: [...kept], revealed: [...revealed.values()] };
   }
 }

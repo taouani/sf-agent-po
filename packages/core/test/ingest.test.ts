@@ -205,7 +205,7 @@ describe("unmasking on publish", () => {
     expect(out.text).toBe("As Sarah Whitfield, I want my VIP flag. Login secret stays [SECRET_1]. See [PERSON_7].");
     expect(out.kept).toEqual(["[SECRET_1]", "[PERSON_7]"]);
     // A literal written in a source comes back as text, not as a pseudonym left masked.
-    expect(masker.unmask("acme", "[LITERAL_1]")).toEqual({ text: "[PERSON_1]", kept: [] });
+    expect(masker.unmask("acme", "[LITERAL_1]")).toMatchObject({ text: "[PERSON_1]", kept: [] });
   });
 });
 
@@ -288,6 +288,34 @@ describe("masking what the agents wrote", () => {
     const out = await masker.maskOutput("acme", "Owner: [PERSON_1]. Reviewer: Lea Martin (lea@example.com). Unknown: [PERSON_9].");
     expect(out.text).toBe("Owner: [PERSON_1]. Reviewer: [PERSON_2] ([EMAIL_1]). Unknown: [PERSON_9].");
     expect(out.report.counts).toEqual({ PERSON: 1, EMAIL: 1 });
-    expect(masker.unmask("acme", out.text)).toEqual({ text: "Owner: Karim Benali. Reviewer: Lea Martin (lea@example.com). Unknown: [PERSON_9].", kept: ["[PERSON_9]"] });
+    expect(masker.unmask("acme", out.text)).toMatchObject({ text: "Owner: Karim Benali. Reviewer: Lea Martin (lea@example.com). Unknown: [PERSON_9].", kept: ["[PERSON_9]"] });
+  });
+});
+
+describe("masking what the agents wrote, around their pseudonyms", () => {
+  it("masks what a span holds besides a pseudonym", async () => {
+    const { masker } = setup(async (text) => {
+      const i = text.indexOf("[PERSON_1] Benali");
+      return i < 0 ? [] : [{ start: i, end: i + "[PERSON_1] Benali".length, type: "PER", source: "ner" as const }];
+    });
+    await masker.mask("acme", "Karim asked."); // nothing: the fake model only knows the label case
+    const secret = ["hunter", "22xyz"].join("");
+    const out = await masker.maskOutput("acme", `Ask [PERSON_1] Benali. password=[SECRET_1]${secret}`);
+    expect(out.text).not.toContain("Benali");
+    expect(out.text).not.toContain(secret);
+    expect(out.text).toContain("Ask [PERSON_1] [PERSON_");
+  });
+
+  it("keeps pseudonyms in every form the model writes them", async () => {
+    const { masker } = setup();
+    const text = "A \\[PERSON\\_1\\], <PERSON_2>, &lt;PERSON_3&gt; and [EMAIL_1].";
+    expect((await masker.maskOutput("acme", text)).text).toBe(text);
+  });
+
+  it("escapes the values it puts back when asked, and lists them", async () => {
+    const { masker } = setup(fakeModel(["Jean Roux"]));
+    await masker.mask("acme", "Jean Roux");
+    const out = masker.unmask("acme", "<p>[PERSON_1]</p>", { escape: (v) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;") });
+    expect(out).toEqual({ text: "<p>Jean Roux</p>", kept: [], revealed: [{ type: "PERSON", value: "Jean Roux" }] });
   });
 });

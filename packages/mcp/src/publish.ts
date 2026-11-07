@@ -8,7 +8,7 @@ import { AtlassianError, markdownToStorage, type AtlassianClient } from "@sf-age
 import type { ContextRepository, Masker } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
-import { getArtifact, KeyedLock, saveArtifact, updateArtifactMeta } from "./artifacts.js";
+import { getArtifact, KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
 
@@ -26,8 +26,36 @@ export interface PublishKit {
 
 const text = (t: string): Result => ({ content: [{ type: "text", text: t }] });
 
-/** A page link without its title part ("/pages/123/Call+with+Karim"), which may hold a real name. */
-export const pageLink = (url: string) => url.replace(/(\/pages\/\d+)\/[^?#]*/, "$1");
+const xml = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * Puts the real values into Confluence storage made from the masked Markdown, so a value can
+ * never change the page's structure (a "|" in a table, a newline, a Markdown link): outside
+ * code blocks each value is XML-escaped; inside their CDATA sections it is kept verbatim, with
+ * any "]]>" split so it cannot end the section.
+ */
+export function unmaskStorage(masker: Masker, context: string, storage: string) {
+  const kept = new Set<string>();
+  const revealed = new Map<string, { type: string; value: string }>();
+  const parts = storage.split(/(<!\[CDATA\[[\s\S]*?\]\]>)/).map((part, i) => {
+    const cdata = i % 2 === 1;
+    const out = masker.unmask(context, part, { escape: cdata ? (v) => v.split("]]>").join("]]]]><![CDATA[>") : xml });
+    out.kept.forEach((k) => kept.add(k));
+    out.revealed.forEach((r) => revealed.set(`${r.type}\0${r.value}`, r));
+    return out.text;
+  });
+  return { text: parts.join(""), kept: [...kept], revealed: [...revealed.values()] };
+}
+
+/** Confluence errors may quote what was sent (the real title): only their status reaches the model. */
+async function confluence<T>(what: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AtlassianError) throw new Error(`Confluence refused to ${what} (HTTP ${err.status}). Nothing was written.`);
+    throw err;
+  }
+}
 
 export function registerPublishTools(server: McpServer, kit: PublishKit): void {
   const { contexts, masker, guard, contextName } = kit;
@@ -56,7 +84,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
       const meta = doc.metadata;
       const hidden = Object.values(masked.report.counts).reduce((a, b) => a + b, 0) + Object.values(maskedTitle.report.counts).reduce((a, b) => a + b, 0);
       const note = hidden ? ` ${hidden} value(s) written in clear were masked; use the pseudonyms in later versions.` : "";
-      const published = meta.confluence ? ` It was published to ${meta.confluence.url} (status: ${meta.status}).` : "";
+      const published = meta.confluence ? ` It was published to ${pageLink(meta.confluence.url)} (status: ${meta.status}).` : "";
       return text(`Saved ${designType} design "${doc.title}" as ${doc.id}, version ${meta.version}.${published}${note}`);
     }),
   );
@@ -89,9 +117,11 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const doc = getArtifact(contexts, context, args.artifactId);
           if (!kit.atlassian) throw new Error("Confluence is not set up for this server.");
           const client = kit.atlassian();
-          const maskedTitle = args.title?.trim() || doc.title;
-          const title = masker.unmask(context, maskedTitle);
+          const title = masker.unmask(context, args.title?.trim() || doc.title);
+          // What the user reads on the page (the Markdown with the real values), and what is
+          // written: storage made from the masked Markdown, with the same values put in escaped.
           const body = masker.unmask(context, doc.content);
+          const storage = unmaskStorage(masker, context, markdownToStorage(doc.content));
           const ownPageId = doc.metadata.confluence?.pageId;
           const existing = args.pageId ?? (args.newPage ? undefined : ownPageId);
 
@@ -99,47 +129,59 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           let target: string;
           let write: () => Promise<{ pageId: string; url: string; version: number }>;
           let ownPage: boolean;
-          const storage = markdownToStorage(body.text);
           if (existing) {
-            ownPage = !args.pageId;
-            let page;
+            let page: Awaited<ReturnType<AtlassianClient["getPageSummary"]>>;
             try {
               page = await client.getPageSummary(existing);
             } catch (err) {
-              if (ownPage && err instanceof AtlassianError && err.status === 404) {
-                throw new Error("The page this artifact was published to no longer exists or is not visible. To publish it again, pass newPage: true with a spaceKey.");
+              if (!args.pageId && err instanceof AtlassianError && err.status === 404) {
+                throw new Error("The page this design was published to no longer exists or is not visible. To publish it again, pass newPage: true with a spaceKey.");
               }
+              if (err instanceof AtlassianError) throw new Error(`Confluence did not return the page (HTTP ${err.status}). Nothing was written.`);
               throw err;
             }
+            ownPage = !args.pageId || page.pageId === ownPageId;
             const edited = ownPage && doc.metadata.confluence && doc.metadata.confluence.pageVersion !== page.version;
             target =
               `Confluence: replace the content of page "${page.title}" (version ${page.version})` +
               (edited ? ". It was edited in Confluence since it was last published, and those edits will be replaced" : "") +
               (ownPage ? "" : ". This is not the design's own page: its whole content will be replaced");
-            write = () => client.updatePage({ pageId: page.pageId, expectedVersion: page.version, title: title.text, storage, message: `Version ${doc.metadata.version}` });
+            write = () => client.updatePage({ pageId: page.pageId, expectedVersion: page.version, title: title.text, storage: storage.text, message: `Version ${doc.metadata.version}` });
           } else {
             if (!args.spaceKey) throw new Error("This design has not been published yet. Ask the user which Confluence space (key) to publish to.");
-            const spaceId = await client.getSpaceId(args.spaceKey);
+            const spaceKey = args.spaceKey;
+            const spaceId = await confluence("find the space", () => client.getSpaceId(spaceKey));
             let parent: Awaited<ReturnType<AtlassianClient["getPageSummary"]>> | undefined;
             if (args.parentPageId) {
-              parent = await client.getPageSummary(args.parentPageId);
-              if (parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${args.spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
+              const parentId = args.parentPageId;
+              parent = await confluence("return the parent page", () => client.getPageSummary(parentId));
+              if (parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
             }
             ownPage = true;
-            target = `Confluence: a new page in space ${args.spaceKey}${parent ? ` under "${parent.title}"` : " at the space root"}`;
-            write = () => client.createPage({ spaceId, parentId: parent?.pageId, title: title.text, storage });
+            target = `Confluence: a new page in space ${spaceKey}${parent ? ` under "${parent.title}"` : " at the space root"}`;
+            write = () => client.createPage({ spaceId, parentId: parent?.pageId, title: title.text, storage: storage.text });
           }
 
           const req: PublishRequest = { kind: "publish", target, title: title.text, body: body.text, kept: [...new Set([...title.kept, ...body.kept])] };
           const decision = await kit.reviewerFor(call).review(req);
           if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
-          const comment = decision.comment?.trim() ? ` Their comment: ${(await masker.mask(context, decision.comment.trim())).text}` : "";
+          // The user's comment is in clear and may name someone just seen on the page, however short the name: those values are masked first.
+          const comment = async () => {
+            const said = decision.comment?.trim();
+            if (!said) return "";
+            const seen = [...title.revealed, ...body.revealed].map((r) => ({ ...r, caseSensitive: false }));
+            try {
+              return ` Their comment: ${(await masker.mask(context, said, seen)).text}`;
+            } catch {
+              return " They left a comment, which could not be shown safely.";
+            }
+          };
           if (decision.status !== "approved") {
             const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
-            return text(`Nothing was written: the user ${why}.${comment}`);
+            return text(`Nothing was written: the user ${why}.${await comment()}`);
           }
 
-          const page = await write();
+          const page = await confluence("write the page", write);
           const url = pageLink(page.url);
           const version = doc.metadata.version;
           updateArtifactMeta(contexts, context, doc, (meta) => ({
@@ -147,7 +189,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             status: meta.version === version ? "published" : "changed",
             ...(ownPage ? { confluence: { pageId: page.pageId, url, pageVersion: page.version, artifactVersion: version, publishedAt: new Date().toISOString() } } : {}),
           }));
-          return text(`${existing ? "Updated" : "Created"} the Confluence page for "${maskedTitle}" (version ${page.version}): ${url}${comment}`);
+          return text(`${existing ? "Updated" : "Created"} the Confluence page for "${doc.title}" (version ${page.version}): ${url}${await comment()}`);
         }),
     ),
   );

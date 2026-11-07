@@ -175,7 +175,7 @@ export class AtlassianClient {
       });
     } catch (err) {
       if (err instanceof AtlassianError && err.status === 409) {
-        throw new Error(`The page changed in Confluence after the preview (it is no longer at version ${input.expectedVersion}). Nothing was written. Run the preview again.`);
+        throw new Error(`The page changed in Confluence after the preview (it is no longer at version ${input.expectedVersion}). Nothing was written. Publish again to see the page as it is now.`);
       }
       throw err;
     }

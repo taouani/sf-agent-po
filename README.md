@@ -256,7 +256,8 @@ The new code lives in npm workspaces under `packages/`:
   the pseudonyms the agent used stay, names it wrote in clear are masked (`Masker.maskOutput`).
   `confluence_publish` puts the real values back only for the write: the user sees the page
   title, body and target with the real values on the approval page, secrets stay masked, and
-  exactly what they approved is written. The model gets back the masked title and a page link
+  exactly what they approved is written. The page is made from the masked Markdown and the
+  values are put in escaped afterwards, so no value can change its structure. The model gets back the masked title and a page link
   without its title part. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its

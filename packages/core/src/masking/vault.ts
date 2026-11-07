@@ -241,7 +241,8 @@ export class Vault {
 
   /**
    * Replaces each span of `text` with its pseudonym, in one transaction. Text that already
-   * looks like a pseudonym is masked too, as a literal, so unmasking gives it back as written.
+   * looks like a pseudonym is masked too, as a literal, so unmasking gives it back as written,
+   * unless `literals` is false (for what the agents wrote, whose pseudonyms are meant).
    */
   mask(context: string, text: string, spans: readonly Span[], { literals: hideLabels = true }: { literals?: boolean } = {}): string {
     if (!hideLabels) return this.database.write(() => replaceSpans(text, spans, (type, original) => this.pseudonymIn(context, type, original)));
@@ -269,9 +270,14 @@ export class Vault {
    * Puts the real values back into `text`, for the final write after approval. Pseudonyms
    * of types in `keep` (by default, secrets) stay as they are; text that only looks like a
    * pseudonym but is not in this context's vault is left alone. A value that replaces
-   * "&lt;PERSON_1&gt;" is HTML-escaped, since the text around it is.
+   * "&lt;PERSON_1&gt;" is HTML-escaped, since the text around it is; `escape` escapes the
+   * others (for XML, say). `revealed` collects each value put back, with its type.
    */
-  unmask(context: string, text: string, { keep = NEVER_UNMASKED, kept }: { keep?: readonly string[]; kept?: Set<string> } = {}): string {
+  unmask(
+    context: string,
+    text: string,
+    { keep = NEVER_UNMASKED, kept, escape, revealed }: { keep?: readonly string[]; kept?: Set<string>; escape?: (value: string) => string; revealed?: Map<string, { type: string; value: string }> } = {},
+  ): string {
     const keepTypes = new Set(keep.map(pseudonymType));
     const cache = new Map<string, string | undefined>();
     return text.replace(LABEL_IN_TEXT, (whole, ...g: (string | undefined)[]) => {
@@ -283,7 +289,8 @@ export class Vault {
       if (!cache.has(key)) cache.set(key, this.reveal(context, key, { secrets: true }));
       const value = cache.get(key);
       if (value === undefined) return kept?.add(`[${key}]`), whole;
-      return entity ? escapeHtml(value) : value;
+      revealed?.set(key, { type, value });
+      return entity ? escapeHtml(value) : escape ? escape(value) : value;
     });
   }
 
