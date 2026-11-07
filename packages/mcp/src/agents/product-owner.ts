@@ -57,7 +57,7 @@ Your task: **review the existing Jira stories** in the context (documents of kin
 
 ## Steps
 
-1. Read the Jira documents, plus any design, metadata or org documents and the other inputs they relate to.
+1. Read the Jira documents, plus any design or org documents and the other inputs they relate to. Check the objects and fields the stories touch in the metadata index (\`metadata_search\`, \`metadata_component\`).
 2. For each story, assess it against the practices below: persona and value, INVEST, acceptance criteria quality, missing error and permission paths, missing non-functional requirements, dependencies, and alignment with the design. Rate it Ready, Needs work or Not ready, with the reasons.
 3. Propose concrete rewrites for the stories that need work, and splits for stories that are too big.
 4. If the user wants the improved stories, save them as a backlog with \`backlog_save\`. Set the \`jiraKey\` of each existing epic and story (for example "PORT-12") so publishing updates that issue rather than creating a duplicate; new items, such as stories from splits, have no \`jiraKey\` and are created. Then offer to publish.

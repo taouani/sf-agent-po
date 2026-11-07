@@ -22,7 +22,7 @@ Business goals, in scope, out of scope, key assumptions.
 Internal and external user groups, what each does, and the licence each implies.
 
 ## 3. Current state
-What the metadata and org documents show is relevant: objects, automation, integrations, known technical debt (including Workflow Rules and Process Builder). Say "unknown" if no metadata or org document was provided.
+What the metadata index and org documents show is relevant: objects, automation, integrations, known technical debt (including Workflow Rules and Process Builder). Say "unknown" if nothing is indexed and no org document was provided.
 
 ## 4. Solution overview
 Capabilities mapped to Salesforce clouds, products and features, the org strategy (existing org, new org, multi-org), and a Mermaid diagram (\`\`\`mermaid) of the main components and systems.
@@ -100,7 +100,7 @@ Your task: produce a **high-level design** from the inputs in the context. This 
 
 ## Steps
 
-1. Read the context (see "Working from evidence"). If there are no metadata or org documents, say so: treat the current state as unknown, and list what must be checked against the org.
+1. Read the context (see "Working from evidence"). Look at the existing org in the metadata index (\`metadata_summary\`, then \`metadata_component\` for the objects involved). If nothing is indexed and there are no org documents, say so: treat the current state as unknown, and list what must be checked against the org.
 2. List the requirements you found, each with its source document id, and the conflicts and gaps between them.
 3. Write the design using the template below. Keep it at architecture level: components, decisions and their reasons, not field-by-field detail.
 4. Save it with \`design_save\` (designType "high-level").
@@ -130,8 +130,8 @@ Your task: produce a **detailed design** that a developer and an admin can build
 
 ## Steps
 
-1. Read the context (see "Working from evidence"). Identify the stories in scope, the high-level design, and the metadata and org documents. If no stories are in the context, ask the user which Jira issues or backlog to use.
-2. For every component you change, check the metadata or org documents for what exists today, and name it exactly as it appears there.
+1. Read the context (see "Working from evidence"). Identify the stories in scope, the high-level design, and the org documents. If no stories are in the context, ask the user which Jira issues or backlog to use.
+2. For every component you change, check what exists today with \`metadata_component\` (or the org documents), including what reads, writes or triggers on it, and name it exactly as it appears there.
 3. Write the design using the template below. Map every acceptance criterion to the components and tests that satisfy it.
 4. Save it with \`design_save\` (designType "detailed").
 5. Summarise the components to build, the risks, and the open questions, and offer to publish it to Confluence.

@@ -4,8 +4,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type ContextRepository, decodeImage, DOCUMENT_KINDS, type Masker, type NewDocument, type SourceDocument, type TextRecognizer } from "@sf-agent-po/core";
-import type { AtlassianClient, LoadError } from "@sf-agent-po/connectors";
+import { type ContextRepository, decodeImage, DOCUMENT_KINDS, type Masker, type MetadataIndex, type NewDocument, type SourceDocument, type TextRecognizer } from "@sf-agent-po/core";
+import type { AtlassianClient, BackgroundIndexer, LoadError } from "@sf-agent-po/connectors";
 import { loadLocalDocuments, MAX_FILE_BYTES, textDocument } from "@sf-agent-po/connectors";
 import { z } from "zod";
 import { requestDigest, type ApprovalServer, type PublishRequest } from "./approval/server.js";
@@ -14,6 +14,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
+import { registerMetadataTools } from "./metadata-tools.js";
 import { registerAgentPrompts } from "./prompts.js";
 import { registerPublishTools } from "./publish.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
@@ -39,6 +40,8 @@ export interface ServerOptions {
   review?: { open?: (url: string) => Promise<boolean> | boolean; progressEveryMs?: number };
   /** Overrides how each call reaches the user, for tests. */
   reviewer?: (call: CallContext) => Reviewer;
+  /** The metadata index and its background runs: the metadata tools are offered with them. */
+  metadata?: { index: MetadataIndex; indexer: BackgroundIndexer };
 }
 
 /** Images taken from one folder in one call: each one is a page for the user to check. */
@@ -150,6 +153,7 @@ export function createServer(opts: ServerOptions): McpServer {
   registerPublishTools(server, publishKit);
   registerBacklogTools(server, publishKit);
   registerAgentPrompts(server, publishKit);
+  if (opts.metadata) registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
 

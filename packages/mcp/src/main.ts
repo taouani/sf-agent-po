@@ -10,8 +10,8 @@ import { INDEX_USAGE } from "./index-command.js";
 async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
-  const { atlassianConfigFromEnv, AtlassianClient } = await import("@sf-agent-po/connectors");
-  const { ContextRepository, Database, Masker, openVault } = await import("@sf-agent-po/core");
+  const { atlassianConfigFromEnv, AtlassianClient, BackgroundIndexer } = await import("@sf-agent-po/connectors");
+  const { ContextRepository, Database, Masker, MetadataIndex, openVault } = await import("@sf-agent-po/core");
   const { ApprovalServer } = await import("./approval/server.js");
   const { createServer } = await import("./server.js");
   const { databaseFile, ensureWorkspace, lazyDetector, lazyRecognizer } = await import("./startup.js");
@@ -38,8 +38,12 @@ async function main(): Promise<void> {
     if (!config) throw new Error("Jira and Confluence need ATLASSIAN_SITE_URL, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN in the server environment.");
     return new AtlassianClient(config);
   };
-  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian });
+  const metadata = new MetadataIndex(database);
+  const indexer = new BackgroundIndexer(metadata, { workspace });
+  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian, metadata: { index: metadata, indexer } });
   const shutdown = async () => {
+    // An indexing run in progress is marked failed, so that the next start need not wait for its lease.
+    metadata.abandon("the server stopped");
     // A model download or OCR start in progress is not waited for long.
     await Promise.race([Promise.allSettled([approval.close(), recognizer.close(), detector.release(), server.close()]), new Promise((r) => setTimeout(r, 3000))]);
     database.close();
