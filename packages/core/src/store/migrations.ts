@@ -48,4 +48,30 @@ export const MIGRATIONS: readonly Migration[] = [
       UPDATE document SET seq = rowid;
     `,
   },
+  {
+    version: 3,
+    name: "pseudonym vault",
+    sql: `
+      -- One row per masked value and context (AR1, DE2). The original is encrypted
+      -- (AES-256-GCM); lookup is a keyed hash of the normalised value, so the same
+      -- value gets the same pseudonym without being stored in clear.
+      CREATE TABLE pseudonym (
+        context     TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        type        TEXT NOT NULL,
+        n           INTEGER NOT NULL,
+        lookup      BLOB NOT NULL,
+        original    BLOB NOT NULL,
+        created_at  TEXT NOT NULL,
+        PRIMARY KEY (context, type, n),
+        UNIQUE (context, lookup)
+      );
+
+      -- Proof that the key in the keychain is the one this vault was written with.
+      CREATE TABLE vault (
+        id          INTEGER PRIMARY KEY CHECK (id = 1),
+        key_check   BLOB NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+    `,
+  },
 ];
