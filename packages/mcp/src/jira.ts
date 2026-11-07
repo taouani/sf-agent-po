@@ -274,7 +274,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     const published = (id: string) => byId.get(id)?.action !== "skip";
     const links = backlog.epics
       .flatMap((e) => e.stories)
-      .flatMap((s) => (s.dependsOn ?? []).map((blocker) => ({ blocker, blocked: s.id })))
+      .flatMap((s) => [...new Set(s.dependsOn ?? [])].map((blocker) => ({ blocker, blocked: s.id })))
       .filter(({ blocker, blocked }) => published(blocker) && published(blocked))
       .filter(({ blocker, blocked }) => {
         const [a, b] = [byId.get(blocker)!.key, byId.get(blocked)!.key];
@@ -330,7 +330,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const skipped = count("skip");
         const skippedNote = skipped ? `\n\nSkipped ${skipped} won't-have item(s); they stay in the backlog only.` : "";
         if (!count("create") && !count("update") && !links.length) {
-          markPublished();
+          // Nothing of it was ever in Jira (all won't have): nothing is recorded either.
+          if (Object.keys(mapping.items).length) markPublished();
           return text(`Nothing to publish: Jira project ${args.projectKey} is already up to date.${skippedNote}`);
         }
 
@@ -398,7 +399,9 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         };
         const decision = await kit.reviewerFor(call).review(req);
         if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
-        const comment = () => decisionComment(masker, context, decision.comment, [...revealed.values()]);
+        // What the page showed from Jira is in clear too, and the comment may quote it.
+        const fromJira = [project.name, ...items.flatMap((i) => (i.current ? [i.current.summary, ...i.current.labels] : []))];
+        const comment = () => decisionComment(masker, context, decision.comment, [...revealed.values(), ...fromJira.map((value) => ({ type: "PRIVATE", value }))]);
         if (decision.status !== "approved") {
           const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
           return text(`Nothing was written: the user ${why}.${await comment()}`);

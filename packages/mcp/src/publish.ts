@@ -146,6 +146,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           let target: string;
           let write: () => Promise<{ pageId: string; url: string; version: number }>;
           let ownPage: boolean;
+          const shownTitles: string[] = [];
           if (existing) {
             let page: Awaited<ReturnType<AtlassianClient["getPageSummary"]>>;
             try {
@@ -158,6 +159,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
               throw err;
             }
             ownPage = !args.pageId || page.pageId === ownPageId;
+            shownTitles.push(page.title);
             const edited = ownPage && doc.metadata.confluence && doc.metadata.confluence.pageVersion !== page.version;
             target =
               `Confluence: replace the content of page "${page.title}" (version ${page.version})` +
@@ -172,6 +174,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             if (args.parentPageId) {
               const parentId = args.parentPageId;
               parent = await confluence("return the parent page", () => client.getPageSummary(parentId));
+              shownTitles.push(parent.title);
               if (parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
             }
             ownPage = true;
@@ -182,7 +185,9 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const req: PublishRequest = { kind: "publish", target, title: title.text, body: body.text, kept: [...new Set([...title.kept, ...body.kept])] };
           const decision = await kit.reviewerFor(call).review(req);
           if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
-          const comment = () => decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed]);
+          // Page titles from Confluence were shown in clear too, and the comment may quote them.
+          const shown = shownTitles.map((value) => ({ type: "PRIVATE", value }));
+          const comment = () => decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...shown]);
           if (decision.status !== "approved") {
             const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
             return text(`Nothing was written: the user ${why}.${await comment()}`);

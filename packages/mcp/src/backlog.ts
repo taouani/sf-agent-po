@@ -17,6 +17,9 @@ const jiraKey = z
   .optional()
   .describe("Existing Jira issue this item revises. Leave empty for new items.");
 
+/** Context document ids, as the context tools give them: nothing else (a name, a note) fits. */
+const sourceIds = z.array(z.string().regex(/^doc-[0-9a-f]{10}$/, "use a context document id such as doc-1a2b3c4d5e")).optional();
+
 const labels = z.array(z.string().regex(/^\S+$/, "Jira labels cannot contain spaces")).optional();
 
 export const PRIORITIES = ["must", "should", "could", "wont"] as const;
@@ -40,8 +43,8 @@ export const storySchema = z.object({
   priority: z.enum(PRIORITIES).optional().describe("MoSCoW priority."),
   storyPoints: z.number().int().positive().optional(),
   labels,
-  dependsOn: z.array(z.string()).optional().describe("Ids of stories that must be done first."),
-  sourceIds: z.array(z.string()).optional().describe("Context document ids this story comes from."),
+  dependsOn: z.array(localId).optional().describe("Ids of stories that must be done first."),
+  sourceIds: sourceIds.describe("Context document ids this story comes from."),
   jiraKey,
 });
 
@@ -53,7 +56,7 @@ export const epicSchema = z.object({
   scopeNotes: z.string().optional().describe("What is in and out of scope."),
   priority: z.enum(PRIORITIES).optional(),
   labels,
-  sourceIds: z.array(z.string()).optional(),
+  sourceIds,
   jiraKey,
   stories: z.array(storySchema),
 });
@@ -64,7 +67,7 @@ export const backlogSchema = z.object({
   epics: z.array(epicSchema).min(1),
   assumptions: z.array(z.string()).optional(),
   openQuestions: z
-    .array(z.object({ question: z.string().min(3), owner: z.string().optional(), sourceIds: z.array(z.string()).optional() }))
+    .array(z.object({ question: z.string().min(3), owner: z.string().optional(), sourceIds }))
     .optional(),
 });
 
@@ -117,16 +120,20 @@ export function mapBacklogText(backlog: Backlog, f: (text: string) => string): B
 
 /**
  * Masks what the agent wrote in clear in every text field (Masker.maskOutputs, with one run of
- * the detection for the whole backlog), keeping its pseudonyms.
+ * the detection for all fields but the title), keeping its pseudonyms.
  */
 export async function maskBacklog(masker: Masker, context: string, backlog: Backlog): Promise<{ backlog: Backlog; hidden: number }> {
   const texts: string[] = [];
   mapBacklogText(backlog, (t) => (texts.push(t), t));
-  const unique = [...new Set(texts)];
+  const unique = [...new Set(texts.slice(1))];
+  // The title is masked alone: it names the artifact, so it must not depend on the other fields.
+  const title = await masker.maskOutput(context, backlog.title);
   const out = await masker.maskOutputs(context, unique);
   const byText = new Map(unique.map((t, i) => [t, out.texts[i]!]));
-  const hidden = Object.values(out.report.counts).reduce((a, b) => a + b, 0);
-  return { backlog: mapBacklogText(backlog, (t) => byText.get(t)!), hidden };
+  const hidden = [title.report.counts, out.report.counts].flatMap((c) => Object.values(c)).reduce((a, b) => a + b, 0);
+  let first = true;
+  const masked = mapBacklogText(backlog, (t) => (first ? ((first = false), title.text) : byText.get(t)!));
+  return { backlog: masked, hidden };
 }
 
 const PRIORITY_LABEL: Record<(typeof PRIORITIES)[number], string> = { must: "Must have", should: "Should have", could: "Could have", wont: "Won't have (this time)" };

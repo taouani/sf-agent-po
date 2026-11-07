@@ -332,6 +332,52 @@ describe("publishing to Jira", () => {
     expect(r.text).toContain("Updated PORT-7 VIP flag for [PERSON_1]");
   });
 
+  it("masks what the user's comment quotes from Jira, as the page showed it", async () => {
+    const { call, jira, input } = await connect([{ status: "approved" }, { status: "rejected", comment: "Keep Call Kimberly about renewals as the summary." }]);
+    const { id } = await saveBacklog(call, backlog(input.id));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    const s1 = jira.issues.get("PORT-2")!;
+    s1.fields.summary = "Call Kimberly about renewals";
+    s1.updated += 1;
+    await saveBacklog(
+      call,
+      backlog(input.id, (b) => {
+        b.epics[0]!.stories[0]!.want = "to see the VIP flag at once";
+      }),
+    );
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(r.text).toContain("Their comment: Keep [PRIVATE_");
+    expect(r.text).not.toContain("Kimberly");
+  });
+
+  it("records nothing when nothing of the backlog goes to Jira, and links a repeated dependency once", async () => {
+    const { call, contexts, jira, input } = await connect();
+    const none = await saveBacklog(
+      call,
+      backlog(input.id, (b) => {
+        b.title = "Later backlog";
+        b.epics[0]!.priority = "wont";
+      }),
+    );
+    expect((await call("jira_publish", { context: "acme", artifactId: none.id, projectKey: "PORT" })).text).toContain("Nothing to publish");
+    expect(contexts.getDocument("acme", none.id)!.metadata).not.toHaveProperty("jira");
+    const { id } = await saveBacklog(
+      call,
+      backlog(input.id, (b) => {
+        b.epics[0]!.stories[1]!.dependsOn = ["S1", "S1"];
+      }),
+    );
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(jira.links).toEqual(["PORT-2>PORT-3"]);
+  });
+
+  it("takes only context document ids as sources", async () => {
+    const { call, input } = await connect();
+    const r = await call("backlog_save", { context: "acme", backlog: backlog(input.id, (b) => (b.epics[0]!.sourceIds = ["call with Karim Benali"])) });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("context document id");
+  });
+
   it("merges labels: keeps Jira's own, replaces the ones this backlog set", () => {
     expect(mergeLabels(["team-a", "old", "moscow-could", "sf-agent-po"], ["old"], ["sf-agent-po", "new"])).toEqual(["team-a", "sf-agent-po", "new"]);
   });
