@@ -137,13 +137,13 @@ describe("retrieveOrgMetadata", () => {
 
   it("merges a profile retrieved in several parts", async () => {
     const dir = tmp();
-    const big = Array.from({ length: 9_500 }, (_, i) => `Obj${i}__c`);
-    const retrieved = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ CustomObject: big, Profile: ["Admin"] }) });
+    const big = Array.from({ length: 30 }, (_, i) => `Obj${i}__c`);
+    const retrieved = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ CustomObject: big, Profile: ["Admin"] }), maxFilesPerRetrieve: 20 });
     expect(retrieved.parts).toBe(2);
     const profiles = readdirSync(retrieved.dir, { recursive: true }).filter((f) => String(f).endsWith(".profile"));
     expect(profiles).toHaveLength(1);
     const merged = readFileSync(path.join(retrieved.dir, String(profiles[0])), "utf8");
-    expect(merged.match(/<objectPermissions>/g)).toHaveLength(9_500);
+    expect(merged.match(/<objectPermissions>/g)).toHaveLength(30);
     expect(merged.match(/<userLicense>/g)).toHaveLength(1);
   });
 });

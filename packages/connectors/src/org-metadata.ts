@@ -135,6 +135,8 @@ export interface RetrieveOptions {
   sf?: SfRunner;
   /** Called as the work moves on, with a short line for the user. */
   progress?: (message: string) => void;
+  /** Files one retrieve may return (MAX_FILES_PER_RETRIEVE by default). */
+  maxFilesPerRetrieve?: number;
   /** How long one retrieve may take, in minutes (60 by default). */
   waitMinutes?: number;
 }
@@ -167,7 +169,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     // a good index.
     if (!entries.length) throw new Error(`The metadata listing of ${targetOrg} is empty: check that the user can view setup and configuration.`);
     const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
-    const parts = splitManifest(entries);
+    const parts = splitManifest(entries, options.maxFilesPerRetrieve);
     for (const [i, part] of parts.entries()) {
       const name = `part-${i + 1}`;
       await writeFile(path.join(work, `${name}.xml`), writeManifest(part, version));
