@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>62.0</apiVersion>
+    <description>Renews policies; ask Jeanne Dupont before changing</description>
+    <label>Policy Renewal</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+    <start>
+        <object>Policy__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+        <filterLogic>and</filterLogic>
+        <filters><field>Status__c</field><operator>EqualTo</operator><value><stringValue>Lapsed</stringValue></value></filters>
+    </start>
+    <decisions>
+        <name>Has_Holder</name>
+        <rules><conditions><leftValueReference>$Record.Holder__r.Industry</leftValueReference><operator>IsNull</operator></conditions></rules>
+    </decisions>
+    <recordLookups>
+        <name>Get_Account</name>
+        <object>Account</object>
+        <filters><field>Id</field><operator>EqualTo</operator><value><elementReference>$Record.Holder__c</elementReference></value></filters>
+        <queriedFields>Segment__c</queriedFields>
+    </recordLookups>
+    <recordUpdates>
+        <name>Reactivate</name>
+        <inputReference>$Record</inputReference>
+        <inputAssignments><field>Status__c</field><value><stringValue>Active</stringValue></value></inputAssignments>
+    </recordUpdates>
+    <recordCreates>
+        <name>Log</name>
+        <object>Claim__c</object>
+        <inputAssignments><field>Policy__c</field><value><elementReference>$Record.Id</elementReference></value></inputAssignments>
+    </recordCreates>
+    <actionCalls>
+        <name>Price</name>
+        <actionName>RenewalService</actionName>
+        <actionType>apex</actionType>
+    </actionCalls>
+    <subflows><name>Notify</name><flowName>Notify_Holder</flowName></subflows>
+</Flow>

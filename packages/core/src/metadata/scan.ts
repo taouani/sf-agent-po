@@ -5,6 +5,8 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ParsedComponent, ParsedMetadata } from "./model.js";
 import { componentKey, isCustomName, linkObjects, readField, readObject, readRecordType, readValidationRule } from "./objects.js";
+import { readFlow } from "./flows.js";
+import { classifyFile } from "./registry.js";
 import { obj, parseMetadataXml } from "./xml.js";
 
 /** Folders never read: tools' caches, dependencies and build output, not metadata. */
@@ -19,7 +21,7 @@ export const MAX_FILES = 500_000;
 /** How many skipped files the snapshot lists; the count covers them all. */
 export const MAX_SKIPPED_LISTED = 200;
 
-type Kind = "object" | "field" | "recordType" | "validationRule" | "mdapiObject";
+type Kind = "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow";
 
 /** What a file is, from its name and the folders around it, or undefined. */
 export function classify(rel: string): { kind: Kind; object: string; child?: string } | undefined {
@@ -28,6 +30,12 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
   const dir = parts.at(-2);
   const up = parts.at(-3);
   const upper = parts.at(-4);
+  // flows/Renewal.flow-meta.xml (source) or flows/Renewal.flow (metadata format); the name
+  // travels in `object`.
+  if (dir === "flows") {
+    const flow = base.endsWith(".flow-meta.xml") ? base.slice(0, -".flow-meta.xml".length) : base.endsWith(".flow") ? base.slice(0, -".flow".length) : "";
+    if (flow) return { kind: "flow", object: flow };
+  }
   // metadata format: objects/Account.object
   if (dir === "objects" && base.endsWith(".object") && base.length > ".object".length) return { kind: "mdapiObject", object: base.slice(0, -".object".length) };
   // source format: objects/Account/Account.object-meta.xml
@@ -111,7 +119,8 @@ async function packageDirs(root: string): Promise<string[]> {
 }
 
 /**
- * Reads the objects, fields, record types and validation rules of a project. A file or
+ * Reads the objects, fields, record types and validation rules of a project in detail, and
+ * every other component the metadata registry knows by name and file. A file or
  * subfolder that cannot be read is skipped and reported, and the rest still indexes. If the
  * project folder or one of its package folders cannot be read at all, this throws: an
  * empty result would otherwise replace a good index.
@@ -151,9 +160,25 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
     }
   }
 
+  /** An object a child stands in, kept as part of the project until its own file turns up. */
+  const standIn = (object: string, folder: string) => {
+    const objectKey = componentKey("CustomObject", object);
+    if (seen.has(objectKey)) return;
+    add({ type: "CustomObject", name: object, file: folder, attrs: { custom: isCustomName(object) }, text: "" }, folder);
+    standIns.add(objectKey);
+  };
+
   for (const file of [...files].sort()) {
     const what = classify(file);
-    if (!what) continue;
+    if (!what) {
+      // Every other type the registry knows: indexed by name and file.
+      const match = classifyFile(file);
+      if (match && !seen.has(componentKey(match.type, match.name))) {
+        add({ type: match.type, name: match.name, file, attrs: {}, text: "", ...(match.parent ? { parent: match.parent, parentType: match.parentType } : {}) }, file);
+        if (match.parent && match.parentType === "CustomObject") standIn(match.parent, file.split("/").slice(0, -2).join("/"));
+      }
+      continue;
+    }
     try {
       const size = (await stat(path.join(root, file))).size;
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
@@ -179,15 +204,13 @@ export async function scanProject(root: string): Promise<ParsedMetadata> {
         case "validationRule":
           add(readValidationRule(what.object, named(obj(doc.ValidationRule)), file), file);
           break;
+        case "flow":
+          add(readFlow(what.object, obj(doc.Flow), file), file);
+          break;
       }
       // A source-format object folder may hold only fields (a standard object the project
       // extends): the object is still part of the project.
-      const objectKey = componentKey("CustomObject", what.object);
-      if (what.kind !== "object" && what.kind !== "mdapiObject" && !seen.has(objectKey)) {
-        const folder = file.split("/").slice(0, -2).join("/");
-        add({ type: "CustomObject", name: what.object, file: folder, attrs: { custom: isCustomName(what.object) }, text: "" }, folder);
-        standIns.add(objectKey);
-      }
+      if (what.kind === "field" || what.kind === "recordType" || what.kind === "validationRule") standIn(what.object, file.split("/").slice(0, -2).join("/"));
     } catch (err) {
       skip(file, reason(err));
     }

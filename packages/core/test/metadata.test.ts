@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { classify, Database, formulaCode, formulaFields, MetadataIndex, packagePath, parseMetadataXml, scanProject, type ParsedComponent } from "../src/index.js";
+import { classify, classifyFile, Database, formulaCode, formulaFields, MetadataIndex, packagePath, parseMetadataXml, scanProject, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -73,15 +73,91 @@ describe("scanProject", () => {
     expect(skipped).toEqual([]);
     const names = components.filter((c) => !c.missing).map((c) => `${c.type}:${c.name}`).sort();
     expect(names).toEqual([
+      "ApexClass:ClaimService",
       "CustomField:Claim__c.Amount__c",
       "CustomField:Claim__c.Policy__c",
       "CustomObject:Claim__c",
+      "Flow:Claim_Intake",
       "RecordType:Claim__c.Theft",
       "ValidationRule:Claim__c.Amount_Positive",
     ]);
     expect(components.find((c) => c.name === "Claim__c.Amount__c")!.file).toBe("src/objects/Claim__c.object");
     expect(edges).toContainEqual({ from: { type: "ValidationRule", name: "Claim__c.Amount_Positive" }, to: { type: "CustomField", name: "Claim__c.Amount__c" }, kind: "reads" });
     expect(components.find((c) => c.name === "Policy__c")).toMatchObject({ type: "CustomObject", missing: true });
+  });
+});
+
+describe("classifyFile (the metadata type registry)", () => {
+  it("knows types in both formats, bundles, folders and children", () => {
+    expect(classifyFile("force-app/main/default/classes/Foo.cls-meta.xml")).toEqual({ type: "ApexClass", name: "Foo" });
+    expect(classifyFile("src/classes/Foo.cls")).toEqual({ type: "ApexClass", name: "Foo" });
+    expect(classifyFile("x/lwc/policyCard/policyCard.html")).toEqual({ type: "LightningComponentBundle", name: "policyCard" });
+    expect(classifyFile("x/lwc/policyCard/__tests__/a.test.js")).toEqual({ type: "LightningComponentBundle", name: "policyCard" });
+    expect(classifyFile("x/lwc/jsconfig.json")).toBeUndefined();
+    expect(classifyFile("x/lwc/__mocks__/m.js")).toBeUndefined();
+    expect(classifyFile("x/reports/Sales/Q1/Pipeline.report-meta.xml")).toEqual({ type: "Report", name: "Sales/Q1/Pipeline" });
+    expect(classifyFile("x/reports/Sales.reportFolder-meta.xml")).toEqual({ type: "ReportFolder", name: "Sales" });
+    expect(classifyFile("x/objects/Account/listViews/All.listView-meta.xml")).toEqual({ type: "ListView", name: "Account.All", parent: "Account", parentType: "CustomObject" });
+    expect(classifyFile("x/layouts/Account-Account Layout.layout-meta.xml")).toEqual({ type: "Layout", name: "Account-Account Layout" });
+    expect(classifyFile("x/settings/Case.settings-meta.xml")).toEqual({ type: "Settings", name: "Case" });
+    expect(classifyFile("x/bots/Helper/Helper.bot-meta.xml")).toEqual({ type: "Bot", name: "Helper" });
+    expect(classifyFile("README.md")).toBeUndefined();
+    expect(classifyFile("x/classes/nested/Foo.cls-meta.xml")).toBeUndefined();
+  });
+});
+
+describe("flows", () => {
+  it("reads what a flow triggers on, reads, writes and calls", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const flow = components.find((c) => c.type === "Flow")!;
+    expect(flow).toMatchObject({
+      name: "Policy_Renewal",
+      label: "Policy Renewal",
+      attrs: { processType: "AutoLaunchedFlow", status: "Active", triggerObject: "Policy__c", triggerType: "RecordAfterSave", recordTriggerType: "Update" },
+      text: "Renews policies; ask Jeanne Dupont before changing",
+    });
+    expect(flow.attrs.elements).toEqual({ decisions: 1, recordLookups: 1, recordCreates: 1, recordUpdates: 1, actionCalls: 1, subflows: 1 });
+    // The filter value names a client in other projects: entry conditions are not kept.
+    expect(JSON.stringify(flow.attrs)).not.toContain("Lapsed");
+    const out = edges.filter((e) => e.from.name === "Policy_Renewal").map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
+    expect(out).toEqual(
+      [
+        "calls ApexClass:RenewalService",
+        "calls Flow:Notify_Holder",
+        "reads CustomField:Account.Id",
+        "reads CustomField:Account.Industry",
+        "reads CustomField:Account.Segment__c",
+        "reads CustomField:Policy__c.Holder__c",
+        "reads CustomField:Policy__c.Id",
+        "reads CustomObject:Account",
+        "triggers_on CustomObject:Policy__c",
+        "writes CustomField:Claim__c.Policy__c",
+        "writes CustomField:Policy__c.Status__c",
+        "writes CustomObject:Claim__c",
+        "writes CustomObject:Policy__c",
+      ].sort(),
+    );
+  });
+
+  it("indexes every other type by name and file", async () => {
+    const { components } = await scanProject(join(fixtures, "source"));
+    const others = components.filter((c) => !["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"].includes(c.type) && !c.missing);
+    expect(others.map((c) => `${c.type}:${c.name}`).sort()).toEqual([
+      "ApexClass:RenewalService",
+      "Layout:Policy__c-Policy Layout",
+      "LightningComponentBundle:policyCard",
+      "ListView:Policy__c.All",
+      "Report:Sales/Pipeline",
+      "ReportFolder:Sales",
+    ]);
+    expect(others.find((c) => c.type === "ListView")).toMatchObject({ parent: "Policy__c", parentType: "CustomObject" });
+    // A subflow outside the project is a placeholder.
+    expect(components.find((c) => c.name === "Notify_Holder")).toMatchObject({ type: "Flow", missing: true });
+
+    const mdapi = await scanProject(join(fixtures, "mdapi"));
+    expect(mdapi.components.find((c) => c.type === "Flow")).toMatchObject({ name: "Claim_Intake", attrs: { status: "Draft", elements: { recordCreates: 1, screens: 1 } } });
+    expect(mdapi.edges).toContainEqual({ from: { type: "Flow", name: "Claim_Intake" }, to: { type: "CustomField", name: "Claim__c.Amount__c" }, kind: "writes" });
+    expect(mdapi.components.filter((c) => c.type === "ApexClass").map((c) => c.name)).toEqual(["ClaimService"]);
   });
 });
 
@@ -155,8 +231,10 @@ describe("MetadataIndex", () => {
     expect(index.children(snap.id, "policy__c").map((c) => c.name)).toEqual([
       "Policy__c.Holder__c",
       "Policy__c.Holder_Industry__c",
+      "Policy__c.Id",
       "Policy__c.Premium__c",
       "Policy__c.Status__c",
+      "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
     ]);
