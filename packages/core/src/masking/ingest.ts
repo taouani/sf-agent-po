@@ -3,6 +3,8 @@
 
 import type { ContextRepository, NewDocument, SourceDocument } from "../store/contexts.js";
 import { detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
+import { blackOut, decodeImage, encodePng, pageText, redactionBox, UNCERTAIN_BELOW, type Box, type TextRecognizer } from "./image.js";
+import type { Span } from "./spans.js";
 import { compileDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
 import { NEVER_UNMASKED, SOURCE, type Vault } from "./vault.js";
 
@@ -36,20 +38,47 @@ interface KnownCache {
 
 const RECOMPILE_AFTER = 200;
 
+/** What masking an image gives: the redacted image for vision models, the masked text for the others. */
+export interface MaskedImage {
+  /** The image with personal data blacked out: upright, as PNG, with no metadata. */
+  image: Buffer;
+  width: number;
+  height: number;
+  /** The text the OCR read, masked. */
+  text: string;
+  report: MaskReport;
+  ocr: {
+    /** The OCR's confidence for the page, 0 to 100. */
+    confidence: number;
+    words: number;
+    /** The boxes blacked out. */
+    redacted: Box[];
+    /**
+     * Words left visible that the OCR was unsure of: a misread name is still readable by a
+     * vision model, so the approval page shows these for the user to check.
+     */
+    uncertain: Box[];
+  };
+}
+
 /** Types the rules find wherever they appear: looking for known ones again only costs time. */
 const FOUND_BY_RULES = new Set(["EMAIL", "PHONE", "IBAN", "CARD", "IP"]);
 
 /**
  * Whether a known value is worth looking for in every later document, and how. Short or
- * digit-only values would match unrelated text ("1234", "Al"). A one-word value must match
+ * digit-only values would match unrelated text ("1234", "Al"); CJK names are short by nature. A one-word value must match
  * its case, so a word the model once took for a name ("May") does not mask "may".
  */
 function asDictionaryEntry(e: { type: string; value: string }, allowed: Set<string>): DictionaryEntry | undefined {
   if (FOUND_BY_RULES.has(e.type)) return undefined;
   const value = e.value.trim();
-  if ([...value].length < 4 || !/\p{L}/u.test(value) || allowed.has(value.toLowerCase())) return undefined;
+  // Chinese, Japanese and Korean names are two or three characters long.
+  const shortest = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(value) ? 2 : 4;
+  if ([...value].length < shortest || !/\p{L}/u.test(value) || allowed.has(value.toLowerCase())) return undefined;
   const oneWord = !/\s/u.test(value);
-  if (oneWord && e.type === "PERSON" && !/^\p{Lu}/u.test(value)) return undefined;
+  // A one-word name in lower case is more likely a word the model took for a name; scripts without case are exempt.
+  const first = value[0]!;
+  if (oneWord && e.type === "PERSON" && first.toLowerCase() !== first.toUpperCase() && !/^\p{Lu}/u.test(value)) return undefined;
   return { type: e.type, value, caseSensitive: oneWord };
 }
 
@@ -114,11 +143,51 @@ export class Masker {
     return { text: await this.maskInto(context, text, dictionary, report), report };
   }
 
-  private async maskInto(context: string, text: string, dictionary: readonly DictionaryEntry[], report: MaskReport): Promise<string> {
-    if (!text.trim()) return text;
+  /** What to mask in `text`, counted into `report`. */
+  private async spansFor(context: string, text: string, dictionary: readonly DictionaryEntry[], report: MaskReport): Promise<Span[]> {
+    if (!text.trim()) return [];
     const spans = await detect(text, { dictionary, compiled: this.knownValues(context), model: this.opts.model, allowlist: this.opts.allowlist });
     for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
-    return this.opts.vault.mask(context, text, spans);
+    return spans;
+  }
+
+  private async maskInto(context: string, text: string, dictionary: readonly DictionaryEntry[], report: MaskReport): Promise<string> {
+    if (!text.trim()) return text;
+    // Called even with no spans: the vault also hides text that looks like a pseudonym.
+    return this.opts.vault.mask(context, text, await this.spansFor(context, text, dictionary, report));
+  }
+
+  /**
+   * Masks an image (PNG or JPEG): the OCR reads its text, the same detection as for
+   * documents finds what to hide, and every word that holds some of it is blacked out.
+   * The result is re-encoded as PNG, so EXIF data (a name, a place) is dropped too.
+   * `redactUncertain` also blacks out words the OCR was unsure of.
+   */
+  async maskImage(
+    context: string,
+    raw: Uint8Array,
+    recognizer: TextRecognizer,
+    { dictionary = [], redactUncertain = false }: { dictionary?: readonly DictionaryEntry[]; redactUncertain?: boolean } = {},
+  ): Promise<MaskedImage> {
+    const img = decodeImage(raw);
+    // The OCR gets the same upright pixels that are blacked out, so its boxes match them.
+    const upright = encodePng(img);
+    const ocr = await recognizer.recognize(upright);
+    const { text, words } = pageText(ocr.lines);
+    const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
+    const spans = await this.spansFor(context, text, dictionary, report);
+    const hidden = (w: { start: number; end: number }) => spans.some((s) => s.start < w.end && w.start < s.end);
+    const redacted = words.filter(hidden).map(redactionBox);
+    const uncertain = words.filter((w) => !hidden(w) && w.confidence < UNCERTAIN_BELOW && /[\p{L}\p{N}]{2}/u.test(w.text)).map(redactionBox);
+    const boxes = redactUncertain ? [...redacted, ...uncertain] : redacted;
+    return {
+      image: boxes.length ? encodePng(blackOut(img, boxes)) : upright,
+      width: img.width,
+      height: img.height,
+      text: (text.trim() ? this.opts.vault.mask(context, text, spans) : "").trimEnd(),
+      report,
+      ocr: { confidence: ocr.confidence, words: words.length, redacted, uncertain: redactUncertain ? [] : uncertain },
+    };
   }
 
   /**

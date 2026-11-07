@@ -28,9 +28,16 @@
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.2.0",
-    "onnxruntime-common": "1.31.1"
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/fra": "1.0.0",
+    "jpeg-js": "0.4.4",
+    "onnxruntime-common": "1.31.1",
+    "pngjs": "7.0.0",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@types/pngjs": "6.0.5",
     "onnxruntime-web": "1.31.1"
   }
 }

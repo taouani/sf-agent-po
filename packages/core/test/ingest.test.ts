@@ -151,6 +151,12 @@ describe("known values", () => {
     expect((await masker.mask("acme", text)).text).toBe(text);
   });
 
+  it("looks for two-character CJK names, which are full names", async () => {
+    const { masker } = setup();
+    masker.remember("acme", [{ value: "刘洋", type: "PERSON" }, { value: "Al", type: "PERSON" }]);
+    expect((await masker.mask("acme", "客户：刘洋，Al")).text).toBe("客户：[PERSON_1]，Al");
+  });
+
   it("matches a one-word name learned from the model in its own case only", async () => {
     const { vault } = setup();
     await new Masker({ vault, model: fakeModel(["Grace"]) }).mask("acme", "Grace approved it.");
