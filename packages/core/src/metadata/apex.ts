@@ -192,10 +192,11 @@ class Declarations {
 
 /** Apex the index cannot follow, by what it does. */
 const DYNAMIC: readonly (readonly [string, RegExp])[] = [
-  ["query built from a string", /\bdatabase ?\. ?(?:query|querywithbinds|countquery|countquerywithbinds|getquerylocator|getquerylocatorwithbinds) ?\((?! ?\[)/i],
+  ["query built from a string", /\bdatabase ?\. ?(?:query|querywithbinds|countquery|countquerywithbinds|getquerylocator|getquerylocatorwithbinds|getcursor|getcursorwithbinds) ?\((?! ?\[)/i],
   ["search built from a string", /\bsearch ?\. ?query ?\((?! ?\[)/i],
   ["class named at run time", /\btype ?\. ?forname ?\(/i],
-  ["describe calls", /\bschema ?\. ?(?:getglobaldescribe|describesobjects|describetabs) ?\(|\. ?getdescribe ?\(/i],
+  // Not .getDescribe(): most of it is a field or object check on a name the code spells out.
+  ["describe calls", /\bschema ?\. ?(?:getglobaldescribe|describesobjects|describetabs) ?\(/i],
 ];
 
 /**

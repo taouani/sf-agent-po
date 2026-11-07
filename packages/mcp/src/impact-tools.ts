@@ -52,6 +52,9 @@ function objectOf(type: string, name: string, c?: IndexedComponent): string | un
   return undefined;
 }
 
+/** Types whose change is about who sees what. */
+const ACCESS_TYPES = new Set(["PermissionSet", "Profile", "PermissionSetGroup", "MutingPermissionSet"]);
+
 const inactive = (c: IndexedComponent) => c.type === "Flow" && typeof c.attrs.status === "string" && c.attrs.status !== "Active";
 
 /** The scope's components (objects, children and members), by id, or undefined without a confirmed scope in this source. */
@@ -59,7 +62,9 @@ function scopeIds(kit: ImpactKit, context: string, snap: SnapshotInfo): Set<numb
   const stored = storedScope(kit.contexts, context);
   if (!stored || stored.source !== snap.source) return undefined;
   const s = kit.index.scope(snap.id, stored.objects, { hops: 2, neighbours: false });
-  return new Set([...s.objects, ...s.children, ...s.members.map((m) => m.component)].map((c) => c.id));
+  // Every part of a scope object counts, standard fields only referenced included.
+  const parts = s.objects.flatMap((o) => kit.index.children(snap.id, o.name));
+  return new Set([...s.objects, ...parts, ...s.members.map((m) => m.component)].map((c) => c.id));
 }
 
 export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
@@ -96,6 +101,20 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
       const scope = scopeIds(kit, context, snap);
       const blind = index.blindSpots(snap.id);
       const sections: string[] = [`Impact in ${snap.source}${scope ? ", against the scope the user confirmed" : " (no confirmed scope in this source, so nothing is flagged as outside it)"}.`];
+      // What is the same for every change on one object is worked out and printed once.
+      const perObject = new Map<string, { writers: IndexedComponent[]; touching: Set<number>; printed: { writers?: boolean; blind?: boolean } }>();
+      const objectFacts = (object: string) => {
+        let f = perObject.get(object.toLowerCase());
+        if (!f) {
+          f = {
+            writers: index.writersOf(snap.id, object),
+            touching: new Set(index.scope(snap.id, [object], { hops: 1, neighbours: false }).members.map((m) => m.component.id)),
+            printed: {},
+          };
+          perObject.set(object.toLowerCase(), f);
+        }
+        return f;
+      };
 
       for (const ch of changes) {
         const real = pieces.real(ch.name);
@@ -103,7 +122,9 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         const title = c ? (await line(pieces, c)).slice(2) : `${ch.type} ${await pieces.name(ch.type, ch.name)}`;
         const out: string[] = [`## ${ch.change === "add" ? "Add" : ch.change === "delete" ? "Delete" : "Change"} ${title}`];
         const flags: string[] = [];
+        // The object, to look things up (real) and to print (as the index names it, or masked as the model wrote it).
         const object = objectOf(ch.type, real, c);
+        const objectShown = c ? object : await pieces.mask(objectOf(ch.type, ch.name) ?? "");
 
         if (!c && ch.change !== "add") {
           const word = (real.split(".").pop() ?? real).replace(/__c$/i, "");
@@ -116,21 +137,24 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         if (c && scope && !scope.has(c.id)) flags.push("It is outside the scope the user confirmed.");
         if (c?.missing) flags.push("It is only referenced (a standard component not in the source): its own settings are not in the index.");
 
-        // What depends on it: links coming in, one or two away. An object's own fields are its
-        // parts; what depends on them is counted with the object.
+        // What depends on it: links coming in, one or two away. An object's parts come with it,
+        // and what depends on them depends on the object.
         let dependents: Related[] = [];
-        const grantedBy = new Map<string, number>();
         if (c) {
+          const parts = c.type === "CustomObject" ? index.children(snap.id, c.name) : [];
           if (c.type === "CustomObject") {
-            const s = index.scope(snap.id, [c.name], { hops: 2, neighbours: false });
-            dependents = s.members.map((m) => ({ component: m.component, kind: m.kinds[0]!, kinds: m.kinds, direction: "in" as const, depth: m.hop }));
-            for (const [t, n] of Object.entries(s.grantedBy)) grantedBy.set(t, n);
-            if (s.children.length) out.push(`It holds ${s.children.length} fields, rules and record types${ch.change === "delete" ? ", deleted with it" : ""}.`);
-          } else dependents = index.related(c.id, { depth: 2 }).filter((r) => r.direction === "in" && r.kind !== "part_of");
+            const n = (t: string) => parts.filter((p) => p.type === t && !p.missing).length;
+            const other = parts.filter((p) => !p.missing && !["CustomField", "ValidationRule", "RecordType"].includes(p.type)).length;
+            out.push(
+              `It holds ${n("CustomField")} field(s), ${n("ValidationRule")} validation rule(s), ${n("RecordType")} record type(s)${other ? ` and ${other} other part(s) (layouts, list views, buttons...)` : ""}${ch.change === "delete" ? ", deleted with it" : ""}.`,
+            );
+          }
+          dependents = index.dependents([c.id, ...parts.map((p) => p.id)]);
         }
-        const grants = dependents.filter((d) => d.kinds.length === 1 && d.kinds[0] === "grants");
-        for (const g of grants) grantedBy.set(g.component.type, (grantedBy.get(g.component.type) ?? 0) + 1);
-        const rest = dependents.filter((d) => !grants.includes(d));
+        const isGrant = (d: Related) => d.depth === 1 && d.kinds.every((k) => k === "grants" || k === "includes");
+        const grantedBy = new Map<string, number>();
+        for (const g of dependents.filter(isGrant)) grantedBy.set(g.component.type, (grantedBy.get(g.component.type) ?? 0) + 1);
+        const rest = dependents.filter((d) => !isGrant(d));
         if (rest.length) {
           const shown = rest.slice(0, MAX_DEPENDENTS);
           const lines = await Promise.all(
@@ -145,6 +169,13 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         if (grantedBy.size) {
           out.push(`Access to it is given by ${[...grantedBy].map(([t, n]) => `${n} ${t}`).join(", ")}${ch.change === "add" ? "" : ": check that the change keeps the right people in and out"}.`);
         } else if (c && ["CustomField", "CustomObject", "ApexClass", "Flow"].includes(c.type) && ch.change !== "delete") flags.push("No permission set or profile in the index gives access to it.");
+        // A permission set, profile or group: its impact is what it grants.
+        if (c && ACCESS_TYPES.has(c.type)) {
+          const given = index.related(c.id, { depth: 1, kinds: ["grants", "includes"] }).filter((r) => r.direction === "out");
+          const byType = new Map<string, number>();
+          for (const g of given) byType.set(g.component.type, (byType.get(g.component.type) ?? 0) + 1);
+          out.push(given.length ? `It gives access to ${[...byType].map(([t, n]) => `${n} ${t}`).join(", ")}: whoever has it gains or loses that.` : "It gives access to nothing the index holds.");
+        }
 
         // Weak links.
         const inactiveDeps = rest.filter((d) => inactive(d.component));
@@ -154,28 +185,33 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           if (outside) flags.push(`${outside} dependent(s) are outside the scope the user confirmed: check them with the user, or widen the scope.`);
         }
         if (ch.change === "delete" && rest.length) flags.push(`Deleting it breaks or changes ${rest.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
-        if (object && (ch.change === "add" || ch.change === "modify") && ["ValidationRule", "CustomField", "CustomObject"].includes(ch.type)) {
-          const writers = index.writersOf(snap.id, object).filter((w) => w.id !== c?.id);
-          if (writers.length) {
+        const facts = object ? objectFacts(object) : undefined;
+        if (facts && (ch.change === "add" || ch.change === "modify") && ["ValidationRule", "CustomField", "CustomObject"].includes(ch.type)) {
+          const writers = facts.writers.filter((w) => w.id !== c?.id);
+          if (writers.length && facts.printed.writers) flags.push(`The ${writers.length} component(s) that save ${objectShown} records (listed above) can fail on it.`);
+          else if (writers.length) {
+            facts.printed.writers = true;
             const names = await Promise.all(writers.slice(0, 20).map(async (w) => (await line(pieces, w)).slice(2)));
             flags.push(
-              `${writers.length} component(s) save ${object} records, and a new or stricter rule, a required field or a changed type can make their saves fail: ${names.join("; ")}${writers.length > 20 ? "; ..." : ""}.`,
+              `${writers.length} component(s) save ${objectShown} records, and a new or stricter rule, a required field or a changed type can make their saves fail: ${names.join("; ")}${writers.length > 20 ? "; ..." : ""}.`,
             );
           }
         }
-        if (object) {
-          const touching = new Set(
-            index
-              .scope(snap.id, [object], { hops: 1, neighbours: false })
-              .members.map((m) => m.component.id),
-          );
-          const near = blind.filter((b) => touching.has(b.id));
+        if (c && ACCESS_TYPES.has(c.type)) {
+          // What it grants is listed above; code does not use a permission set by name.
+        } else if (facts) {
+          const near = blind.filter((b) => facts.touching.has(b.id));
           const others = blind.length - near.length;
-          if (near.length)
-            flags.push(
-              `Apex that works on ${object} also does what the index cannot follow, so it may use this unseen: ${(await Promise.all(near.slice(0, MAX_BLIND).map(async (b) => `${(await line(pieces, b)).slice(2)} (${blindWhy(b)})`))).join("; ")}.`,
-            );
-          if (others) flags.push(`${others} other Apex class(es) or trigger(s) in the source build queries from strings, name classes at run time or were too large to read: search the code for ${object} before relying on this list.`);
+          if (facts.printed.blind) {
+            if (near.length || others) flags.push(`The Apex the index cannot follow (listed above for ${objectShown}) may use it unseen.`);
+          } else {
+            facts.printed.blind = true;
+            if (near.length)
+              flags.push(
+                `Apex that works on ${objectShown} also does what the index cannot follow, so it may use this unseen: ${(await Promise.all(near.slice(0, MAX_BLIND).map(async (b) => `${(await line(pieces, b)).slice(2)} (${blindWhy(b)})`))).join("; ")}${near.length > MAX_BLIND ? "; ..." : ""}.`,
+              );
+            if (others) flags.push(`${others} other Apex class(es) or trigger(s) in the source build queries from strings, name classes at run time or were too large to read: search the code for ${objectShown} before relying on this list.`);
+          }
         } else if (blind.length) flags.push(`${blind.length} Apex class(es) or trigger(s) in the source do what the index cannot follow: they may use it unseen.`);
         if (flags.length) out.push(`Weak links:\n${flags.map((f) => `- ${f}`).join("\n")}`);
         sections.push(out.join("\n\n"));

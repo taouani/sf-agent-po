@@ -440,6 +440,37 @@ export class MetadataIndex {
     ).map(toComponent);
   }
 
+  /**
+   * What depends on these components (a component, or an object and all its parts): what
+   * links to them, then (depth 2) what reads, writes, calls or shows those. Grants and
+   * permission set groups count only on the first link, and part_of never: an object's parts
+   * are given with it, not as its dependents.
+   */
+  dependents(ids: readonly number[], depth: 1 | 2 = 2): Related[] {
+    if (!ids.length) return [];
+    const own = new Set(ids);
+    const incoming = (targets: readonly number[], kinds: string) =>
+      this.db
+        .prepare(
+          `SELECT e.src AS id, group_concat(DISTINCT e.kind) AS kinds FROM edge e
+           WHERE e.dst IN (SELECT value FROM json_each(?)) AND e.kind IN (${kinds}) GROUP BY e.src`,
+        )
+        .all(JSON.stringify(targets)) as unknown as { id: number; kinds: string }[];
+    const first = incoming(ids, "'references', 'reads', 'writes', 'triggers_on', 'calls', 'grants', 'includes', 'shows'").filter((r) => !own.has(r.id));
+    const seen = new Set([...own, ...first.map((r) => r.id)]);
+    const second = depth === 2 ? incoming(first.filter((r) => r.kinds.split(",").some((k) => k !== "grants" && k !== "includes")).map((r) => r.id), "'references', 'reads', 'writes', 'triggers_on', 'calls', 'shows'").filter((r) => !seen.has(r.id)) : [];
+    const components = this.byIds([...first, ...second].map((r) => r.id));
+    const out: Related[] = [];
+    for (const [rows, d] of [[first, 1], [second, 2]] as const)
+      for (const r of rows) {
+        const component = components.get(r.id);
+        if (!component) continue;
+        const kinds = (r.kinds.split(",") as EdgeKind[]).sort((a, b) => KIND_ORDER.indexOf(a) - KIND_ORDER.indexOf(b));
+        out.push({ component, kind: kinds[0]!, kinds, direction: "in", depth: d });
+      }
+    return out.sort((a, b) => a.depth - b.depth || a.component.type.localeCompare(b.component.type) || a.component.name.localeCompare(b.component.name));
+  }
+
   /** Components by id, in no particular order. */
   private byIds(ids: readonly number[]): Map<number, IndexedComponent> {
     if (!ids.length) return new Map();

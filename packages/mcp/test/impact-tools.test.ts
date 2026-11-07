@@ -34,6 +34,7 @@ function project(): string {
     `<?xml version="1.0"?><CustomObject><label>Policy</label>` +
       `<fields><fullName>Status__c</fullName><label>Status for Karim</label><type>Picklist</type></fields>` +
       `<fields><fullName>Status_Text__c</fullName><label>Status text</label><type>Text</type><formula>TEXT(Status__c)</formula></fields>` +
+      `<fields><fullName>Notes__c</fullName><label>Notes</label><type>Text</type></fields>` +
       `<validationRules><fullName>Status_Required</fullName><active>true</active><errorConditionFormula>ISBLANK(TEXT(Status__c))</errorConditionFormula></validationRules></CustomObject>`,
   );
   w("objects/Claim__c.object", `<?xml version="1.0"?><CustomObject><label>Claim</label></CustomObject>`);
@@ -53,9 +54,21 @@ function project(): string {
   w("classes/PolicySearch.cls-meta.xml", "<ApexClass/>");
   w("classes/Factory.cls", "public class Factory { Object make(String n) { return Type.forName(n).newInstance(); } }");
   w("classes/Factory.cls-meta.xml", "<ApexClass/>");
+  w("classes/NoteReader.cls", "public class NoteReader { void x() { Policy__c p = [SELECT Notes__c FROM Policy__c LIMIT 1]; Account a = [SELECT Industry FROM Account LIMIT 1]; } }");
+  w("classes/NoteReader.cls-meta.xml", "<ApexClass/>");
+  w("triggers/PolicyTrigger.trigger", "trigger PolicyTrigger on Policy__c (before update) { Util.go(); }");
+  w("triggers/PolicyTrigger.trigger-meta.xml", "<ApexTrigger/>");
+  w("classes/Util.cls", "public class Util { public static void go() { Boolean ok = Schema.sObjectType.Contact.fields.Name.getDescribe().isUpdateable(); } }");
+  w("classes/Util.cls-meta.xml", "<ApexClass/>");
   w(
     "profiles/Admin.profile",
-    `<?xml version="1.0"?><Profile><fieldPermissions><field>Policy__c.Status__c</field><readable>true</readable><editable>true</editable></fieldPermissions></Profile>`,
+    `<?xml version="1.0"?><Profile><fieldPermissions><field>Policy__c.Status__c</field><readable>true</readable><editable>true</editable></fieldPermissions>` +
+      `<classAccesses><apexClass>NoteReader</apexClass><enabled>true</enabled></classAccesses></Profile>`,
+  );
+  w(
+    "permissionsets/Policy_Editor.permissionset",
+    `<?xml version="1.0"?><PermissionSet><label>Policy editor</label><fieldPermissions><field>Policy__c.Status__c</field><readable>true</readable><editable>true</editable></fieldPermissions>` +
+      `<objectPermissions><object>Policy__c</object><allowRead>true</allowRead><allowEdit>true</allowEdit></objectPermissions></PermissionSet>`,
   );
   return root;
 }
@@ -96,6 +109,9 @@ describe("dynamic Apex", () => {
       "describe calls",
     ]);
     expect(readApex("ApexClass", "B", "class B { void x() { Database.getQueryLocator( [SELECT Id FROM Account]); } }", "b.cls").attrs.dynamic).toBeUndefined();
+    // Field and object checks on names the code spells out are not dynamic; cursors from strings are.
+    expect(readApex("ApexClass", "C", "class C { Boolean x() { return Schema.sObjectType.Account.fields.Name.getDescribe().isAccessible(); } }", "c.cls").attrs.dynamic).toBeUndefined();
+    expect(readApex("ApexClass", "D", "class D { void x(String q) { Database.getCursor(q); } }", "d.cls").attrs.dynamic).toEqual(["query built from a string"]);
   });
 });
 
@@ -110,7 +126,7 @@ describe("metadata_impact", () => {
     expect(r.text).toContain("- ApexClass PolicyService (reads it)");
     expect(r.text).toContain("- Flow Close_Policy (writes it)");
     expect(r.text).toContain("- Flow Old_Check (reads it) [inactive: Draft]");
-    expect(r.text).toContain("Access to it is given by 1 Profile");
+    expect(r.text).toContain("Access to it is given by 1 PermissionSet, 1 Profile");
     expect(r.text).toContain("1 inactive flow(s) depend on it");
     expect(r.text).toMatch(/component\(s\) save Policy__c records[^\n]*Flow Close_Policy/);
     expect(r.text).toContain("Apex that works on Policy__c also does what the index cannot follow, so it may use this unseen: ApexClass PolicySearch (query built from a string).");
@@ -137,5 +153,51 @@ describe("metadata_impact", () => {
     expect(r.text).toContain("- ApexClass PolicyService (reads it) [outside the scope]");
     expect(r.text).toContain("## Change CustomField Policy__c.Statu__c\nNot in the index. Close matches:\n- CustomField Policy__c.Status__c");
     expect(r.text).toMatch(/## Delete CustomField[^#]*It is outside the scope the user confirmed\./);
+  });
+
+  it("counts only direct grants, lists only what depends on an object, prints shared facts once, and keeps typed names masked", async () => {
+    const { call } = await connect();
+    // The label "Status for Karim" gives Karim a pseudonym, which the model then uses in a new name.
+    expect((await call("metadata_search", { context: "acme", query: "Status__c" })).text).toContain("[PERSON_1]");
+    const r = await call("metadata_impact", {
+      context: "acme",
+      changes: [
+        { type: "CustomField", name: "Policy__c.Notes__c" },
+        { type: "CustomObject", name: "Policy__c" },
+        { type: "CustomField", name: "[PERSON_1]__c.Foo__c", change: "add" },
+      ],
+    });
+    const [, notes, object, added] = r.text.split(/^## /m);
+    // NoteReader reads Notes__c and the profile grants NoteReader: that is not access to the field.
+    expect(notes).toContain("No permission set or profile in the index gives access to it.");
+    expect(notes).not.toContain("Access to it is given by");
+    // The trigger runs on Policy__c; what the trigger calls (Util) does not depend on the object.
+    expect(object).toContain("- ApexTrigger PolicyTrigger (runs on its records)");
+    expect(object).not.toContain("ApexClass Util");
+    expect(object).toContain("It holds 3 field(s), 1 validation rule(s), 0 record type(s)");
+    expect(object).toContain("Access to it is given by 1 PermissionSet, 1 Profile");
+    // Util's describe is a field check, not dynamic code.
+    expect(r.text).not.toContain("ApexClass Util (");
+    expect(object).toContain("The Apex the index cannot follow (listed above for Policy__c) may use it unseen.");
+    expect(added).toContain("Add CustomField [PERSON_1]__c.Foo__c");
+    expect(r.text).not.toContain("Karim");
+  });
+
+  it("knows a referenced-only field of a scope object is in the scope, and what a permission set gives", async () => {
+    const { call, contexts, source } = await connect();
+    contexts.updateSettings("acme", { scope: { source, objects: ["Account"], confirmedAt: "2026-11-07T00:00:00.000Z" } });
+    const r = await call("metadata_impact", {
+      context: "acme",
+      changes: [
+        { type: "CustomField", name: "Account.Industry" },
+        { type: "PermissionSet", name: "Policy_Editor" },
+      ],
+    });
+    const [, industry, ps] = r.text.split(/^## /m);
+    expect(industry).toContain("It is only referenced");
+    expect(industry).not.toContain("It is outside the scope");
+    expect(industry).toContain("- ApexClass NoteReader (reads it)");
+    expect(ps).toContain("It gives access to 1 CustomField, 1 CustomObject: whoever has it gains or loses that.");
+    expect(ps).not.toContain("Apex class(es)");
   });
 });
