@@ -250,7 +250,16 @@ The new code lives in npm workspaces under `packages/`:
   three hops. Descriptions, help text, picklist values and messages (in `text`) and formulas
   are stored as the project holds them, and are masked by whatever passes them to a model.
   API names match without case. A project folder that cannot be read fails the run, so it
-  never replaces a good index.
+  never replaces a good index. Flows and processes are read too: what starts them
+  (`triggers_on`, entry conditions included), the objects and fields they read and write
+  through `$Record`, record variables, Get Records results and loops, and the Apex actions,
+  subflows, email alerts, quick actions, external services and screen components they call
+  (`calls`). Every other
+  type in Salesforce's metadata type registry (copied from source-deploy-retrieve 13.12.0,
+  Apache-2.0, by `scripts/metadata-registry.mjs`; the library itself is not a dependency) is
+  indexed by name and file, including bundles, static resources, sites, documents, folders
+  and child types such as list views and bot versions. Report, dashboard, document and email
+  template names come from folders people name, and are masked like `text`.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
   Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into

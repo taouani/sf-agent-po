@@ -45,6 +45,8 @@ export interface IndexedComponent {
   type: ComponentType;
   name: string;
   parent?: string;
+  /** The parent's type, with `parent`: CustomObject for a field, Bot for a bot version. */
+  parentType?: ComponentType;
   label?: string;
   file?: string;
   missing: boolean;
@@ -65,6 +67,7 @@ interface ComponentRow {
   type: string;
   name: string;
   parent: string | null;
+  parent_type: string | null;
   label: string | null;
   file: string | null;
   present: number;
@@ -87,7 +90,7 @@ const toComponent = (r: ComponentRow): IndexedComponent => ({
   id: r.id,
   type: r.type as ComponentType,
   name: r.name,
-  ...(r.parent ? { parent: r.parent } : {}),
+  ...(r.parent ? { parent: r.parent, parentType: (r.parent_type ?? "CustomObject") as ComponentType } : {}),
   ...(r.label ? { label: r.label } : {}),
   ...(r.file ? { file: r.file } : {}),
   missing: r.present === 0,
@@ -106,7 +109,7 @@ const toSnapshot = (r: SnapshotRow): SnapshotInfo => ({
   stats: JSON.parse(r.stats) as SnapshotStats,
 });
 
-const COLUMNS = "c.id, c.type, c.name, c.parent, c.label, c.file, c.present, c.attrs, c.text";
+const COLUMNS = "c.id, c.type, c.name, c.parent, c.parent_type, c.label, c.file, c.present, c.attrs, c.text";
 
 /** The metadata index in the workspace database: snapshots, components, edges, search. */
 export class MetadataIndex {
@@ -153,13 +156,13 @@ export class MetadataIndex {
 
   private store(id: number, source: string, parsed: ParsedMetadata): void {
     const insert = this.db.prepare(
-      "INSERT INTO component (snapshot, type, name, parent, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      "INSERT INTO component (snapshot, type, name, parent, parent_type, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     );
     const ids = new Map<string, number>();
     const counts: Partial<Record<ComponentType, number>> = {};
     let referenced = 0;
     for (const c of parsed.components) {
-      const row = insert.get(id, c.type, c.name, c.parent ?? null, c.label ?? null, c.file ?? null, c.missing ? 0 : 1, JSON.stringify(c.attrs), c.text) as { id: number };
+      const row = insert.get(id, c.type, c.name, c.parent ?? null, c.parent ? (c.parentType ?? "CustomObject") : null, c.label ?? null, c.file ?? null, c.missing ? 0 : 1, JSON.stringify(c.attrs), c.text) as { id: number };
       ids.set(componentKey(c.type, c.name), row.id);
       if (c.missing) referenced++;
       else counts[c.type] = (counts[c.type] ?? 0) + 1;
@@ -204,12 +207,15 @@ export class MetadataIndex {
     return r && toComponent(r);
   }
 
-  /** The fields, record types and rules of an object, by type and name. */
-  children(snapshot: number, object: string): IndexedComponent[] {
+  /**
+   * The children of a component: of an object (its fields, record types, rules, list views...)
+   * by default, or of another type's (a bot's versions, a workflow's rules), by type and name.
+   */
+  children(snapshot: number, parent: string, parentType: ComponentType = "CustomObject"): IndexedComponent[] {
     return (
       this.db
-        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent = ? ORDER BY c.type, c.name`)
-        .all(snapshot, object) as unknown as ComponentRow[]
+        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent_type = ? AND c.parent = ? ORDER BY c.type, c.name`)
+        .all(snapshot, parentType, parent) as unknown as ComponentRow[]
     ).map(toComponent);
   }
 

@@ -186,4 +186,16 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 7,
+    name: "metadata parent types",
+    sql: `
+      -- A child's parent is not always an object (a bot version's bot, a workflow rule's
+      -- workflow, which shares its object's name): the parent's type tells them apart.
+      ALTER TABLE component ADD COLUMN parent_type TEXT;
+      UPDATE component SET parent_type = 'CustomObject' WHERE parent IS NOT NULL;
+      DROP INDEX component_parent;
+      CREATE INDEX component_parent ON component (snapshot, parent_type, parent);
+    `,
+  },
 ];

@@ -1,7 +1,7 @@
 // Objects and their children: fields, record types and validation rules, from either the
 // source format (one file per child) or the metadata format (children inside the .object).
 
-import type { ComponentType, ParsedComponent, ParsedEdge } from "./model.js";
+import type { ComponentType, EdgeKind, ParsedComponent, ParsedEdge } from "./model.js";
 import { bool, list, num, obj, str } from "./xml.js";
 
 /** Suffixes of custom names: objects, metadata types, events, person account fields... */
@@ -246,23 +246,38 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     missing.set(key, { type, name, ...(parent ? { parent } : {}) });
     return { type, name };
   };
-  const readsField = (from: ParsedEdge["from"], full: string) => {
+  const readsField = (from: ParsedEdge["from"], full: string, kind: EdgeKind = "reads") => {
     const dot = full.lastIndexOf(".");
     if (dot <= 0 || dot === full.length - 1) return;
     const owner = need("CustomObject", full.slice(0, dot)).name;
     const to = need("CustomField", `${owner}.${full.slice(dot + 1)}`, owner);
-    if (componentKey(to.type, to.name) !== componentKey(from.type, from.name)) edges.push({ from, to, kind: "reads" });
+    if (componentKey(to.type, to.name) !== componentKey(from.type, from.name)) edges.push({ from, to, kind });
   };
 
   for (const c of components) {
     const from = { type: c.type, name: c.name };
-    if (c.parent) edges.push({ from, to: need("CustomObject", c.parent), kind: "part_of" });
+    if (c.parent) edges.push({ from, to: need(c.parentType ?? "CustomObject", c.parent), kind: "part_of" });
     if (c.type === "CustomField") {
       for (const target of (c.attrs.referenceTo as string[] | undefined) ?? []) edges.push({ from, to: need("CustomObject", target), kind: "references" });
       // Roll-ups name their fields in full ("Claim__c.Amount__c"); a dependent picklist names
       // its controlling field on the same object.
       for (const full of [c.attrs.summarizedField, c.attrs.summaryForeignKey]) if (typeof full === "string") readsField(from, full);
       if (typeof c.attrs.controllingField === "string" && c.parent) readsField(from, `${c.parent}.${c.attrs.controllingField}`);
+    }
+    for (const ref of c.refs ?? []) {
+      if ("type" in ref) {
+        const types = typeof ref.type === "string" ? [ref.type] : ref.type;
+        const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? types[0];
+        if (type) edges.push({ from, to: need(type, ref.name), kind: ref.kind });
+      } else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
+      else {
+        const fields = formulaFields(ref.path, objectNamed(ref.object) ?? ref.object, fieldsOf, objectNamed);
+        // A path through relationships reads each lookup; only the field at its end is
+        // written, and with it a record of that field's object.
+        fields.forEach((field, i) => readsField(from, field, ref.kind === "writes" && i === fields.length - 1 ? "writes" : "reads"));
+        const last = fields.at(-1);
+        if (ref.kind === "writes" && last && last.lastIndexOf(".") > 0) edges.push({ from, to: need("CustomObject", last.slice(0, last.lastIndexOf("."))), kind: "writes" });
+      }
     }
     const formula = c.attrs.formula;
     if (typeof formula === "string" && c.parent) {
@@ -272,7 +287,9 @@ export function linkObjects(components: readonly ParsedComponent[]): {
   for (const m of [...missing.values()]) {
     if (m.type === "CustomField" && m.parent) edges.push({ from: { type: m.type, name: m.name }, to: need("CustomObject", m.parent), kind: "part_of" });
   }
-  return { edges, missing: [...missing.values()] };
+  // The same dependency found twice (a lookup on the way and the field itself) is one edge.
+  const unique = new Map(edges.map((e) => [`${componentKey(e.from.type, e.from.name)}>${e.kind}>${componentKey(e.to.type, e.to.name)}`, e]));
+  return { edges: [...unique.values()], missing: [...missing.values()] };
 }
 
 /** Drops undefined values and empty arrays, so attrs hold only what the file said. */
