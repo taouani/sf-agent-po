@@ -46,7 +46,8 @@ jobs:
       # The cache key is the pinned revision, so only a model change downloads it again.
       - id: model
         shell: bash
-        run: echo "revision=$(grep -o 'revision: "[0-9a-f]*"' packages/core/src/masking/model/files.ts | grep -o '[0-9a-f]\{40\}')" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "revision=$(grep -o 'revision: "[0-9a-f]*"' packages/core/src/masking/model/files.ts | grep -o '[0-9a-f]\{40\}')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: .model-cache
