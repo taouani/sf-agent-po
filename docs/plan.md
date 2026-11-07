@@ -8,7 +8,7 @@ sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in
 
 ## 1. Decision log
 
-You made 21 decisions on 6 Nov 2026. You accepted every recommendation except one: sending images to the model became a Must, which led to FE4. Five more came during the build on 7 Nov 2026 (MA1, ST3a, RT1, KC1, PB1); ST3a and RT1 replace parts of ST3 and ST4.
+You made 21 decisions on 6 Nov 2026. You accepted every recommendation except one: sending images to the model became a Must, which led to FE4. Five more came during the build on 7 Nov 2026 (MA1, ST3a, RT1, KC1, PB1); ST3a and RT1 replace parts of ST3 and ST4. During the build, Apex and Office files also moved to our own readers instead of apex-parser and officeparser.
 
 | ID | Decision | Chosen | Why |
 | --- | --- | --- | --- |
@@ -34,7 +34,7 @@ You made 21 decisions on 6 Nov 2026. You accepted every recommendation except on
 | MI1 | Migration approach | Strangler in the same repo | Proven code carries over; your live use never stops |
 | MI2 | Order and releases | Spikes first, then npm pre-releases under a `next` tag, 1.0 when every Must is done | Unknowns surface before they cost weeks |
 | MA1 | What masking hides (7 Nov 2026) | Personal data and secrets only; city and company names stay visible, except inside a street address | A city alone isn't personal data, and hiding places and companies cost the model context (20% to 32% of image text in the spike) |
-| ST3a | Reading metadata files (7 Nov 2026) | Our own reader on fast-xml-parser plus a vendored copy of Salesforce's metadata type registry (Apache-2.0); apex-parser and the user's sf CLI stay | source-deploy-retrieve would add about 80 MB and 240 packages |
+| ST3a | Reading metadata files (7 Nov 2026) | Our own reader on fast-xml-parser plus a vendored copy of Salesforce's metadata type registry (Apache-2.0); Apex is read by our own scanner; the user's sf CLI stays | source-deploy-retrieve would add about 80 MB and 240 packages |
 | RT1 | Model runtime (7 Nov 2026) | The WebAssembly build of ONNX Runtime and a pure-JS tokenizer, bundled in the package (about 16 MB, no native code) | The native runtime added about 550 MB to every install; the cost is about 3 times slower masking and about 900 MB peak memory |
 | KC1 | Where the vault key lives (7 Nov 2026) | OS tools (macOS security, Windows DPAPI, Linux secret-tool), a 0600 key file with a warning as fallback | No native keyring module to install |
 | PB1 | How pre-releases ship (7 Nov 2026) | One sf-agent-po package on npm under the next tag, published only by a workflow you start; trusted publishing replaces the npm token before January 2027 | Nothing publishes without you; users run npx sf-agent-po@next |
@@ -59,8 +59,8 @@ The stack stays TypeScript on Node. Every new component runs locally, so there i
 | Protocol | MCP over stdio, `@modelcontextprotocol/sdk` | Keep |
 | Validation | Zod schemas for every step's output | Keep, extended to designs |
 | Database | SQLite with FTS5 on `node:sqlite` | New; node:sqlite chosen by the spike on 7 Nov |
-| Metadata | Our own reader on `fast-xml-parser` with a vendored copy of Salesforce's metadata type registry (ST3a), `@apexdevtools/apex-parser` 5.3, the user's `sf` CLI for retrieval | New, plus the existing XML parser |
-| Documents | `officeparser` 8.6 (Office), `unpdf` 2.1 (PDF), `tesseract.js` 7 (OCR), draw.io XML, `postal-mime` (email) | New, plus the existing email parser |
+| Metadata | Our own reader on `fast-xml-parser` with a vendored copy of Salesforce's metadata type registry (ST3a), our own Apex scanner, the user's `sf` CLI for retrieval | New, plus the existing XML parser |
+| Documents | Our own Office reader on `fflate` and `fast-xml-parser`, `unpdf` 2.1 (PDF), `tesseract.js` 7 (OCR), draw.io XML, `postal-mime` (email) | New, plus the existing email parser |
 | Personal-data detection | Rules, a dictionary of known identities, and a multilingual model on the WebAssembly build of ONNX Runtime, bundled in the package (RT1) | New; confirmed by the spike on 7 Nov (97% of entities fully masked), no Python fallback needed |
 | Secrets | Vault key through the OS tools (macOS security, Windows DPAPI, Linux secret-tool), a 0600 key file as fallback (KC1) | New |
 | Approval page | A small page served on localhost by the server, no front-end framework | New |
@@ -81,9 +81,9 @@ At 40 hours a week with no holiday break, the plan fits 30 June 2027 with about 
 | 0 Spikes | 2 | Answers on detection quality (incl. Chinese), image redaction, images in tool results on all three hosts, SQLite driver install, elicitation in VS Code, a draw.io diagram the Confluence macro renders, the detection model's licence | Nothing | G0: each spike passes, or its fallback is chosen (Python helper for masking) | Done (PRs #6, #12). G0 passed; WebAssembly runtime chosen (RT1) |
 | 1 Foundations | 4 | Workspaces and packages, CI on three platforms, Node 24, SQLite store with migrations, importer, proven code moved over, content as files, a luxury industry template, luxury evaluation scenarios in English and French, evaluation baseline measured on today's version | Phase 0 | None; your live use continues on the old server | Done (PRs #7 to #11, #39) except the evaluation baseline, which waits on OpenRouter credit |
 | 2 Masking, inputs, approval | 5 | Masking with vault and keychain, new document readers, image redaction, approval page with unmasked preview and image confirmation, masked-input review (a setting, on by default in pre-releases), unmasking on publish | Phase 1 store | G1: first `next` pre-release; you test on Copilot; in-house users can join | Done (PRs #13 to #29). G1 met: 1.0.0-next.0 to next.4 on npm, host kit passed on Copilot and Cursor |
-| 3 Metadata index, scope | 6 | Both metadata formats, flows, Apex references, validation rules and permissions, dependency graph, search, org retrieval, scope step, org summary, query tools, impact analysis | Phases 1 and 2 (metadata text is masked too) | G2: your 9,000+ component org indexed in under 30 minutes | Done (PRs #30 to #41). G2 met: your UAT org, 15,266 components in about 20 minutes. Scope and impact tools ship in next.5 |
+| 3 Metadata index, scope | 6 | Both metadata formats, flows, Apex references, validation rules and permissions, dependency graph, search, org retrieval, scope step, org summary, query tools, impact analysis | Phases 1 and 2 (metadata text is masked too) | G2: your 9,000+ component org indexed in under 30 minutes | Done (PRs #30 to #38, #40, #41). G2 met: your UAT org, 15,266 components in about 20 minutes. Scope and impact tools ship in next.5 |
 | 4 Guided workflows | 6 | Requirements extraction, step engine, workflow tools, designs and backlogs as checked steps, structured designs, output language with English and French word lists for the checks, diagrams as draw.io in Confluence | Phases 2 and 3 | G3: a rubric score of at least 7/10 on each of three models | Next. Can start now; G3 needs the eval credit |
-| 5 Feedback, hosts, hardening | 5 | Story verdicts, design ratings, Jira diff, host files verified on Copilot, Cursor and Claude Code, `doctor`, Windows fixes, docs and contributor guide, old server removed | Phase 4 | None | Partly done: Windows fixes (PRs #34 to #36), Copilot and Cursor verified |
+| 5 Feedback, hosts, hardening | 5 | Story verdicts, design ratings, Jira diff, host files verified on Copilot, Cursor and Claude Code, `doctor`, Windows fixes, docs and contributor guide, old server removed | Phase 4 | None | Partly done: Windows fixes (PRs #35 and #36), Copilot and Cursor verified |
 | 6 Release candidate, buffer | 5.5 | Bug fixes, final evaluation, release notes | Everything | 1.0 on npm, 30 June 2027 | Not started |
 
 Weeks are rough estimates for one person with Claude. If phase 3 or 4 overruns, Shoulds and Coulds are cut first, then the buffer.
@@ -106,20 +106,20 @@ The two risks that could break the plan are masking quality and the schedule. Bo
 
 ## 6. Open questions still to resolve
 
-You answered all eight on 6 Nov 2026, and the roadmap, risks and gates above now use your answers. Two small points remain: the detection model's licence is checked in the spikes, and I assume Claude drafts the luxury scenarios for you to review.
+You answered all eight on 6 Nov 2026, and the roadmap, risks and gates above now use your answers. Two small points remain: the detection model's licence was checked in the spikes (AFL-3.0, section 7), and I assume Claude drafts the luxury scenarios for you to review.
 
-- [ ] **1. Your time.** How many hours a week can you give this? The roadmap assumes close to full time with Claude doing most of the coding (assumption). 40h/week
-- [ ] **2. Pass thresholds.** What numbers count as success? For example, the share of stories accepted without major edits, and a minimum rubric score per model. The goal names the measures but not the targets. 90% of stories accepted without major edits. 7/10 as minimum rubric score.
-- [ ] **3. Diagram app.** Which Confluence diagram app do your in-house users' sites have? v1 supports one (FE2). Draw.io
-- [ ] **4. A large test org.** Can a real org or repo with 9,000+ components be used for index testing, and what indexing time is acceptable? Yes, less than 30 minutes.
-- [ ] **5. More evaluation scenarios.** Two samples exist (insurance, banking). Who writes three or four more, in which industries and languages? Luxury, English and French
-- [ ] **6. Holiday break.** The roadmap assumes no work from 21 Dec 2026 to 1 Jan 2027. I wil be working
-- [ ] **7. Licences.** Confirm MIT stays, and check that the multilingual detection model's licence allows redistribution and commercial use. MIT stays, yes
-- [ ] **8. Masked-input review.** Should users see the masked version of each input before the agents use it? It would add a click per input, but catch detection misses on text as well as images. In testing phase only (configurable if possible)
+- **1. Your time.** How many hours a week can you give this? The roadmap assumes close to full time with Claude doing most of the coding (assumption). Answer: 40h/week.
+- **2. Pass thresholds.** What numbers count as success? For example, the share of stories accepted without major edits, and a minimum rubric score per model. The goal names the measures but not the targets. Answer: 90% of stories accepted without major edits. 7/10 as minimum rubric score.
+- **3. Diagram app.** Which Confluence diagram app do your in-house users' sites have? v1 supports one (FE2). Answer: draw.io.
+- **4. A large test org.** Can a real org or repo with 9,000+ components be used for index testing, and what indexing time is acceptable? Answer: yes, less than 30 minutes.
+- **5. More evaluation scenarios.** Two samples exist (insurance, banking). Who writes three or four more, in which industries and languages? Answer: luxury, in English and French.
+- **6. Holiday break.** The roadmap assumes no work from 21 Dec 2026 to 1 Jan 2027. Answer: I will be working.
+- **7. Licences.** Confirm MIT stays, and check that the multilingual detection model's licence allows redistribution and commercial use. Answer: MIT stays, yes.
+- **8. Masked-input review.** Should users see the masked version of each input before the agents use it? It would add a click per input, but catch detection misses on text as well as images. Answer: in the testing phase only (configurable if possible).
 
 ## 7. Phase 0 spike results
 
-The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](https://github.com/taouani/sf-agent-po/pull/6)). Every technical question is answered and gate G0 passes, except the host checks, which need you at a real Copilot, Cursor and Claude Code.
+The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](https://github.com/taouani/sf-agent-po/pull/6)). Every technical question is answered and gate G0 passes, except the host checks, which need you at a real Copilot, Cursor and Claude Code. Update: Copilot and Cursor passed; Claude Code is still open.
 
 | Question | Result | What it means for the plan |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](h
 | Detection model licence | The base models are under AFL-3.0, which is permissive and allows redistribution and commercial use | Compatible with MIT. Assumption: the model is downloaded on first run, not bundled |
 | Image redaction | `tesseract.js` with language data from npm (5.4 MB for English, French and Chinese) blacked out all 17 sensitive strings on all three OSes, at 0.1 to 0.4 s per image. The larger language data misreads Chinese | FE4 works as designed. With the model added, 20% to 32% of the other text was also blacked out, because it masks city and company names |
 | SQLite driver | `node:sqlite` and `better-sqlite3` both pass on all three OSes. Both have FTS5 with accent folding and JSON. Four processes wrote at once with no errors. 10,000 components index in 0.3 s and a 2-hop scope query takes 1.5 ms | Use `node:sqlite`: it needs no native install (risk 6) and shows no warning on Node 24. Two-character Chinese words need a fallback search, which answers in 1 to 2 ms |
-| Images, elicitation and the approval page in each host; draw.io in Confluence | The check kit is ready in `spikes/host-kit` | Open until you run it |
+| Images, elicitation and the approval page in each host; draw.io in Confluence | The check kit is ready in `spikes/host-kit` | Passed on Copilot and Cursor; Claude Code still open |
 
 **Install size: resolved (spike 6, 2026-11-07).** The native model runtime added about 550 MB to every install (300 MB on Windows and macOS, 760 MB on Linux with its CUDA download). On Linux, Windows and macOS, the WebAssembly build of ONNX Runtime with the pure-JS tokenizer gave detections identical to native for all 48 test sentences. Shipping its three runtime files in our package adds 16 MB and no native code. The cost is about 3 times the time (28 ms per sentence, about 0.5 s per page-sized chunk) and about twice the peak memory (about 900 MB). Tarek chose the bundled WebAssembly runtime for v1, so masking does not depend on @huggingface/transformers or onnxruntime-node.
 
@@ -141,7 +141,7 @@ Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put 
 
 | Phase | PRs | What shipped |
 | --- | --- | --- |
-| 3 Metadata index, scope | #30 to #41 | Index of both metadata formats, flows, Apex, permissions, layouts and every other type from Salesforce's registry; org retrieval with your sf CLI; the `index` command; summary, search and component tools; the scope step on the approval page; impact analysis with weak links (dynamic Apex, inactive flows, outside scope, other writers) |
+| 3 Metadata index, scope | #30 to #38, #40, #41 | Index of both metadata formats, flows, Apex, permissions, layouts and every other type from Salesforce's registry; org retrieval with your sf CLI; the `index` command; summary, search and component tools; the scope step on the approval page; impact analysis with weak links (dynamic Apex, inactive flows, outside scope, other writers) |
 | 2 Masking, inputs, approval | #13 to #29 | Detection with rules, dictionary and the model on WebAssembly; pseudonym vault with the key in the OS keychain; PDF, Word, PowerPoint, Excel, CSV and draw.io readers; image redaction with local OCR; approval page; masked designs and backlogs published to Confluence and Jira on approval; SA and PO workflows; `init` for three hosts; the `next` package and its release workflow |
 | 1 Foundations | #7 to #11, #39 | npm workspaces, SQLite store with migrations, importer for 0.x contexts, connectors moved over, content as Markdown, luxury template, English and French luxury scenarios, eval runner with judge, eval through OpenRouter |
 | 0 Spikes | #6, #12 | All spikes passed; WebAssembly model runtime chosen to keep the install small (RT1) |
@@ -157,7 +157,7 @@ Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put 
 - **The index cannot see inside dynamic code.** Queries and searches built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced.
 - **The dynamic Apex flags need a re-index.** An index built before next.5 has none.
 - **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory.
-- **Metadata text is masked but not shown on the input review page.** Documents are; index text goes straight to the masked store.
+- **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace and masks it each time a tool returns it to the model. Documents are masked when added (AR1) and shown on the input review page; metadata text is not.
 - **v1 is not measured yet.** The eval drives the 0.x server by default and no baseline exists, because the OpenRouter key has no credit.
 - **Some paths are tested with fakes only.** v1 publishing to Confluence and Jira has not been tried live, as far as I know.
 - **Hosts.** Claude Code is not tested; Cursor reports its version as "cursor-vscode 1.0.0".
