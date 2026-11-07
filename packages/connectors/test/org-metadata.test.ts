@@ -203,8 +203,19 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
   it("removes the folders of runs that died, and of earlier versions, but not other orgs'", async () => {
     const dir = tmp();
     for (const f of [`.retrieve-${ORG_ID}-dead`, `.old-${ORG_ID}-1`, ORG_ID, `${ORG_ID}-dead`, "00D000000000002AAA-x"]) mkdirSync(path.join(dir, f, "part-1"), { recursive: true });
+    // A failed first run after an upgrade keeps the earlier version's retrieval: nothing is
+    // known to be complete without a pointer.
+    const failing: SfRunner = async (args, opts) => {
+      if (args[1] === "retrieve") throw new Error("sf project retrieve failed: INVALID_SESSION_ID");
+      return fakeSf({ ApexClass: ["A"] })(args, opts);
+    };
+    await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: failing })).rejects.toThrow("INVALID_SESSION_ID");
+    expect(readdirSync(dir).sort()).toEqual([ORG_ID, `${ORG_ID}-dead`, "00D000000000002AAA-x"].sort());
+    // A run that completes removes the earlier version's folder; a dead run's goes at the next start.
     const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
-    expect(readdirSync(dir).sort()).toEqual(["00D000000000002AAA-x", path.basename(r.dir), `${ORG_ID}.json`].sort());
+    expect(readdirSync(dir).sort()).toEqual([`${ORG_ID}-dead`, "00D000000000002AAA-x", path.basename(r.dir), `${ORG_ID}.json`].sort());
+    const again = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
+    expect(readdirSync(dir).sort()).toEqual(["00D000000000002AAA-x", path.basename(again.dir), `${ORG_ID}.json`].sort());
   });
 
   it("keeps an object's layouts with it", () => {

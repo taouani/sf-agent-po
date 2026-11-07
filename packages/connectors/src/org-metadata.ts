@@ -222,9 +222,11 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   if (!orgId) throw new Error(`sf org display gave no org id for ${targetOrg}.`);
 
   await mkdir(options.dir, { recursive: true });
-  // Folders of runs that died, and of earlier versions (the caller holds the lease, so no
-  // other run is alive). The last complete retrieval stays until a new one replaces it.
-  await removeStale(options.dir, orgId, await currentRetrieval(options.dir, orgId));
+  // Folders of runs that died (the caller holds the lease, so no other run is alive). Without
+  // a readable pointer nothing is known to be complete, so nothing but old work folders goes:
+  // the last good retrieval, or an earlier version's, stays until a new one is complete.
+  const previous = await currentRetrieval(options.dir, orgId);
+  await removeStale(options.dir, orgId, previous ? { keep: previous } : { workOnly: true });
   // Work in a folder of its own, which becomes the retrieval: folders are never renamed,
   // because Windows refuses to while an antivirus or an editor still holds new files in them.
   // The CLI is given relative paths only, so a user name with a space in the workspace path
@@ -287,9 +289,10 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     await rm(path.join(work, "sfdx-project.json"), { force: true, maxRetries: 10, retryDelay: 300 });
     for (const f of await readdir(work)) if (!/^part-\d+$/.test(f)) await remove(path.join(work, f)).catch(() => {});
     const retrievedAt = new Date().toISOString();
-    // A small file names the new retrieval, and only then are the earlier ones removed.
-    await writeFile(pointerFile(options.dir, orgId), JSON.stringify({ folder: path.basename(work), retrievedAt }, null, 2));
-    await removeStale(options.dir, orgId, path.basename(work));
+    // A small file names the new retrieval, and only then is the previous one removed. Folders
+    // of runs that died go at the next start, so a run started meanwhile is never touched.
+    await writeRetrying(pointerFile(options.dir, orgId), JSON.stringify({ folder: path.basename(work), retrievedAt }, null, 2));
+    await removeStale(options.dir, orgId, { only: previous });
     return {
       dir: work,
       orgId,
@@ -319,13 +322,30 @@ async function currentRetrieval(dir: string, orgId: string): Promise<string | un
 }
 
 /**
- * Removes an org's retrieval folders except `keep`, and those of earlier versions (`<org id>`,
- * `.retrieve-…`, `.old-…`). A folder Windows will not let go of yet is left for the next run.
+ * Removes an org's stale folders, leaving a folder Windows will not let go of yet for the next
+ * run: every retrieval folder but `keep`, and an earlier version's (`<org id>`); with
+ * `workOnly`, only earlier versions' work folders (`.retrieve-…`, `.old-…`); with `only`, that
+ * one folder and an earlier version's.
  */
-async function removeStale(dir: string, orgId: string, keep: string | undefined): Promise<void> {
+async function removeStale(dir: string, orgId: string, which: { keep: string } | { workOnly: true } | { only: string | undefined }): Promise<void> {
   for (const f of await readdir(dir)) {
-    const stale = f === orgId || f.startsWith(`.retrieve-${orgId}-`) || f.startsWith(`.old-${orgId}-`) || (f.startsWith(`${orgId}-`) && f !== keep);
+    const work = f.startsWith(`.retrieve-${orgId}-`) || f.startsWith(`.old-${orgId}-`);
+    const stale =
+      "workOnly" in which ? work : "only" in which ? f === which.only || f === orgId || work : work || f === orgId || (f.startsWith(`${orgId}-`) && f !== which.keep);
     if (stale) await remove(path.join(dir, f)).catch(() => {});
+  }
+}
+
+/** Writes a small file, trying again for a few seconds while Windows holds the old one. */
+async function writeRetrying(file: string, text: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await writeFile(file, text);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt >= 20 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
 }
 
