@@ -376,7 +376,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           const pad = i.level === "story" ? "    " : "";
           const head = `${pad}${i.id} · ${w.fields.summary}: ${describe(i)}`;
           if (i.action === "skip" || i.action === "unchanged") return [head];
-          const points = args.storyPointsField && w.fields[args.storyPointsField] !== undefined ? [`Story points: ${String(w.fields[args.storyPointsField])}`] : [];
+          const points = args.storyPointsField && w.fields[args.storyPointsField] !== undefined ? [`Story points (${args.storyPointsField}): ${String(w.fields[args.storyPointsField])}`] : [];
           const labels = i.action === "update" ? mergeLabels(i.current?.labels ?? [], mapping.items[i.id]?.labels?.map(label), w.labels) : w.labels;
           const body = [`Labels: ${labels.join(", ")}`, ...points, "", adfToText(w.fields.description).trim()].join("\n");
           return [head, indent(body, `${pad}  | `), ""];

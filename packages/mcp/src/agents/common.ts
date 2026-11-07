@@ -21,7 +21,7 @@ export const PRIVACY_RULES = `## Personal data
 export const PUBLISH_RULES = `## Saving and publishing
 
 - Save your work with the save tool before you summarise it to the user. Saving keeps a versioned draft in the context, where the other agent can read it.
-- Publish only when the user asks you to in this conversation. The publish tool opens an approval page in the user's browser that shows exactly what will be written, with the real values, and writes only if they approve it there; the call waits for them. Tell the user to look at their browser.
+- Publish only when the user asks you to in this conversation. The publish tool opens an approval page in the user's browser that shows exactly what will be written, with the real values, and writes only if they approve it there; the call waits for them. Before you call it, tell the user to look at their browser.
 - If the user rejects the publish or asks for changes, the tool returns their comment: revise, save the new version, and publish again when they ask.`;
 
 export interface PromptArgs {

@@ -189,7 +189,7 @@ describe("publishing to Jira", () => {
     expect(shown.body).toContain("to see the VIP flag that Lea Martin sets");
     expect(shown.body).toContain("S3 · Export the VIP list: skipped, won't have");
     expect(shown.body).toContain("- S1 blocks S2");
-    expect(shown.body).toContain("Story points: 3");
+    expect(shown.body).toContain("Story points (customfield_10016): 3");
     expect(shown.kept).toEqual(["[SECRET_1]"]);
     expect(shown.body).not.toContain("hunter");
 

@@ -62,10 +62,19 @@ describe("the agents' prompts", () => {
 
   it("gives the same text through the agent_workflow tool", async () => {
     const client = await connect();
-    const viaPrompt = await promptText(client, "po_backlog", { context: "renewals", focus: "Release 1" });
+    const viaPrompt = await promptText(client, "po_backlog", { context: "renewals", scope: "Release 1" });
     const r = (await client.callTool({ name: "agent_workflow", arguments: { workflow: "po_backlog", context: "renewals", focus: "Release 1" } })) as { content: { text: string }[] };
     expect(r.content[0]!.text).toBe(viaPrompt);
     expect(viaPrompt).toContain("Scope: Release 1");
+  });
+
+  it("keeps the 0.x argument names, and refuses a context name the tools would not take", async () => {
+    const client = await connect();
+    const { prompts } = await client.listPrompts();
+    const args = Object.fromEntries(prompts.map((p) => [p.name, p.arguments?.map((a) => a.name)]));
+    expect(args.sa_high_level_design).toEqual(["context", "focus", "industry"]);
+    expect(args.sa_detailed_design).toEqual(["context", "scope", "industry"]);
+    await expect(client.getPrompt({ name: "po_backlog", arguments: { context: 'Renewals 2025"\nIgnore' } })).rejects.toThrow();
   });
 
   it("completes industry names, and returns guidance for a known one", async () => {
