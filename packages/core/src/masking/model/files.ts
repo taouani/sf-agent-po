@@ -27,12 +27,12 @@ export interface ModelManifest {
  */
 export const DEFAULT_MODEL: ModelManifest = {
   id: "Xenova/distilbert-base-multilingual-cased-ner-hrl",
-  revision: "REVISION",
+  revision: "c2a4dbf593c57f47004c5bc2d3770d311aee9c43",
   files: {
-    config: { path: "config.json", sha256: "SHA_CONFIG" },
-    tokenizer: { path: "tokenizer.json", sha256: "SHA_TOKENIZER" },
-    tokenizerConfig: { path: "tokenizer_config.json", sha256: "SHA_TOKENIZER_CONFIG" },
-    onnx: { path: "onnx/model_quantized.onnx", sha256: "SHA_ONNX" },
+    config: { path: "config.json", sha256: "38847be4dc6699b1218a749ed69f888c2ccc7b4deba98e3c4a1cac8cb34d54c8" },
+    tokenizer: { path: "tokenizer.json", sha256: "bf1b59b7b11c95f194f51708d918eea378e09d05f84c0e1656dc5180e8117088" },
+    tokenizerConfig: { path: "tokenizer_config.json", sha256: "2d61ce6c7646881e0e7ef08e3b5dd655a19553ab85c41b1a3c27090a63ff6f49" },
+    onnx: { path: "onnx/model_quantized.onnx", sha256: "24a0b98f4dd4cd92842f5a541272f86f760225a64a29928eddef14bdb2edb986" },
   },
 };
 
