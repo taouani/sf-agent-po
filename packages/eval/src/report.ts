@@ -11,12 +11,14 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
     const r = results.find((x) => x.model === m && x.scenario === s);
     if (!r) return "";
     if (r.error) return "error";
-    return r.sections.map((x) => `${short(x.task)} ${x.score}`).join(", ");
+    return r.sections.map((x) => `${short(x.task)} ${x.error ? "error" : x.score}`).join(", ");
   };
+  // A run or task that failed counts as 0, so failures can never lift a model over the target.
   const mean = (m: string) => {
-    const ok = results.filter((r) => r.model === m && !r.error);
-    return ok.length ? Math.round((ok.reduce((n, r) => n + r.score, 0) / ok.length) * 10) / 10 : undefined;
+    const runs = results.filter((r) => r.model === m);
+    return runs.length ? Math.round((runs.reduce((n, r) => n + (r.error ? 0 : r.score), 0) / runs.length) * 10) / 10 : undefined;
   };
+  const failures = (m: string) => results.filter((r) => r.model === m).reduce((n, r) => n + (r.error ? 1 : r.sections.filter((x) => x.error).length), 0);
   const lines = [
     `# Evaluation ${meta.date}`,
     ``,
@@ -26,7 +28,9 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
     `| --- | --- | ${scenarios.map(() => "---").join(" | ")} |`,
     ...models.map((m) => {
       const avg = mean(m);
-      return `| ${m} | ${avg === undefined ? "n/a" : `${avg}${avg >= TARGET_SCORE ? "" : " (below target)"}`} | ${scenarios.map((s) => cell(m, s)).join(" | ")} |`;
+      const failed = failures(m);
+      const notes = [...(avg !== undefined && avg < TARGET_SCORE ? ["below target"] : []), ...(failed ? [`${failed} failed, counted as 0`] : [])];
+      return `| ${m} | ${avg === undefined ? "n/a" : `${avg}${notes.length ? ` (${notes.join("; ")})` : ""}`} | ${scenarios.map((s) => cell(m, s)).join(" | ")} |`;
     }),
   ];
   for (const r of results) {
@@ -37,12 +41,17 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
     }
     for (const s of r.sections) {
       const a = s.agent;
-      lines.push(
-        `### ${s.title}: ${s.score}/10`,
-        ``,
-        `${a.turns} turns, ${a.toolCalls.length} tool calls (${a.toolCalls.filter((c) => c.isError).length} failed), ${a.inputTokens} input and ${a.outputTokens} output tokens, ended: ${a.stop}.`,
-        ``,
-      );
+      lines.push(`### ${s.title}: ${s.score}/10`, ``);
+      if (a) {
+        lines.push(
+          `${a.turns} turns, ${a.toolCalls.length} tool calls (${a.toolCalls.filter((c) => c.isError).length} failed), ${a.inputTokens} input and ${a.outputTokens} output tokens, ended: ${a.stop}.`,
+          ``,
+        );
+      }
+      if (s.error) {
+        lines.push(`The task failed: ${s.error}`, ``);
+        continue;
+      }
       const failed = s.verdicts.filter((v) => !v.pass);
       if (!failed.length) lines.push(`Every criterion met.`);
       for (const v of failed) lines.push(`- Missed: ${v.criterion}${v.reason ? ` (${v.reason})` : ""}`);

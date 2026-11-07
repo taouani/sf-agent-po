@@ -27,11 +27,18 @@ node packages/eval/dist/cli.js --models anthropic:claude-opus-5-5,openai:<model>
 ```
 
 Options: `--judge` (default: the first model), `--scenarios` (ids, default: all), `--server`
-(a command that starts another MCP server, for example v1), `--out` (default
-`eval-results/<date>`), `--max-turns` (default 40), `--list`.
+(a command that starts another MCP server, for example v1; split on spaces, or a JSON array
+when a path has spaces), `--out` (default `eval-results/<date>`), `--max-turns` (default 40),
+`--list`.
+
+By default the first model also judges, so it scores its own output. For a comparison between
+models, pick one fixed judge with `--judge` and keep it for later runs.
 
 It writes `report.md` (scores by model and scenario, then every missed criterion) and
-`results.json` (everything, including what was saved and each verdict's reason).
+`results.json` (everything, including what was saved and each verdict's reason), and rewrites
+both after every run, so a run cut short keeps what it measured. Only the last artifact a task
+saves with its own save tool is judged. A task or judging failure scores that task 0 and is
+listed in the report.
 
 On GitHub, the **Eval** workflow does the same by hand (Actions, Eval, Run workflow), using the
 repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY`. The report appears

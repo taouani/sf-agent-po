@@ -27,11 +27,14 @@ export interface RubricSection {
   criteria: string[];
 }
 
-/** Tasks the runner knows how to start, in the order they run, and the artifact kind each saves. */
-export const TASKS = {
-  sa_high_level_design: { artifactKind: "design", saveTool: "design_save" },
-  po_backlog: { artifactKind: "backlog", saveTool: "backlog_save" },
-} as const;
+/**
+ * Tasks the runner knows how to start, in the order they run: the tool that saves
+ * each one's artifact, and the tool that returns it in structured form, if any.
+ */
+export const TASKS: Record<"sa_high_level_design" | "po_backlog", { saveTool: string; getTool?: string }> = {
+  sa_high_level_design: { saveTool: "design_save" },
+  po_backlog: { saveTool: "backlog_save", getTool: "backlog_get" },
+};
 
 export type Task = keyof typeof TASKS;
 
