@@ -1,4 +1,4 @@
-export { openInBrowser, browserCommand } from "./approval/browser.js";
+export { browserCommand, openInBrowser, type BrowserCommand } from "./approval/browser.js";
 export { describeCounts, escapeHtml, markPseudonyms } from "./approval/page.js";
 export {
   ApprovalServer,

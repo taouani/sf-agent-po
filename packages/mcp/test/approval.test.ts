@@ -170,7 +170,8 @@ describe("helpers", () => {
     expect(win.file.replace(/\\/g, "/")).toMatch(/C:\/Windows\/System32\/rundll32\.exe$/);
     expect(win.args("http://127.0.0.1:1/a/x")).toEqual(["url.dll,FileProtocolHandler", "http://127.0.0.1:1/a/x"]);
     expect(await openInBrowser("https://example.com/", { file: "/bin/true", args: () => [] })).toBe(false);
-    expect(await openInBrowser("http://127.0.0.1:1/a/x", undefined)).toBe(false);
+    // null, not undefined: undefined would take the real browser.
+    expect(await openInBrowser("http://127.0.0.1:1/a/x", null)).toBe(false);
     expect(await openInBrowser("http://127.0.0.1:1/a/x", { file: process.execPath, args: () => ["-e", ""] })).toBe(true);
   });
 });
