@@ -211,6 +211,8 @@ The new code lives in npm workspaces under `packages/`:
   `Vault` replaces what `detect` finds with stable pseudonyms per context (`[PERSON_1]`,
   `[EMAIL_1]`), keeps the originals encrypted (AES-256-GCM) in the workspace database, and
   puts the real values back for the final write after approval. Secrets stay masked even then.
+  Phone numbers, IBANs and the like that differ only in format share a pseudonym and come back
+  in the first spelling seen; names merge only when they differ by case, spacing or apostrophe style.
   Its key is 32 random bytes; storing it in the OS keychain comes next.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
