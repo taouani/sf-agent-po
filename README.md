@@ -213,6 +213,17 @@ The new code lives in npm workspaces under `packages/`:
   puts the real values back for the final write after approval. Secrets stay masked even then.
   Phone numbers, IBANs and the like that differ only in format share a pseudonym and come back
   in the first spelling seen; names merge only when they differ by case, spacing or apostrophe style.
+  `MetadataIndex` is the local metadata index (decision B, phase 3). `scanProject` reads a
+  Salesforce project in source format (`sfdx-project.json` package folders) or metadata
+  format (`objects/*.object`): objects, fields, record types and validation rules, with
+  lookups, picklists and formulas. Each indexing run is a snapshot; the newest ready one of a
+  source is used, and a failed run leaves the previous one in place. Components link by
+  edges (`part_of`, `references`, and `reads` for the fields a formula or rule uses, followed
+  through relationships such as `Parent__r.Owner.Email`); standard objects and fields that
+  are only referenced become placeholders. `search` uses SQLite full-text search (trigram,
+  accents folded) and `related` walks the graph up to three hops. Descriptions, help text,
+  picklist values and messages are stored as the project holds them, apart from the
+  structured attributes, and are masked by whatever passes them to a model.
   Its key is 32 random bytes, one per workspace. `openVault` keeps it out of the workspace: in
   the macOS keychain, in a Windows DPAPI-encrypted file, or in the Secret Service keyring
   (GNOME Keyring, KWallet) on Linux, through the tools each OS ships. Where none of these

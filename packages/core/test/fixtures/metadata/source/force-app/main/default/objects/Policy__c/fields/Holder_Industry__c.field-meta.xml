@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Holder_Industry__c</fullName>
+    <label>Holder Industry</label>
+    <type>Text</type>
+    <formula>TEXT(Holder__r.Industry) &amp; &quot; / &quot; &amp; Holder__r.Owner.Email /* owner */</formula>
+</CustomField>

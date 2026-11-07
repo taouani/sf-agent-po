@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Holder__c</fullName>
+    <label>Holder</label>
+    <type>Lookup</type>
+    <referenceTo>Account</referenceTo>
+    <relationshipName>Policies</relationshipName>
+    <deleteConstraint>SetNull</deleteConstraint>
+    <inlineHelpText>The account that holds the policy</inlineHelpText>
+</CustomField>
