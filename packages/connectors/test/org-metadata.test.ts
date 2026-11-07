@@ -245,7 +245,7 @@ describe("indexing", () => {
       if (args[1] === "retrieve") throw new Error(`sf project retrieve failed: ENOENT ${path.join(workspace, "orgs", "x")}`);
       return fakeSf({ ApexClass: ["A"] })(args, opts);
     };
-    const err = await indexOrg(idx, "dev", { workspace, sf: failing }).catch((e: Error) => e);
+    const err = await indexOrg(idx, "dev", { workspace, sf: failing }).then(() => new Error("indexed"), (e: Error) => e);
     expect(err.message).toContain("<workspace>");
     expect(err.message).not.toContain(project);
     expect(JSON.stringify(idx.snapshots())).not.toContain(project);
