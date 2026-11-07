@@ -57,7 +57,9 @@ export function describeSnapshot(s: SnapshotInfo): string[] {
     `Indexed ${total} components, ${s.stats.edges ?? 0} links, ${s.stats.referenced ?? 0} referenced from outside the project.`,
     ...counts.slice(0, 12).map(([type, n]) => `  ${type}: ${n}`),
     ...(counts.length > 12 ? [`  and ${counts.length - 12} more types`] : []),
-    ...(retrieve.length ? ["The org did not return everything it listed:", ...retrieve.slice(0, 10).map((f) => `  ${f.reason}`)] : []),
+    ...(retrieve.length
+      ? ["The org did not return everything it listed:", ...retrieve.slice(0, 10).map((f) => `  ${f.reason}`), ...(retrieve.length > 10 ? [`  and ${retrieve.length - 10} more`] : [])]
+      : []),
     ...(unread > 0 ? [`${unread} ${unread === 1 ? "file" : "files"} could not be read:`, ...files.slice(0, 10).map((f) => `  ${f.file}: ${f.reason}`)] : []),
   ];
 }

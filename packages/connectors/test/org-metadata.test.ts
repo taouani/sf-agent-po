@@ -310,6 +310,13 @@ describe("retrieve warnings and unretrievable members", () => {
     ]);
   });
 
+  it("says a problem repeated by every part once, and caps the lines", () => {
+    expect(summarizeWarnings(["Same", "Same"])).toEqual(["Same"]);
+    const many = summarizeWarnings(Array.from({ length: 80 }, (_, i) => `Problem ${i}`));
+    expect(many).toHaveLength(50);
+    expect(many.at(-1)).toBe("and 31 more problems");
+  });
+
   it("leaves historical trending objects out of the listing", () => {
     const { entries } = readManifest(manifest({ CustomObject: ["Opportunity__hd", "Policy__c"], CustomField: ["Opportunity__hd.Amount__c", "Policy__c.Status__c"] }));
     expect(entries).toEqual([

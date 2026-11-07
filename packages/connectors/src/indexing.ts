@@ -62,6 +62,9 @@ async function scrubbing<T>(workspace: string | undefined, step: () => Promise<T
   }
 }
 
+/** Retrieve problems kept as lines: well under the index's cap on listed problems. */
+const MAX_WARNING_LINES = 50;
+
 /**
  * The CLI's retrieve warnings, with the many "cannot be found" ones (components the org lists
  * but does not return, such as list views of some standard objects) counted by type.
@@ -77,7 +80,10 @@ export function summarizeWarnings(warnings: readonly string[]): string[] {
   const counted = [...missing].sort(([, a], [, b]) => b.length - a.length).map(([type, names]) =>
     names.length === 1 ? `${type} ${names[0]} was listed but not returned` : `${names.length} ${type} components were listed but not returned, such as ${names.slice(0, 3).join(", ")}`,
   );
-  return [...counted, ...other];
+  // The same problem comes back once per part; and the lines stay well under the index's cap
+  // on listed problems, so that they are all counted apart from unreadable files.
+  const lines = [...counted, ...new Set(other)];
+  return lines.length > MAX_WARNING_LINES ? [...lines.slice(0, MAX_WARNING_LINES - 1), `and ${lines.length - MAX_WARNING_LINES + 1} more problems`] : lines;
 }
 
 /** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */

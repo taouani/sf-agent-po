@@ -1,17 +1,22 @@
 // Pieces the server starts with, loaded when first needed.
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createRecognizer, loadDetectionModel, type DetectionModel, type EntityDetector, type TextRecognizer } from "@sf-agent-po/core";
 
 /**
  * Creates the workspace folder, with a .gitignore that keeps all of it out of git: it holds the
- * masked inputs and an org's metadata, which belong to the user's machine, not to the repo.
+ * masked inputs and an org's metadata, which belong to the user's machine, not to the repo. The
+ * file is only written into a folder sf-agent-po owns (one it just created, or one named
+ * .sf-agent), never into a repository or the home folder a user pointed the workspace at.
  */
 export function ensureWorkspace(workspace: string): void {
-  mkdirSync(workspace, { recursive: true });
+  const created = mkdirSync(workspace, { recursive: true }) !== undefined;
+  const ours = created || path.basename(workspace) === ".sf-agent";
+  const foreign = existsSync(path.join(workspace, ".git")) || path.resolve(workspace) === path.resolve(homedir());
   const ignore = path.join(workspace, ".gitignore");
-  if (!existsSync(ignore)) writeFileSync(ignore, "# Written by sf-agent-po: this folder stays on your machine.\n*\n");
+  if (ours && !foreign && !existsSync(ignore)) writeFileSync(ignore, "# Written by sf-agent-po: this folder stays on your machine.\n*\n");
 }
 
 /** The database of a workspace folder. */
