@@ -9,17 +9,20 @@ import { MIGRATIONS, type Migration } from "./migrations.js";
  * runs in WAL mode with a busy timeout and every write goes through an
  * immediate transaction.
  */
+const BUSY_TIMEOUT_MS = 5000;
+
 export class Database {
   readonly db: DatabaseSync;
+  private depth = 0;
 
   constructor(readonly file: string, migrations: readonly Migration[] = MIGRATIONS) {
     if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
-    this.db = new DatabaseSync(file, { timeout: 5000 });
+    this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS });
     try {
-      // The busy timeout must be set before anything that needs a lock (such as
-      // switching to WAL), or a second process fails at once with "database is locked".
-      this.db.exec("PRAGMA busy_timeout = 5000");
-      if (file !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
+      // The busy timeout must be set before anything that needs a lock, or a
+      // second process fails at once with "database is locked".
+      this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      if (file !== ":memory:") this.enableWal();
       this.db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
       migrate(this, migrations);
     } catch (err) {
@@ -30,20 +33,54 @@ export class Database {
   }
 
   /**
-   * Runs `fn` in a write transaction. BEGIN IMMEDIATE takes the write lock up
-   * front, so two processes doing read-modify-write never interleave.
-   * Nested calls join the outer transaction.
+   * Switching a new file to WAL needs an exclusive lock, and SQLite answers
+   * SQLITE_BUSY at once instead of waiting, even with a busy timeout. When
+   * several hosts open a new workspace together, retry until the timeout.
+   * WAL is persistent, so once one process has switched, the others skip it.
    */
-  write<T>(fn: () => T): T {
-    if (this.db.isTransaction) return fn();
-    this.db.exec("BEGIN IMMEDIATE");
+  private enableWal(): void {
+    const deadline = Date.now() + BUSY_TIMEOUT_MS;
+    for (let wait = 5; ; wait = Math.min(wait * 2, 100)) {
+      try {
+        const { journal_mode } = this.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+        if (journal_mode === "wal") return;
+        this.db.exec("PRAGMA journal_mode = WAL");
+        return;
+      } catch (err) {
+        if (!isBusy(err) || Date.now() >= deadline) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+      }
+    }
+  }
+
+  /**
+   * Runs `fn` in a write transaction. The outermost call uses BEGIN IMMEDIATE,
+   * which takes the write lock up front, so two processes doing
+   * read-modify-write never interleave. A nested call runs in a savepoint: if
+   * it throws, only its own changes are undone, even when the outer callback
+   * catches the error. `fn` must be synchronous.
+   */
+  write<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T {
+    const nested = this.depth > 0;
+    if (!nested && this.db.isTransaction) {
+      throw new Error("Database.write() cannot join a transaction it did not open.");
+    }
+    const savepoint = `sp_${this.depth}`;
+    this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    this.depth++;
     try {
       const result = fn();
-      this.db.exec("COMMIT");
-      return result;
+      if (result !== null && typeof (result as { then?: unknown } | undefined)?.then === "function") {
+        throw new Error("Database.write() needs a synchronous callback: the transaction would commit before the awaited work.");
+      }
+      this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+      return result as T;
     } catch (err) {
-      this.db.exec("ROLLBACK");
+      // SQLite may already have rolled back (disk full, I/O error); do not hide the original error.
+      if (this.db.isTransaction) this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
       throw err;
+    } finally {
+      this.depth--;
     }
   }
 
@@ -73,6 +110,12 @@ export function migrate(database: Database, migrations: readonly Migration[]): v
       db.prepare("INSERT INTO schema_migration (version, name, applied_at) VALUES (?, ?, ?)").run(m.version, m.name, new Date().toISOString());
     });
   }
+}
+
+function isBusy(err: unknown): boolean {
+  const e = err as { errcode?: number; message?: string } | undefined;
+  // SQLITE_BUSY = 5 (extended codes keep it in the low byte).
+  return (typeof e?.errcode === "number" && (e.errcode & 0xff) === 5) || /database is locked/i.test(e?.message ?? "");
 }
 
 export function schemaVersion(database: Database): number {

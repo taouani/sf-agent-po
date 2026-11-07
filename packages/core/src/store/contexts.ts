@@ -175,21 +175,27 @@ export class ContextRepository {
     return this.database.write(() => this.db.prepare("DELETE FROM context WHERE name = ?").run(name).changes > 0);
   }
 
-  /** Low-level insert used by the importer: keeps the given timestamps. */
-  putRaw(name: string, doc: NewDocument & { addedAt: string; updatedAt?: string }): void {
-    this.put(name, doc, doc.updatedAt ?? doc.addedAt, doc.addedAt);
-  }
-
+  /**
+   * Inserts or replaces a document. Replacing keeps the original `added_at`
+   * and position (0.x moved a re-added document to the end and reset its
+   * date; no caller relied on that).
+   */
   private put(name: string, d: NewDocument, now: string, addedAt?: string): void {
-    this.db
+    const id = documentId(d.source);
+    const { changes } = this.db
       .prepare(
         `INSERT INTO document (context, id, kind, title, source, content, metadata, masked, added_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (context, id) DO UPDATE SET
            kind = excluded.kind, title = excluded.title, content = excluded.content,
-           metadata = excluded.metadata, masked = excluded.masked, updated_at = excluded.updated_at`,
+           metadata = excluded.metadata, masked = excluded.masked, updated_at = excluded.updated_at
+         WHERE document.source = excluded.source`,
       )
-      .run(name, documentId(d.source), d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now);
+      .run(name, id, d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now);
+    if (changes === 0) {
+      // Two different sources hashed to the same id: never let one overwrite the other.
+      throw new Error(`Document id ${id} is already used by another source in context "${name}".`);
+    }
   }
 
   private touch(name: string, at: string): void {
