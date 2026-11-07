@@ -14,6 +14,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
+import { registerAgentPrompts } from "./prompts.js";
 import { registerPublishTools } from "./publish.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
@@ -148,6 +149,7 @@ export function createServer(opts: ServerOptions): McpServer {
   const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock() };
   registerPublishTools(server, publishKit);
   registerBacklogTools(server, publishKit);
+  registerAgentPrompts(server, publishKit);
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
 
