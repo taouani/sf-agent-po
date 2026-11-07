@@ -24,3 +24,32 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # The detection model on the bundled WebAssembly runtime, with the real model files
+  # (138 MB, downloaded from Hugging Face once and cached).
+  model:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SF_AGENT_PO_MODEL_TEST: "1"
+      SF_AGENT_PO_MODEL_DIR: ${{ github.workspace }}/.model-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The cache key is the pinned revision, so only a model change downloads it again.
+      - id: model
+        shell: bash
+        run: |
+          echo "revision=$(grep -o 'revision: "[0-9a-f]*"' packages/core/src/masking/model/files.ts | grep -o '[0-9a-f]\{40\}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: detection-model-${{ steps.model.outputs.revision }}
+      - run: npm test -- packages/core/test/masking-model.test.ts
