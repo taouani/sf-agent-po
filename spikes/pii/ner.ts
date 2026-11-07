@@ -1,0 +1,136 @@
+// Local named-entity recognition with an ONNX model through @huggingface/transformers.
+// The library's token-classification pipeline returns no character offsets, so this
+// module runs the model directly and maps tokens back to the text itself.
+
+import { AutoModelForTokenClassification, AutoTokenizer, env } from '@huggingface/transformers';
+import type { Span } from '../lib/spans.ts';
+
+export interface TokenOffset {
+  start: number;
+  end: number;
+  continuation: boolean; // a sub-word piece that continues the previous word
+}
+
+const SPECIAL = /^(\[CLS\]|\[SEP\]|\[PAD\]|\[MASK\]|<s>|<\/s>|<pad>|<mask>)$/;
+const UNKNOWN = /^(\[UNK\]|<unk>)$/;
+
+/** Map WordPiece / SentencePiece / byte-level tokens back to character offsets in `text`. */
+export function alignTokens(text: string, tokens: string[]): (TokenOffset | null)[] {
+  const lower = text.toLowerCase();
+  const out: (TokenOffset | null)[] = [];
+  let cursor = 0;
+  for (const tok of tokens) {
+    if (SPECIAL.test(tok) || UNKNOWN.test(tok)) {
+      out.push(null);
+      continue;
+    }
+    const wordPieceCont = tok.startsWith('##');
+    const spStart = tok.startsWith('▁') || tok.startsWith('Ġ');
+    const piece = tok.replace(/^##/, '').replace(/^[▁Ġ]/, '');
+    if (piece === '') {
+      out.push(null);
+      continue;
+    }
+    let idx = text.indexOf(piece, cursor);
+    if (idx < 0) idx = lower.indexOf(piece.toLowerCase(), cursor);
+    if (idx < 0 || idx - cursor > 64) {
+      out.push(null);
+      continue;
+    }
+    // Sentencepiece marks word starts; WordPiece marks continuations. CJK characters are always their own word.
+    const glued = idx === cursor && cursor > 0 && !/\s/.test(text[cursor - 1]!);
+    const continuation = wordPieceCont || (!spStart && glued && /^[\p{L}\p{N}]/u.test(piece) && !/[㐀-鿿]/u.test(piece) && tokens.some((t) => t.startsWith('▁')));
+    out.push({ start: idx, end: idx + piece.length, continuation });
+    cursor = idx + piece.length;
+  }
+  return out;
+}
+
+/** Normalise model labels (CoNLL-style or PII-style) to the spike's entity types. */
+export function mapLabel(label: string): string | null {
+  const tag = label.replace(/^[BIES]-/, '').toUpperCase();
+  if (tag === 'O' || tag === '') return null;
+  if (/PER|NAME|SURNAME|USERNAME/.test(tag)) return 'PERSON';
+  if (/STREET|ADDRESS|BUILDING|ZIP|POSTCODE/.test(tag)) return 'ADDRESS';
+  if (/LOC|CITY|GPE|STATE|COUNTRY/.test(tag)) return 'LOCATION';
+  if (/ORG|COMPANY/.test(tag)) return 'ORG';
+  if (/MAIL/.test(tag)) return 'EMAIL';
+  if (/PHONE|TEL/.test(tag)) return 'PHONE';
+  if (/PASS|SECRET|KEY/.test(tag)) return 'SECRET';
+  if (/IBAN|ACCOUNT/.test(tag)) return 'IBAN';
+  if (/CARD|CREDIT/.test(tag)) return 'CARD';
+  if (/SSN|ID|SOCIAL|TAX|PASSPORT|LICEN/.test(tag)) return 'NATIONAL_ID';
+  if (/MISC|DATE|TIME/.test(tag)) return null;
+  return tag;
+}
+
+export interface NerModel {
+  id: string;
+  dtype: string;
+  labels: string[];
+  detect(text: string): Promise<Span[]>;
+}
+
+export async function loadNer(id: string, dtype: string, cacheDir?: string): Promise<NerModel> {
+  if (cacheDir) env.cacheDir = cacheDir;
+  const tokenizer = await AutoTokenizer.from_pretrained(id);
+  const model = await AutoModelForTokenClassification.from_pretrained(id, { dtype: dtype as never });
+  const id2label: Record<string, string> = (model as any).config.id2label ?? {};
+  return {
+    id,
+    dtype,
+    labels: Object.values(id2label),
+    async detect(text: string): Promise<Span[]> {
+      const enc = (tokenizer as any)._tokenizer.encode(text) as { ids: number[]; tokens: string[] };
+      if (enc.ids.length > 512) throw new Error(`text too long for one window: ${enc.ids.length} tokens`);
+      const inputs = tokenizer(text);
+      const { logits } = await (model as any)(inputs);
+      const [, seqLen, numLabels] = logits.dims as number[];
+      const data = logits.data as Float32Array;
+      const offsets = alignTokens(text, enc.tokens);
+      const spans: Span[] = [];
+      let open: Span | null = null;
+      for (let t = 0; t < seqLen!; t++) {
+        const off = offsets[t];
+        if (!off) continue;
+        let best = 0;
+        let max = -Infinity;
+        let sum = 0;
+        for (let k = 0; k < numLabels!; k++) {
+          const v = data[t * numLabels! + k]!;
+          if (v > max) {
+            max = v;
+            best = k;
+          }
+        }
+        for (let k = 0; k < numLabels!; k++) sum += Math.exp(data[t * numLabels! + k]! - max);
+        const label = id2label[best] ?? `LABEL_${best}`;
+        const type = mapLabel(label);
+        const score = 1 / sum;
+        if (off.continuation && open) {
+          // A sub-word always belongs to the word it continues.
+          open.end = off.end;
+          continue;
+        }
+        if (!type) {
+          open = null;
+          continue;
+        }
+        const begins = /^[BS]-/.test(label);
+        if (open && open.type === type && !begins) {
+          open.end = off.end;
+          open.score = Math.min(open.score ?? 1, score);
+        } else {
+          open = { start: off.start, end: off.end, type, source: 'ner', score };
+          spans.push(open);
+        }
+      }
+      // Grow each span to whole words so a name is never half masked (not for CJK).
+      for (const s of spans) {
+        while (s.start > 0 && /[\p{L}\p{N}]/u.test(text[s.start - 1]!) && !/[㐀-鿿]/u.test(text[s.start - 1]!)) s.start--;
+        while (s.end < text.length && /[\p{L}\p{N}]/u.test(text[s.end]!) && !/[㐀-鿿]/u.test(text[s.end]!)) s.end++;
+      }
+      return spans;
+    },
+  };
+}
