@@ -218,7 +218,10 @@ The new code lives in npm workspaces under `packages/`:
   (GNOME Keyring, KWallet) on Linux, through the tools each OS ships. Where none of these
   works (a server without a keyring), it falls back to a key file only the user can read,
   and says so. `exportVaultKey` and `importVaultKey` back the key up as text and restore it,
-  for example on a new computer. Without the key, masked documents cannot be unmasked.
+  for example on a new computer. Without the key, masked documents cannot be unmasked, so back
+  it up when it is created. The keychain protects the key at rest and while you are logged
+  out; like any keychain item an app reads without a prompt, other programs running as you
+  can read it too.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against

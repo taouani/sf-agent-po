@@ -8,6 +8,12 @@ export { detectorFor, loadDetectionModel, splitText, VENDORED_RUNTIME, type Dete
 export { NEVER_UNMASKED, newVaultKey, pseudonymLabel, pseudonymType, Vault, VAULT_KEY_BYTES, vaultKeyCheck, VaultKeyError } from "./vault.js";
 export {
   configDir,
+  defaultKeysDir,
+  KeychainTimeout,
+  SECURITY,
+  secretToolPath,
+  windowsPowerShell,
+  type SaveOptions,
   exportVaultKey,
   importVaultKey,
   KEYCHAIN_SERVICE,

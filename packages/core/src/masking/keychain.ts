@@ -2,9 +2,9 @@
 // tools each OS ships (no native module), else in a key file only the user can read.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Database } from "../store/db.js";
 import { newVaultKey, Vault, VAULT_KEY_BYTES, vaultKeyCheck, VaultKeyError } from "./vault.js";
@@ -36,19 +36,57 @@ export interface KeySaved {
   warning?: string;
 }
 
+/** Options for saving a key. */
+export interface SaveOptions {
+  /** Whether a store with a fallback may use it when the keychain cannot be used (default true). */
+  fallback?: boolean;
+}
+
 /** A place that keeps vault keys by id. `get` returns undefined when it has no key with that id. */
 export interface KeyStore {
   readonly name: string;
   get(id: string): Buffer | undefined;
-  set(id: string, key: Buffer): KeySaved;
+  set(id: string, key: Buffer, options?: SaveOptions): KeySaved;
 }
 
-/** The keychain cannot be used here (no tool, no keyring daemon, locked, timed out). */
+/** The keychain cannot be used here (no tool, no keyring daemon, locked). */
 export class KeychainUnavailable extends Error {
   constructor(store: string, detail: string) {
     super(`${store} is not available: ${detail}`);
     this.name = "KeychainUnavailable";
   }
+}
+
+/**
+ * The keychain did not answer in time, perhaps while an unlock prompt was open. This is
+ * not a reason to fall back to a key file: the user can unlock it and try again.
+ */
+export class KeychainTimeout extends Error {
+  constructor(store: string) {
+    super(`${store} did not answer within ${TIMEOUT_MS / 1000} s. If it asked to be unlocked, unlock it and try again.`);
+    this.name = "KeychainTimeout";
+  }
+}
+
+/** The error for a command that failed: a timeout, or a keychain that cannot be used. */
+function failure(store: string, r: CommandResult): Error {
+  if ((r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return new KeychainTimeout(store);
+  return new KeychainUnavailable(store, r.error ? r.error.message : r.stderr.trim() || `exit status ${r.status}`);
+}
+
+/**
+ * The tools are called by absolute path: on Windows a bare name is first looked up in the
+ * current folder (a cloned repository could hold a "powershell.exe"), and elsewhere PATH
+ * may start with a package's node_modules/.bin.
+ */
+export const SECURITY = "/usr/bin/security";
+const SECRET_TOOL_DIRS = ["/usr/bin", "/bin", "/usr/local/bin", "/run/current-system/sw/bin"];
+export function secretToolPath(exists: (file: string) => boolean = existsSync): string | undefined {
+  return SECRET_TOOL_DIRS.map((d) => `${d}/secret-tool`).find(exists);
+}
+export function windowsPowerShell(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.SystemRoot && win32.isAbsolute(env.SystemRoot) ? env.SystemRoot : "C:\\Windows";
+  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 }
 
 const ID = /^[0-9a-f]{32}$/;
@@ -62,7 +100,6 @@ const fromHex = (hex: string): Buffer | undefined => {
   return /^[0-9a-f]{64}$/i.test(t) ? Buffer.from(t, "hex") : undefined;
 };
 
-const failed = (r: CommandResult) => (r.error ? r.error.message : r.stderr.trim() || `exit status ${r.status}`);
 
 /** macOS: the login keychain, through `security`. The key goes in on stdin (`security -i`), never on a command line. */
 export function macosKeychain(run: RunCommand = runCommand): KeyStore {
@@ -70,38 +107,38 @@ export function macosKeychain(run: RunCommand = runCommand): KeyStore {
   return {
     name,
     get(id) {
-      const r = run("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", checkId(id), "-w"]);
-      if (r.error) throw new KeychainUnavailable(name, failed(r));
-      if (r.status === 44) return undefined; // errSecItemNotFound
-      if (r.status !== 0) throw new KeychainUnavailable(name, failed(r));
+      const r = run(SECURITY, ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", checkId(id), "-w"]);
+      if (!r.error && r.status === 44) return undefined; // errSecItemNotFound
+      if (r.error || r.status !== 0) throw failure(name, r);
       return fromHex(r.stdout);
     },
     set(id, key) {
-      const r = run("security", ["-i"], `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${checkId(id)} -l sf-agent-po-vault-key -w ${key.toString("hex")}\n`);
-      if (r.error || r.status !== 0) throw new KeychainUnavailable(name, failed(r));
+      const r = run(SECURITY, ["-i"], `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${checkId(id)} -l sf-agent-po-vault-key -w ${key.toString("hex")}\n`);
+      if (r.error || r.status !== 0) throw failure(name, r);
       return { where: name };
     },
   };
 }
 
 /** Linux and other Unix systems: the Secret Service (GNOME Keyring, KWallet), through `secret-tool`. */
-export function secretService(run: RunCommand = runCommand): KeyStore {
+export function secretService(run: RunCommand = runCommand, tool: string | null = secretToolPath() ?? null): KeyStore {
   const name = "the Secret Service keyring";
+  const command = () => {
+    if (!tool) throw new KeychainUnavailable(name, "secret-tool is not installed (package libsecret-tools or libsecret)");
+    return tool;
+  };
   return {
     name,
     get(id) {
-      const r = run("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE, "account", checkId(id)]);
-      if (r.error) throw new KeychainUnavailable(name, failed(r));
+      const r = run(command(), ["lookup", "service", KEYCHAIN_SERVICE, "account", checkId(id)]);
       // Not found is exit 1 with nothing on stderr; a missing daemon or locked keyring says why.
-      if (r.status !== 0) {
-        if (r.stderr.trim()) throw new KeychainUnavailable(name, failed(r));
-        return undefined;
-      }
+      if (!r.error && r.status === 1 && !r.stderr.trim()) return undefined;
+      if (r.error || r.status !== 0) throw failure(name, r);
       return fromHex(r.stdout);
     },
     set(id, key) {
-      const r = run("secret-tool", ["store", "--label", "sf-agent-po vault key", "service", KEYCHAIN_SERVICE, "account", checkId(id)], key.toString("hex"));
-      if (r.error || r.status !== 0) throw new KeychainUnavailable(name, failed(r));
+      const r = run(command(), ["store", "--label", "sf-agent-po vault key", "service", KEYCHAIN_SERVICE, "account", checkId(id)], key.toString("hex"));
+      if (r.error || r.status !== 0) throw failure(name, r);
       return { where: name };
     },
   };
@@ -117,6 +154,18 @@ export function configDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS
         ? join(homedir(), "Library", "Application Support")
         : (usable(env.XDG_CONFIG_HOME) ?? join(homedir(), ".config"));
   return join(base, "sf-agent-po");
+}
+
+/**
+ * Where key files go: the user's configuration folder, except on Windows, where it is the
+ * local (not roaming) application data, so a roaming profile does not copy keys to a server.
+ */
+export function defaultKeysDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA && isAbsolute(env.LOCALAPPDATA) ? env.LOCALAPPDATA : join(homedir(), "AppData", "Local");
+    return join(local, "sf-agent-po", "keys");
+  }
+  return join(configDir(env, platform), "keys");
 }
 
 /** Writes a file only the user can read, replacing any old one in one step. */
@@ -157,11 +206,11 @@ const DPAPI = (op: "Protect" | "Unprotect") =>
  * profile. Only that Windows account can decrypt it. Uses Windows PowerShell, which every
  * Windows ships.
  */
-export function windowsDpapi(dir = join(configDir(), "keys"), run: RunCommand = runCommand): KeyStore {
+export function windowsDpapi(dir = defaultKeysDir(), run: RunCommand = runCommand, powershell = windowsPowerShell()): KeyStore {
   const name = "Windows DPAPI";
   const ps = (op: "Protect" | "Unprotect", input: string) => {
-    const r = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", DPAPI(op)], input);
-    if (r.error || r.status !== 0) throw new KeychainUnavailable(name, failed(r));
+    const r = run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", DPAPI(op)], input);
+    if (r.error || r.status !== 0) throw failure(name, r);
     return r.stdout.trim();
   };
   return {
@@ -181,7 +230,7 @@ export function windowsDpapi(dir = join(configDir(), "keys"), run: RunCommand = 
 }
 
 /** The fallback: a key file only the user can read. Anyone with the user's account or a copy of the disk can. */
-export function keyFile(dir = join(configDir(), "keys")): KeyStore {
+export function keyFile(dir = defaultKeysDir(), platform: NodeJS.Platform = process.platform): KeyStore {
   const name = "a key file";
   return {
     name,
@@ -195,7 +244,8 @@ export function keyFile(dir = join(configDir(), "keys")): KeyStore {
       return {
         where: file,
         warning:
-          `No OS keychain was available, so the masking key was saved in ${file}, readable only by your user account. ` +
+          `No OS keychain was available, so the masking key was saved in ${file}, ` +
+          (platform === "win32" ? "readable by your user account and the computer's administrators. " : "readable only by your user account. ") +
           `Keep a backup of it: without it, masked documents cannot be unmasked.`,
       };
     },
@@ -211,24 +261,30 @@ export function withFallback(primary: KeyStore, fallback: KeyStore): KeyStore {
   return {
     name: `${primary.name}, else ${fallback.name}`,
     get(id) {
+      let down: KeychainUnavailable | undefined;
       try {
         const key = primary.get(id);
         if (key) return key;
       } catch (err) {
         if (!(err instanceof KeychainUnavailable)) throw err;
+        down = err;
       }
-      return fallback.get(id);
+      const key = fallback.get(id);
+      // The key may well be in the keychain we could not reach: say that, not "no key".
+      if (!key && down) throw down;
+      return key;
     },
-    set(id, key) {
+    set(id, key, { fallback: allowed = true } = {}) {
       let reason: string;
       try {
         const saved = primary.set(id, key);
         if (primary.get(id)?.equals(key)) return saved;
         reason = `${primary.name} did not give the key back`;
       } catch (err) {
-        if (!(err instanceof KeychainUnavailable)) throw err;
+        if (!(err instanceof KeychainUnavailable) || !allowed) throw err;
         reason = err.message;
       }
+      if (!allowed) throw new KeychainUnavailable(primary.name, reason);
       const saved = fallback.set(id, key);
       return { ...saved, warning: saved.warning && `${saved.warning} (${reason}.)` };
     },
@@ -237,10 +293,10 @@ export function withFallback(primary: KeyStore, fallback: KeyStore): KeyStore {
 
 /** The key store for this OS: the macOS keychain, Windows DPAPI or the Secret Service, each falling back to a key file. */
 export function systemKeyStore(
-  { platform = process.platform, dir = join(configDir(), "keys"), run = runCommand }: { platform?: NodeJS.Platform; dir?: string; run?: RunCommand } = {},
+  { platform = process.platform, dir = defaultKeysDir(process.env, platform), run = runCommand }: { platform?: NodeJS.Platform; dir?: string; run?: RunCommand } = {},
 ): KeyStore {
   const primary = platform === "darwin" ? macosKeychain(run) : platform === "win32" ? windowsDpapi(dir, run) : secretService(run);
-  return withFallback(primary, keyFile(dir));
+  return withFallback(primary, keyFile(dir, platform));
 }
 
 /** A key's id in the keychain: the start of its key check, so it reveals nothing about the key. */
@@ -268,7 +324,11 @@ export class VaultKeyMissingError extends Error {
   }
 }
 
-/** An opened vault, the key's id, and where a new key was saved (with any warning for the user). */
+/**
+ * An opened vault, the key's id, and where a new key was saved. When `created` is set,
+ * show the user its warning, if any, and ask them to back the key up with exportVaultKey:
+ * some keyrings do not outlive a logout, and a lost key cannot be recovered.
+ */
 export interface OpenedVault {
   vault: Vault;
   keyId: string;
@@ -312,8 +372,18 @@ export function exportVaultKey(database: Database, store: KeyStore = systemKeySt
   return EXPORT_PREFIX + key.toString("base64url");
 }
 
-/** Reads a key backup and saves it in `store`. It must be the key this workspace's vault was written with. */
-export function importVaultKey(database: Database, backup: string, store: KeyStore = systemKeyStore()): KeySaved & { keyId: string } {
+/**
+ * Reads a key backup and saves it in `store`. It must be the key this workspace's vault was
+ * written with. It is only written to a key file when `allowKeyFile` is set: the user chose
+ * a keychain, and a keychain that is down (locked, no D-Bus over SSH) should be fixed, not
+ * quietly replaced by a weaker copy.
+ */
+export function importVaultKey(
+  database: Database,
+  backup: string,
+  store: KeyStore = systemKeyStore(),
+  { allowKeyFile = false }: { allowKeyFile?: boolean } = {},
+): KeySaved & { keyId: string } {
   const text = backup.replace(/\s+/g, "");
   const key = text.startsWith(EXPORT_PREFIX) ? Buffer.from(text.slice(EXPORT_PREFIX.length), "base64url") : undefined;
   if (!key || key.length !== VAULT_KEY_BYTES || key.toString("base64url") !== text.slice(EXPORT_PREFIX.length)) {
@@ -323,5 +393,5 @@ export function importVaultKey(database: Database, backup: string, store: KeySto
   const expected = storedVaultKeyId(database);
   if (!expected) throw new Error(`${database.file} has no vault yet, so this key would not be used.`);
   if (expected !== keyId) throw new Error(`This backup is the key with id ${keyId}, but the vault of ${database.file} was written with the key with id ${expected}.`);
-  return { ...store.set(keyId, key), keyId };
+  return { ...store.set(keyId, key, { fallback: allowKeyFile }), keyId };
 }

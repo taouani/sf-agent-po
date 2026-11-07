@@ -6,6 +6,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   configDir,
   Database,
+  defaultKeysDir,
+  KeychainTimeout,
   exportVaultKey,
   importVaultKey,
   KeychainUnavailable,
@@ -15,12 +17,14 @@ import {
   openVault,
   runCommand,
   secretService,
+  secretToolPath,
   storedVaultKeyId,
   systemKeyStore,
   Vault,
   VaultKeyMissingError,
   vaultKeyId,
   windowsDpapi,
+  windowsPowerShell,
   withFallback,
   type CommandResult,
   type KeyStore,
@@ -57,6 +61,7 @@ describe("the OS keychains", () => {
     const { run, calls } = recorder((_, args) => (args[0] === "find-generic-password" ? ok(`${key.toString("hex")}\n`) : ok()));
     const store = macosKeychain(run);
     store.set(id, key);
+    expect(calls[0]!.cmd).toBe("/usr/bin/security");
     expect(calls[0]!.args).toEqual(["-i"]);
     expect(calls[0]!.input).toContain(`-s sf-agent-po -a ${id}`);
     expect(calls[0]!.input).toContain(key.toString("hex"));
@@ -72,13 +77,31 @@ describe("the OS keychains", () => {
 
   it("Secret Service: stores the key from stdin and tells not found from no keyring", () => {
     const key = newVaultKey();
+    const tool = "/usr/bin/secret-tool";
     const { run, calls } = recorder(() => ok());
-    secretService(run).set(id, key);
+    secretService(run, tool).set(id, key);
+    expect(calls[0]!.cmd).toBe(tool);
     expect(calls[0]!.args).toEqual(["store", "--label", "sf-agent-po vault key", "service", "sf-agent-po", "account", id]);
     expect(calls[0]!.input).toBe(key.toString("hex"));
-    expect(secretService(() => ok(key.toString("hex"))).get(id)).toEqual(key);
-    expect(secretService(() => ({ status: 1, stdout: "", stderr: "" })).get(id)).toBeUndefined();
-    expect(() => secretService(() => ({ status: 1, stdout: "", stderr: "Cannot autolaunch D-Bus without X11 $DISPLAY" })).get(id)).toThrow(KeychainUnavailable);
+    expect(secretService(() => ok(key.toString("hex")), tool).get(id)).toEqual(key);
+    expect(secretService(() => ({ status: 1, stdout: "", stderr: "" }), tool).get(id)).toBeUndefined();
+    expect(() => secretService(() => ({ status: 1, stdout: "", stderr: "Cannot autolaunch D-Bus without X11 $DISPLAY" }), tool).get(id)).toThrow(KeychainUnavailable);
+    expect(() => secretService(() => ok(), null).get(id)).toThrow(/secret-tool is not installed/);
+  });
+
+  it("runs each tool by its absolute path, never from the current folder or a package's bin", () => {
+    expect(secretToolPath((f) => f === "/usr/local/bin/secret-tool")).toBe("/usr/local/bin/secret-tool");
+    expect(secretToolPath(() => false)).toBeUndefined();
+    expect(windowsPowerShell({ SystemRoot: "D:\\Win" })).toBe("D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(windowsPowerShell({ SystemRoot: "relative" })).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  });
+
+  it("does not take a keychain that is slow to answer for one that is not there", () => {
+    const slow = () => ({ status: null, stdout: "", stderr: "", error: Object.assign(new Error("spawnSync /usr/bin/security ETIMEDOUT"), { code: "ETIMEDOUT" }) });
+    expect(() => macosKeychain(slow).get(id)).toThrow(KeychainTimeout);
+    const dir = freshDir();
+    expect(() => withFallback(macosKeychain(slow), keyFile(dir)).set(id, newVaultKey())).toThrow(/did not answer.*unlock it and try again/s);
+    expect(keyFile(dir).get(id)).toBeUndefined();
   });
 
   it("Windows: keeps the key encrypted by DPAPI in the key folder", () => {
@@ -86,11 +109,11 @@ describe("the OS keychains", () => {
     // A stand-in for DPAPI that reverses the bytes.
     const flip = (b64: string) => Buffer.from(b64, "base64").reverse().toString("base64");
     const { run, calls } = recorder((_, args, input) => ok(`${flip(input!)}\r\n`));
-    const store = windowsDpapi(dir, run);
+    const store = windowsDpapi(dir, run, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     const key = newVaultKey();
     expect(store.get(id)).toBeUndefined();
     store.set(id, key);
-    expect(calls[0]!.cmd).toBe("powershell.exe");
+    expect(calls[0]!.cmd).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     expect(calls[0]!.args.join(" ")).toContain("Protect(");
     expect(calls[0]!.args.join(" ")).not.toContain(key.toString("base64"));
     expect(readFileSync(join(dir, `${id}.dpapi`), "utf8")).not.toContain(key.toString("base64"));
@@ -128,7 +151,11 @@ describe("the key file fallback", () => {
       },
     };
     const store = withFallback(down, keyFile(dir));
+    // Nothing anywhere: the keychain may hold the key, so say it is locked rather than missing.
+    expect(() => store.get(id)).toThrow(/the test keychain is not available: locked/);
     const key = newVaultKey();
+    expect(() => store.set(id, key, { fallback: false })).toThrow(KeychainUnavailable);
+    expect(keyFile(dir).get(id)).toBeUndefined();
     expect(store.set(id, key).warning).toMatch(/locked/);
     expect(store.get(id)).toEqual(key);
   });
@@ -154,6 +181,9 @@ describe("the key file fallback", () => {
     expect(configDir({ XDG_CONFIG_HOME: "relative" }, "linux")).toMatch(/\.config[\\/]sf-agent-po$/);
     expect(configDir({ APPDATA: "C:\\Users\\t\\AppData\\Roaming" }, "win32")).toContain("sf-agent-po");
     expect(configDir({}, "darwin")).toMatch(/Application Support[\\/]sf-agent-po$/);
+    // Not the roaming profile on Windows, which may be copied to a server.
+    expect(defaultKeysDir({ LOCALAPPDATA: "/local", APPDATA: "/roaming" }, "win32")).toBe(join("/local", "sf-agent-po", "keys"));
+    expect(keyFile(freshDir(), "win32").set(id, newVaultKey()).warning).toMatch(/administrators/);
   });
 });
 
@@ -210,6 +240,28 @@ describe("opening a workspace's vault", () => {
     expect(() => exportVaultKey(new Database(":memory:"), store)).toThrow(/no vault yet/);
   });
 
+  it("imports to a key file only when asked, when the keychain is down", () => {
+    const db = new Database(":memory:");
+    const home = memoryStore();
+    openVault(db, home);
+    const backup = exportVaultKey(db, home);
+    const down: KeyStore = {
+      name: "the test keychain",
+      get: () => {
+        throw new KeychainUnavailable("the test keychain", "no D-Bus session");
+      },
+      set: () => {
+        throw new KeychainUnavailable("the test keychain", "no D-Bus session");
+      },
+    };
+    const dir = freshDir();
+    const store = withFallback(down, keyFile(dir));
+    expect(() => openVault(db, store)).toThrow(/no D-Bus session/);
+    expect(() => importVaultKey(db, backup, store)).toThrow(/no D-Bus session/);
+    expect(importVaultKey(db, backup, store, { allowKeyFile: true }).warning).toMatch(/No OS keychain/);
+    expect(openVault(db, store).keyId).toBe(storedVaultKeyId(db));
+  });
+
   it("uses the key of a process that created the vault at the same time", () => {
     const db = new Database(":memory:");
     const store = memoryStore();
@@ -242,9 +294,12 @@ describe.runIf(process.env.SF_AGENT_PO_KEYCHAIN_TEST === "1")("this computer's k
       const saved = store.set(keyId, key);
       console.log(`Key saved in ${saved.where}${saved.warning ? " (fallback)" : ""}`);
       expect(store.get(keyId)).toEqual(key);
+      // On macOS and Windows the keychain is always there, and CI sets up a Secret Service on Linux.
+      if (process.platform !== "linux" || process.env.SF_AGENT_PO_SECRET_SERVICE === "1") expect(saved.warning).toBeUndefined();
     } finally {
-      if (process.platform === "darwin") runCommand("security", ["delete-generic-password", "-s", "sf-agent-po", "-a", keyId]);
-      if (process.platform === "linux") runCommand("secret-tool", ["clear", "service", "sf-agent-po", "account", keyId]);
+      if (process.platform === "darwin") runCommand("/usr/bin/security", ["delete-generic-password", "-s", "sf-agent-po", "-a", keyId]);
+      const tool = secretToolPath();
+      if (process.platform === "linux" && tool) runCommand(tool, ["clear", "service", "sf-agent-po", "account", keyId]);
     }
     // Each Windows PowerShell start takes a second or two, and saving reads the key back.
   }, 60_000);

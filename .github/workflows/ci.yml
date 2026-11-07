@@ -27,6 +27,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # The Secret Service on Linux, with an unlocked GNOME Keyring on a private D-Bus session.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q libsecret-tools gnome-keyring
+      - if: runner.os == 'Linux'
+        env:
+          SF_AGENT_PO_SECRET_SERVICE: "1"
+        run: |
+          dbus-run-session -- sh -c 'echo ci-keyring | gnome-keyring-daemon --unlock --components=secrets > /dev/null && npx vitest run packages/core/test/keychain.test.ts'
 
   # The detection model on the bundled WebAssembly runtime, with the real model files
   # (138 MB, downloaded from Hugging Face once and cached).
