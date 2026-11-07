@@ -1,4 +1,4 @@
-// What the agents produce (designs, and later backlogs) lives in the requirement context as
+// What the agents produce (designs and backlogs) lives in the requirement context as
 // ordinary documents, so whichever agent runs second reads the first one's output. Artifacts
 // are stored masked, like inputs: the pseudonyms the agents used stay, and what they wrote in
 // clear is masked (Masker.maskOutput).
@@ -16,9 +16,25 @@ export interface ArtifactMeta {
   /** Context document ids the artifact was derived from. */
   sourceIds?: string[];
   confluence?: { pageId: string; url: string; pageVersion: number; artifactVersion: number; publishedAt: string };
+  /** Where a backlog's items were published in Jira (jira.ts). */
+  jira?: JiraMapping;
   /** Identifies the saved version: a hash of the content unless the caller gives one. */
   fingerprint?: string;
   [key: string]: unknown;
+}
+
+/** Where each backlog item was published in Jira, so publishing again updates instead of duplicating. */
+export interface JiraMapping {
+  projectKey: string;
+  /**
+   * `hash` covers the masked fields last sent; `labels` are the masked labels this backlog set,
+   * so a label removed here is removed in Jira while labels added in Jira stay; `updated` is
+   * Jira's timestamp right after our last write, to spot edits made in Jira since.
+   */
+  items: Record<string, { key: string; url: string; hash?: string; labels?: string[]; updated?: string }>;
+  /** Dependency links already created, as "BLOCKER>BLOCKED" issue keys. */
+  links: string[];
+  publishedVersion?: number;
 }
 
 export type Artifact = SourceDocument & { metadata: ArtifactMeta };
@@ -79,17 +95,41 @@ export function saveArtifact(contexts: ContextRepository, context: string, input
   }) as Artifact;
 }
 
-/** What can be kept of a 0.x artifact's metadata: its version and Confluence page, nothing in clear. */
+/**
+ * What can be kept of a 0.x artifact's metadata, nothing in clear: its version, its Confluence
+ * page, and the Jira issues and links its items were published to (keys, links and Jira's
+ * timestamps; not the labels, nor the hashes of what was sent).
+ */
 function legacyMeta(meta: Record<string, unknown>): Partial<ArtifactMeta> {
   const old = meta as Partial<ArtifactMeta>;
   const c = old.confluence;
+  const j = old.jira;
+  const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
+  const items = Object.entries(j?.items ?? {}).flatMap(([id, i]) =>
+    /^[A-Za-z][\w-]{0,31}$/.test(id) && KEY.test(String(i?.key)) ? [[id, { key: String(i.key), url: browseLink(String(i.url), String(i.key)), ...(typeof i.updated === "string" && { updated: i.updated }) }] as const] : [],
+  );
   return {
     artifact: true,
     version: typeof old.version === "number" ? old.version : 0,
-    status: c ? "published" : "draft",
+    status: c || (j && items.length) ? "published" : "draft",
     ...(c && { confluence: { pageId: String(c.pageId), url: pageLink(String(c.url)), pageVersion: Number(c.pageVersion), artifactVersion: Number(c.artifactVersion), publishedAt: String(c.publishedAt) } }),
+    ...(j &&
+      items.length &&
+      /^[A-Z][A-Z0-9_]+$/.test(String(j.projectKey)) && {
+        jira: {
+          projectKey: String(j.projectKey),
+          items: Object.fromEntries(items),
+          links: (Array.isArray(j.links) ? j.links : []).filter((l): l is string => typeof l === "string" && /^[A-Z][A-Z0-9_]+-\d+>[A-Z][A-Z0-9_]+-\d+$/.test(l)),
+        },
+      }),
   };
 }
+
+/** An issue's link, from where Jira says it is: the site and /browse/KEY, nothing else. */
+const browseLink = (url: string, key: string) => {
+  const site = url.match(/^https:\/\/[^/?#]+/)?.[0];
+  return site ? `${site}/browse/${key}` : "";
+};
 
 /** A page link without its title part ("/pages/123/Call+with+Karim"), which may hold a real name. */
 export const pageLink = (url: string) => url.replace(/(\/pages\/\d+)\/[^?#]*/, "$1");

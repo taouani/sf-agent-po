@@ -12,6 +12,8 @@ import { requestDigest, type ApprovalServer, type PublishRequest } from "./appro
 import { describeCounts } from "./approval/page.js";
 import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
+import { KeyedLock } from "./artifacts.js";
+import { PartialPublishError, registerBacklogTools } from "./jira.js";
 import { registerPublishTools } from "./publish.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
@@ -131,14 +133,21 @@ export function createServer(opts: ServerOptions): McpServer {
           .mask(context, message)
           .catch(() => (opts.errorMasker ?? masker).mask(context, message))
           .catch(() => ({ text: "Something failed, and its message could not be shown safely." }));
-        const partial = err instanceof IntakeError && (err.partial.added.length || err.partial.setAside.length) ? `\n${summary(context, err.partial)}` : "";
+        const partial =
+          err instanceof IntakeError && (err.partial.added.length || err.partial.setAside.length)
+            ? `\n${summary(context, err.partial)}`
+            : err instanceof PartialPublishError
+              ? `\n${err.done}`
+              : "";
         return { ...text(`Error: ${masked.text}${partial}`), isError: true };
       } finally {
         progress.stop();
       }
     };
 
-  registerPublishTools(server, { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName });
+  const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock() };
+  registerPublishTools(server, publishKit);
+  registerBacklogTools(server, publishKit);
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
 

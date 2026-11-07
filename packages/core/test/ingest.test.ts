@@ -292,6 +292,42 @@ describe("masking what the agents wrote", () => {
   });
 });
 
+describe("masking several texts the agents wrote at once", () => {
+  it("runs the detection once, and masks each text as maskOutput would", async () => {
+    let runs = 0;
+    const model = fakeModel(["Karim Benali", "Lea Martin"]);
+    const { masker } = setup(async (text) => (runs++, model(text)));
+    await masker.mask("acme", "Karim Benali asked for it.");
+    runs = 0;
+    const out = await masker.maskOutputs("acme", ["Owner: [PERSON_1].", "", "Reviewer: Lea Martin.", "Lea Martin"]);
+    expect(out.texts).toEqual(["Owner: [PERSON_1].", "", "Reviewer: [PERSON_2].", "[PERSON_2]"]);
+    expect(out.report.counts).toEqual({ PERSON: 2 });
+    expect(runs).toBe(1);
+  });
+
+  it("looks again, on their own, at the texts something found runs across", async () => {
+    let runs = 0;
+    const { masker, vault } = setup(async (text) => {
+      runs++;
+      const spans = await fakeModel(["Lea Martin"])(text);
+      // Wrongly, from the end of one text into the next.
+      const mark = text.indexOf("\u2063");
+      if (mark > 0) spans.push({ start: mark - 6, end: mark + 7, type: "PER", source: "ner" });
+      return spans;
+    });
+    const out = await masker.maskOutputs("acme", ["Ask Lea Martin", "about the flag", "today"]);
+    expect(out.texts).toEqual(["Ask [PERSON_1]", "about the flag", "today"]);
+    expect(runs).toBe(3);
+    expect(vault.version("acme").count).toBe(1);
+  });
+
+  it("keeps apart texts that hold the separator's mark", async () => {
+    const { masker } = setup(fakeModel(["Lea Martin"]));
+    const out = await masker.maskOutputs("acme", ["a\u2063b", "Lea Martin"]);
+    expect(out.texts).toEqual(["a\u2063b", "[PERSON_1]"]);
+  });
+});
+
 describe("masking what the agents wrote, around their pseudonyms", () => {
   it("masks what a span holds besides a pseudonym", async () => {
     const { masker } = setup(async (text) => {
