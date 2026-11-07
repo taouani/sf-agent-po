@@ -12,3 +12,13 @@ export {
   type SourceDocument,
 } from "./store/contexts.js";
 export { importLegacyWorkspace, parseLegacyContext, type ImportReport } from "./store/import.js";
+export {
+  BUILTIN_CONTENT_DIR,
+  ContentLibrary,
+  INDUSTRY_SECTIONS,
+  normaliseIndustry,
+  parseFrontMatter,
+  parseIndustry,
+  type IndustrySection,
+  type IndustryTemplate,
+} from "./content/library.js";
