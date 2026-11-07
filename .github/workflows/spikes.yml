@@ -90,6 +90,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -100,8 +101,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: spikes/out/hf-cache
-          key: hf-models-v1-runtime-${{ runner.os }}
-          restore-keys: hf-models-v1-
+          # Only the one model this spike runs, per OS (caches are not shared across OSes).
+          key: hf-models-v1-runtime-${{ runner.os }}-distilbert-ner-hrl-q8
+          restore-keys: hf-models-v1-runtime-${{ runner.os }}-distilbert-ner-hrl-
       - run: npm ci
       - run: npm run runtime
       - uses: actions/upload-artifact@v4
