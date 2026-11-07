@@ -20,7 +20,9 @@ export async function run(
   opts: { cwd?: string; timeoutMs?: number; shell?: boolean; parseFailureOutput?: boolean } = {},
 ): Promise<ExecResult> {
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
+    // With a shell, Node joins the arguments without quoting them and warns (DEP0190), so
+    // the command line is joined here instead, from arguments the caller has validated.
+    const { stdout, stderr } = await execFileAsync(opts.shell ? [cmd, ...args].join(" ") : cmd, opts.shell ? [] : args, {
       cwd: opts.cwd,
       shell: opts.shell,
       timeout: opts.timeoutMs ?? 120_000,
@@ -33,7 +35,17 @@ export async function run(
     if (e.code === "ENOENT") {
       throw new Error(`Command "${cmd}" was not found. Install it and make sure it is on PATH.`);
     }
-    const detail = (e.stderr || e.stdout || e.message).trim();
+    // The notice alone is no detail: fall back to stdout, then to Node's message.
+    const detail = withoutNotices(e.stderr ?? "") || withoutNotices(e.stdout ?? "") || e.message;
     throw new Error(`${cmd} ${args[0] ?? ""} failed: ${detail}`);
   }
+}
+
+/** A CLI's error output without its update notices and the "»" (Windows) or "›" its lines start with. */
+export function withoutNotices(output: string): string {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[»›]\s*/, "").trim())
+    .filter((line) => line && !/^Warning:.*update available/i.test(line))
+    .join(" ");
 }

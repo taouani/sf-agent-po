@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SalesforceOrg, orgToMarkdown } from "../src/salesforce.js";
+import { run, withoutNotices } from "../src/exec.js";
 
 describe("SalesforceOrg", () => {
   const calls: string[][] = [];
@@ -44,5 +45,34 @@ describe("SalesforceOrg", () => {
     expect(md).toContain('- City__c: string "City"');
     expect(md).toContain('- Manager__c: reference -> User, required "Manager"');
     expect(md).not.toContain("- Name:");
+  });
+});
+
+describe("withoutNotices", () => {
+  it("drops the CLI's update notice and its » marks from an error", () => {
+    const stderr = " »   Warning: @salesforce/cli update available from 2.154.4 to 2.157.8.\n    RequiresProjectError: This command is required to run from within a\n    Salesforce project directory.\n";
+    expect(withoutNotices(stderr)).toBe("RequiresProjectError: This command is required to run from within a Salesforce project directory.");
+    expect(withoutNotices(" ›   Warning: @salesforce/cli update available from 2.154.4 to 2.157.8.\n ›   RequiresProjectError: x")).toBe("RequiresProjectError: x");
+  });
+
+  it("falls back to Node's message when the notice was all the CLI printed", async () => {
+    const script = "process.stderr.write(' »   Warning: @salesforce/cli update available from 1 to 2.\\n'); process.exit(3)";
+    await expect(run(process.execPath, ["-e", script])).rejects.toThrow(/failed: Command failed/);
+  });
+});
+
+describe("run", () => {
+  it("joins the command line itself when a shell is needed, so Node has nothing to warn about", async () => {
+    const warnings: string[] = [];
+    const onWarning = (w: Error) => warnings.push(w.message);
+    process.on("warning", onWarning);
+    try {
+      const { stdout } = await run("echo", ["part-1.xml", "dev"], { shell: true });
+      expect(stdout.trim()).toBe("part-1.xml dev");
+      await new Promise((r) => setImmediate(r));
+      expect(warnings.filter((w) => /shell option true/.test(w))).toEqual([]);
+    } finally {
+      process.off("warning", onWarning);
+    }
   });
 });
