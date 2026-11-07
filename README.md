@@ -213,7 +213,12 @@ The new code lives in npm workspaces under `packages/`:
   puts the real values back for the final write after approval. Secrets stay masked even then.
   Phone numbers, IBANs and the like that differ only in format share a pseudonym and come back
   in the first spelling seen; names merge only when they differ by case, spacing or apostrophe style.
-  Its key is 32 random bytes; storing it in the OS keychain comes next.
+  Its key is 32 random bytes, one per workspace. `openVault` keeps it out of the workspace: in
+  the macOS keychain, in a Windows DPAPI-encrypted file, or in the Secret Service keyring
+  (GNOME Keyring, KWallet) on Linux, through the tools each OS ships. Where none of these
+  works (a server without a keyring), it falls back to a key file only the user can read,
+  and says so. `exportVaultKey` and `importVaultKey` back the key up as text and restore it,
+  for example on a new computer. Without the key, masked documents cannot be unmasked.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against

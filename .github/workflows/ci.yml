@@ -15,6 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Also saves and reads a key with the runner's real keychain (or the key file fallback).
+      SF_AGENT_PO_KEYCHAIN_TEST: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
