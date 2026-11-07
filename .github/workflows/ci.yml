@@ -57,7 +57,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: node scripts/pack-next.mjs --smoke
+      # The server makes a masking key: a key file in a temporary folder, or the runner's macOS keychain.
+      - run: node scripts/pack-next.mjs --smoke --smoke-server
 
   # The detection model on the bundled WebAssembly runtime, with the real model files
   # (138 MB, downloaded from Hugging Face once and cached).
