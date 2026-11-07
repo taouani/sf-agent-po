@@ -266,7 +266,11 @@ The new code lives in npm workspaces under `packages/`:
   and writes only once they approve. Descriptions are built from the masked backlog and the
   values go into their text nodes. Each issue is recorded as soon as it is written, so a
   failure part-way never duplicates issues on the next publish, and the model is told only
-  Jira's status code and what was done, with pseudonyms. It also holds the approval page (AR5): a small
+  Jira's status code and what was done, with pseudonyms. The four agent workflows
+  (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
+  prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
+  keep pseudonyms as written and that each publish waits for the user's approval in the
+  browser. `industry_guidance` gives the industry templates. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
