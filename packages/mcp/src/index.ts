@@ -14,3 +14,6 @@ export {
 } from "./approval/server.js";
 export { isPrerelease, reviewsInputs } from "./approval/settings.js";
 export { Intake, IntakeError, MAX_ROUNDS, pageReviewer, reviewText, type ImageInput, type IntakeOptions, type IntakeResult, type Reviewer, type SetAside } from "./inputs.js";
+export { callReviewer, PROGRESS_EVERY_MS, type CallContext } from "./review.js";
+export { createServer, describeDoc, type ServerOptions } from "./server.js";
+export { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";

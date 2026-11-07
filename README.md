@@ -244,7 +244,14 @@ The new code lives in npm workspaces under `packages/`:
   Markdown that keeps its shape (headings, lists and tables; slides with their titles and
   notes; sheets by name; a diagram's shapes and connections), with no native code. Scanned
   PDFs need OCR, which comes with storing redacted images.
-- `packages/mcp`: what users will install. For now it holds the approval page (AR5): a small
+- `packages/mcp`: what users will install. `src/main.ts` starts the v1 server on stdio
+  (workspace in `SF_AGENT_WORKSPACE`, else `.sf-agent`). Its context tools add files (images
+  included), pasted text, Jira issues and Confluence pages through `Intake`, and return only
+  pseudonyms: titles, sources, summaries and error messages are masked too. A call that needs
+  the user asks the host to open the approval page (URL-mode elicitation) or opens the
+  browser itself, and reports progress while it waits. Turning input review off needs the
+  user's approval on the page. The name detection model loads on first use; if it cannot,
+  nothing is added. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
