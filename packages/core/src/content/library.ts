@@ -57,7 +57,13 @@ export class ContentLibrary {
     for (const t of this.industryById.values()) {
       for (const alias of t.aliases) {
         const other = this.aliasToId.get(alias);
-        if (other && other !== t.id) throw new Error(`The industry alias "${alias}" is used by both ${other} and ${t.id}.`);
+        if (other && other !== t.id) {
+          const first = this.industryById.get(other)!;
+          throw new Error(
+            `The industry alias "${alias}" is used by both ${other} (${first.file}) and ${t.id} (${t.file}). ` +
+              `Remove it from one of them; to change a built-in industry's aliases, add your own ${other}.md.`,
+          );
+        }
         if (this.industryById.has(alias) && alias !== t.id) throw new Error(`The industry alias "${alias}" in ${t.file} is also an industry id.`);
         this.aliasToId.set(alias, t.id);
       }
@@ -136,7 +142,14 @@ export function parseIndustry(markdown: string, file: string): IndustryTemplate 
   const sections = new Map<string, string>();
   const parts = body.split(/^## +(.+?)[ \t]*$/m);
   if (parts[0]!.trim()) throw new Error(`${file}: text before the first "## " section.`);
-  for (let i = 1; i < parts.length; i += 2) sections.set(parts[i]!, parts[i + 1]!.trim());
+  for (let i = 1; i < parts.length; i += 2) {
+    const heading = parts[i]!;
+    const text = parts[i + 1]!.trim();
+    if (sections.has(heading)) throw new Error(`${file}: the section "## ${heading}" appears twice.`);
+    // The guidance puts each section in one bullet, so headings or blank lines inside it would break the prompt.
+    if (/^#/m.test(text) || /\n\s*\n/.test(text)) throw new Error(`${file}: the section "## ${heading}" must be one paragraph, without headings or blank lines.`);
+    sections.set(heading, text);
+  }
   const known = new Set<string>(Object.values(INDUSTRY_SECTIONS));
   const unknown = [...sections.keys()].filter((s) => !known.has(s));
   if (unknown.length) throw new Error(`${file}: unknown section(s) ${unknown.map((s) => `"${s}"`).join(", ")}. Use: ${[...known].join(", ")}.`);
@@ -164,7 +177,10 @@ export function parseFrontMatter(markdown: string, file: string): { data: Record
     if (!kv) throw new Error(`${file}: cannot read the front matter line "${line}".`);
     const value = kv[2]!.trim();
     const list = value.match(/^\[(.*)\]$/);
-    data[kv[1]!] = list ? list[1]!.split(",").map((s) => s.trim()).filter(Boolean) : value;
+    if (/["']/.test(list ? list[1]! : value.replace(/^(["'])(.*)\1$/, "$2"))) {
+      throw new Error(`${file}: write the front matter line "${line}" without quotes (a single value may be quoted as a whole).`);
+    }
+    data[kv[1]!] = list ? list[1]!.split(",").map((s) => s.trim()).filter(Boolean) : value.replace(/^(["'])(.*)\1$/, "$2");
   }
   return { data, body: markdown.slice(m[0].length) };
 }

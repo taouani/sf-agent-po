@@ -96,15 +96,30 @@ W
     expect(() => parseIndustry(industry("x").replace("## Watch for\n\nW\n", ""), file("x"))).toThrow(/"## Watch for" is missing/);
     expect(() => parseIndustry(industry("x") + "\n## Pricing\n\nX\n", file("x"))).toThrow(/unknown section\(s\) "Pricing"/);
     expect(() => parseIndustry(industry("x").replace("aliases: []", "aliases: banking"), file("x"))).toThrow(/must be a list/);
+    const doubled = industry("x").replace("## Data model\n\nD\n", "## Data model\n\nD\n\n## Data model\n\nE\n");
+    expect(() => parseIndustry(doubled, file("x"))).toThrow(/"## Data model" appears twice/);
+    expect(() => parseIndustry(industry("x").replace("\nW\n", "\nW\n\n### More\n\nX\n"), file("x"))).toThrow(/must be one paragraph/);
+    expect(parseIndustry(industry("x").replace("name: Team x", 'name: "Team: x"'), file("x")).name).toBe("Team: x");
+    expect(() => parseIndustry(industry("x", "", '"a, b", c'), file("x"))).toThrow(/without quotes/);
     // Files edited on Windows, or checked out there with CRLF, read the same.
     expect(parseIndustry(`\uFEFF${industry("x").replace(/\n/g, "\r\n")}`, file("x")).watchFor).toBe("W");
+  });
+
+  it("drops the aliases a replacing industry no longer lists", () => {
+    const team = join(dir, "narrow");
+    mkdirSync(join(team, "industries"), { recursive: true });
+    writeFileSync(join(team, "industries", "luxury.md"), industry("luxury", "", "maison"));
+    writeFileSync(join(team, "industries", "fashion-retail.md"), industry("fashion-retail", "", "fashion"));
+    const lib = new ContentLibrary([lib0(), team]);
+    expect(lib.industry("fashion")?.id).toBe("fashion-retail");
+    expect(lib.industry("watches")).toBeUndefined();
   });
 
   it("refuses an alias that two industries claim", () => {
     const clash = join(dir, "clash");
     mkdirSync(join(clash, "industries"), { recursive: true });
     writeFileSync(join(clash, "industries", "hospitality.md"), industry("hospitality", "", "banking"));
-    expect(() => new ContentLibrary([lib0(), clash])).toThrow(/alias "banking" is used by both financial-services and hospitality/);
+    expect(() => new ContentLibrary([lib0(), clash])).toThrow(/alias "banking" is used by both financial-services \(.*financial-services\.md\) and hospitality .*add your own financial-services\.md/);
   });
 });
 
