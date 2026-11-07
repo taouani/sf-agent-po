@@ -66,27 +66,49 @@ export function createModel(spec: string, env: NodeJS.ProcessEnv = process.env, 
     spec,
     model,
     new OpenAI({ apiKey, baseURL: "baseURL" in p ? p.baseURL : undefined, fetch: fetchImpl }),
-    // OpenRouter passes max_tokens on to every vendor; max_completion_tokens is OpenAI's own name.
-    provider === "openrouter" ? "max_tokens" : "max_completion_tokens",
+    // OpenRouter passes max_tokens on to every vendor (max_completion_tokens is OpenAI's own
+    // name), and streams, so that a long answer from any vendor stays under HTTP timeouts.
+    provider === "openrouter" ? { maxTokensParam: "max_tokens", stream: true } : {},
   );
 }
+
+/** OpenRouter's routing suffixes, which its model list does not show: "anthropic/x:nitro". */
+const OPENROUTER_VARIANTS = /:(?:nitro|floor|online|exacto|thinking|extended|beta)$/;
 
 /**
  * Checks that every OpenRouter model asked for is one OpenRouter lists (its list needs no key),
  * so that a misspelt id fails at once, with the ids of the same vendor to choose from.
  */
-export async function checkOpenRouterModels(specs: readonly string[], fetchImpl: typeof fetch = fetch): Promise<void> {
+export async function checkOpenRouterModels(
+  specs: readonly string[],
+  fetchImpl: typeof fetch = fetch,
+  warn: (message: string) => void = (m) => console.warn(m),
+): Promise<void> {
   const wanted = specs.filter((s) => s.startsWith("openrouter:")).map((s) => s.slice("openrouter:".length));
   if (!wanted.length) return;
-  const response = await fetchImpl(`${OPENROUTER_URL}/models`);
-  if (!response.ok) throw new Error(`OpenRouter's model list could not be read (HTTP ${response.status}).`);
-  const listed = ((await response.json()) as { data?: { id?: unknown }[] }).data?.flatMap((m) => (typeof m.id === "string" ? [m.id] : [])) ?? [];
-  const unknown = wanted.filter((w) => !listed.includes(w));
+  let models: { id: string; created: number }[];
+  try {
+    const response = await fetchImpl(`${OPENROUTER_URL}/models`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = ((await response.json()) as { data?: { id?: unknown; created?: unknown }[] }).data;
+    if (!Array.isArray(data)) throw new Error("no model list in the answer");
+    models = data.flatMap((m) => (typeof m.id === "string" ? [{ id: m.id, created: typeof m.created === "number" ? m.created : 0 }] : []));
+  } catch (err) {
+    // The check only saves a wasted run: without it, a wrong id fails at its first call.
+    warn(`OpenRouter's model list could not be read (${(err as Error).message}), so the model ids are not checked.`);
+    return;
+  }
+  const listed = new Set(models.map((m) => m.id));
+  const unknown = wanted.filter((w) => !listed.has(w) && !listed.has(w.replace(OPENROUTER_VARIANTS, "")));
   if (!unknown.length) return;
   const lines = unknown.map((u) => {
     const vendor = u.split("/")[0]!;
-    const near = listed.filter((id) => id.startsWith(`${vendor}/`)).sort().reverse().slice(0, 15);
-    return `"${u}" is not a model OpenRouter lists.${near.length ? ` Its ${vendor} models include: ${near.join(", ")}.` : ""}`;
+    const near = models
+      .filter((m) => m.id.startsWith(`${vendor}/`))
+      .sort((a, b) => b.created - a.created)
+      .slice(0, 15)
+      .map((m) => m.id);
+    return `"${u}" is not a model OpenRouter lists.${near.length ? ` Its newest ${vendor} models: ${near.join(", ")}.` : ""}`;
   });
   throw new Error(lines.join("\n"));
 }
@@ -145,11 +167,16 @@ export class OpenAICompatibleModel implements Model {
     readonly id: string,
     private readonly model: string,
     private readonly client: OpenAI,
-    private readonly maxTokensParam: "max_tokens" | "max_completion_tokens" = "max_completion_tokens",
+    private readonly options: { maxTokensParam?: "max_tokens" | "max_completion_tokens"; stream?: boolean } = {},
   ) {}
 
-  private get limit() {
-    return { [this.maxTokensParam]: MAX_TOKENS } as { max_completion_tokens: number };
+  /** One completion: streamed and put together when the provider streams, else in one answer. */
+  private async chat(body: Pick<OpenAI.Chat.ChatCompletionCreateParamsNonStreaming, "model" | "messages" | "tools">): Promise<OpenAI.Chat.ChatCompletion> {
+    const limit = { [this.options.maxTokensParam ?? "max_completion_tokens"]: MAX_TOKENS };
+    if (!this.options.stream) return this.client.chat.completions.create({ ...body, ...limit });
+    const done = await this.client.chat.completions.stream({ ...body, ...limit, stream_options: { include_usage: true } }).finalChatCompletion();
+    // The helper adds fields of its own to the message, which is sent back in the next turn.
+    return { ...done, choices: done.choices.map(({ message: { parsed: _parsed, ...message }, ...c }) => ({ ...c, message })) } as OpenAI.Chat.ChatCompletion;
   }
 
   async runAgent(prompt: string, specs: ToolSpec[], callTool: CallTool, opts: { maxTurns?: number } = {}): Promise<AgentRun> {
@@ -161,7 +188,7 @@ export class OpenAICompatibleModel implements Model {
     const run: AgentRun = { finalText: "", toolCalls: [], turns: 0, inputTokens: 0, outputTokens: 0, stop: "max_turns" };
     while (run.turns < (opts.maxTurns ?? DEFAULT_MAX_TURNS)) {
       run.turns++;
-      const response = await this.client.chat.completions.create({ model: this.model, ...this.limit, tools, messages });
+      const response = await this.chat({ model: this.model, tools, messages });
       run.inputTokens += response.usage?.prompt_tokens ?? 0;
       run.outputTokens += response.usage?.completion_tokens ?? 0;
       const choice = response.choices[0];
@@ -196,9 +223,8 @@ export class OpenAICompatibleModel implements Model {
   }
 
   async complete(system: string, prompt: string): Promise<string> {
-    const response = await this.client.chat.completions.create({
+    const response = await this.chat({
       model: this.model,
-      ...this.limit,
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },
