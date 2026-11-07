@@ -46,6 +46,7 @@
   "workspaces": [
     "packages/core",
     "packages/connectors",
+    "packages/mcp",
     "packages/eval"
   ]
 }
