@@ -26,6 +26,14 @@ To add the agent files for your tool to a project:
 npx -y sf-agent-po@next init --host claude-code   # or cursor, copilot, all
 ```
 
+To fill the workspace's metadata index from an org (retrieved with your `sf` CLI, which
+must be logged in to it; the org is only read) or from a Salesforce project folder:
+
+```bash
+npx -y sf-agent-po@next index --org <alias or username>
+npx -y sf-agent-po@next index --project <folder>
+```
+
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
 holds the masked inputs and the agents' work. Its masking key is kept in your OS keychain,
 or in a key file when no keychain is available. Back it up: without it, nothing can be
