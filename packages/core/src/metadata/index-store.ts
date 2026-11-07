@@ -412,6 +412,34 @@ export class MetadataIndex {
     return out;
   }
 
+  /**
+   * Apex the index cannot follow (queries built from strings, classes named at run time,
+   * describes: its `dynamic` attr) or could not read (too large), by name.
+   */
+  blindSpots(snapshot: number): IndexedComponent[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type IN ('ApexClass', 'ApexTrigger')
+           AND (json_extract(c.attrs, '$.dynamic') IS NOT NULL OR json_extract(c.attrs, '$.tooLarge') = 1) ORDER BY c.type, c.name`,
+        )
+        .all(snapshot) as unknown as ComponentRow[]
+    ).map(toComponent);
+  }
+
+  /** The components that write an object or any of its fields (whose saves a new rule or required field can break). */
+  writersOf(snapshot: number, object: string): IndexedComponent[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT DISTINCT ${COLUMNS} FROM edge e JOIN component t ON t.id = e.dst JOIN component c ON c.id = e.src
+           WHERE e.kind = 'writes' AND t.snapshot = ? AND ((t.type = 'CustomObject' AND t.name = ?) OR (t.parent_type = 'CustomObject' AND t.parent = ?))
+           ORDER BY c.type, c.name`,
+        )
+        .all(snapshot, object, object) as unknown as ComponentRow[]
+    ).map(toComponent);
+  }
+
   /** Components by id, in no particular order. */
   private byIds(ids: readonly number[]): Map<number, IndexedComponent> {
     if (!ids.length) return new Map();
