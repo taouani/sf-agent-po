@@ -17,13 +17,14 @@ export interface SObjectDescribe {
   childRelationships: number;
 }
 
-type SfRunner = (args: string[]) => Promise<any>;
+/** Runs `sf` with these arguments (and --json) and returns its `result` payload. */
+export type SfRunner = (args: string[], opts?: { cwd?: string; timeoutMs?: number }) => Promise<any>;
 
 /** Characters allowed in org aliases, usernames and object names passed to the CLI. */
 const SAFE_ARG = /^[\w.@+-]+$/;
 
 /** Runs the Salesforce CLI with --json and returns its `result` payload. */
-const defaultRunner: SfRunner = async (args) => {
+export const defaultSfRunner: SfRunner = async (args, opts = {}) => {
   // On Windows the CLI is sf.cmd, which only starts through a shell, so the
   // arguments must be safe to pass unquoted.
   const windows = process.platform === "win32";
@@ -31,7 +32,7 @@ const defaultRunner: SfRunner = async (args) => {
     throw new Error(`Unsupported characters in sf arguments: ${args.join(" ")}`);
   }
   // sf exits non-zero on failure but still prints its JSON error, which has the useful message.
-  const { stdout } = await run("sf", [...args, "--json"], { shell: windows, parseFailureOutput: true });
+  const { stdout } = await run("sf", [...args, "--json"], { shell: windows, parseFailureOutput: true, ...opts });
   let parsed;
   try {
     parsed = JSON.parse(stdout);
@@ -49,7 +50,7 @@ const defaultRunner: SfRunner = async (args) => {
 export class SalesforceOrg {
   constructor(
     private readonly targetOrg: string,
-    private readonly sf: SfRunner = defaultRunner,
+    private readonly sf: SfRunner = defaultSfRunner,
   ) {}
 
   async info(): Promise<OrgInfo> {

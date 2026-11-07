@@ -299,7 +299,12 @@ The new code lives in npm workspaces under `packages/`:
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
   browser. `industry_guidance` gives the industry templates. `sf-agent-po-next init` writes the
-  agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. `node scripts/pack-next.mjs --smoke` builds the
+  agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules.
+  `sf-agent-po-next index --project <folder>` or `--org <alias>` fills the workspace's
+  metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
+  only; the types the index uses, in parts of at most 9,000 files, with profiles merged back),
+  under `<workspace>/orgs/<org id>`. A project is named by its folder and a hash of its path,
+  an org by its id. `BackgroundIndexer` runs the same in the server without blocking it. `node scripts/pack-next.mjs --smoke` builds the
   installable pre-release, one `sf-agent-po` package with core, connectors, the model runtime
   and the content bundled inside, then installs it in an empty folder and runs it (CI does
   this on the three systems). Nothing is published by it: the `Release next` workflow
