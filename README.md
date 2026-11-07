@@ -208,6 +208,10 @@ The new code lives in npm workspaces under `packages/`:
   on the WebAssembly build of ONNX Runtime that the package ships in `vendor/` (no native code).
   `npm test` copies those runtime files there first; set `SF_AGENT_PO_MODEL_TEST=1` to also
   run the test against the real model.
+  `Vault` replaces what `detect` finds with stable pseudonyms per context (`[PERSON_1]`,
+  `[EMAIL_1]`), keeps the originals encrypted (AES-256-GCM) in the workspace database, and
+  puts the real values back for the final write after approval. Secrets stay masked even then.
+  Its key is 32 random bytes; storing it in the OS keychain comes next.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
