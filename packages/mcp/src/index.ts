@@ -10,5 +10,6 @@ export {
   type InputRequest,
   type PendingApproval,
   type PublishRequest,
+  requestDigest,
 } from "./approval/server.js";
 export { isPrerelease, reviewsInputs } from "./approval/settings.js";

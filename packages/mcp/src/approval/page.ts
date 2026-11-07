@@ -55,7 +55,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 2
 .figure { position: relative; display: inline-block; max-width: 100%; border: 1px solid var(--line); }
 .figure img { display: block; max-width: 100%; height: auto; }
 .uncertain { position: absolute; outline: 2px solid var(--warn-line); background: rgba(245, 158, 11, 0.15); }
-label { display: block; font-weight: 600; margin: 16px 0 6px; }
+label, h2.label { display: block; font-size: 15px; font-weight: 600; margin: 16px 0 6px; }
 textarea { width: 100%; min-height: 72px; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 button { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
@@ -63,8 +63,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
 `;
 
-function layout(title: string, body: string, nonce: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · sf-agent-po</title><style nonce="${nonce}">${STYLE}</style></head><body><main>${body}</main></body></html>`;
+function layout(title: string, body: string, nonce: string, css = ""): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · sf-agent-po</title><style nonce="${nonce}">${STYLE}${css}</style></head><body><main>${body}</main></body></html>`;
 }
 
 /** The page for a request still waiting for the user. */
@@ -90,10 +90,11 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
   }
 
   if (req.kind === "image") {
-    const box = (b: { x0: number; y0: number; x1: number; y1: number }) => {
-      const pct = (v: number, of: number) => `${Math.max(0, Math.min(100, (v / of) * 100)).toFixed(3)}%`;
-      return `<span class="uncertain" style="left:${pct(b.x0, req.width)};top:${pct(b.y0, req.height)};width:${pct(b.x1 - b.x0, req.width)};height:${pct(b.y1 - b.y0, req.height)}"></span>`;
-    };
+    // Each outline is placed by a rule in the page's own style sheet (style attributes are not allowed).
+    const pct = (v: number, of: number) => `${Math.max(0, Math.min(100, (v / of) * 100)).toFixed(3)}%`;
+    const css = req.uncertain
+      .map((b, i) => `.u${i}{left:${pct(b.x0, req.width)};top:${pct(b.y0, req.height)};width:${pct(b.x1 - b.x0, req.width)};height:${pct(b.y1 - b.y0, req.height)}}`)
+      .join("");
     const warning = req.trusted
       ? ""
       : `<div class="warn"><strong>The text could not be read reliably.</strong> Personal data the reader missed is not blacked out. Look at the whole image before you use it, or send only the text.</div>`;
@@ -101,14 +102,16 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
     return layout(
       `Check image: ${req.title}`,
       `<h1>Check this image before the agent sees it</h1><p class="sub">${escapeHtml(req.title)} · hidden: ${escapeHtml(describeCounts(req.counts))}</p>${warning}` +
-        // The outlines are placed with style attributes, which the page's policy allows (style-src-attr); every value is a number.
-        `<div class="figure"><img src="${escapeHtml(opts.imageUrl)}" alt="The image with personal data blacked out" width="${req.width}" height="${req.height}">${req.uncertain.map(box).join("")}</div>${uncertain}` +
-        `<label>Text read from the image, as the agent gets it</label><pre>${markPseudonyms(req.text) || "<em>No text found.</em>"}</pre>` +
+        `<div class="figure"><img src="${escapeHtml(opts.imageUrl)}" alt="The image with personal data blacked out" width="${req.width}" height="${req.height}">${req.uncertain.map((_, i) => `<span class="uncertain u${i}"></span>`).join("")}</div>${uncertain}` +
+        `<h2 class="label">Text read from the image, as the agent gets it</h2><pre>${markPseudonyms(req.text) || "<em>No text found.</em>"}</pre>` +
         form(
-          missed("They are hidden, and the image is checked again."),
-          `<button class="primary" name="decision" value="approved">Use the image</button><button name="decision" value="text-only">Use only the text</button><button name="decision" value="rejected">Use neither</button>`,
+          missed("They are hidden in the text, blacked out where the reader found them, and you check the image again. If one stays visible, send only the text or neither."),
+          `<button class="primary" name="decision" value="approved">Use the image</button>` +
+            (req.uncertain.length ? `<button name="decision" value="redact-uncertain">Black out the outlined words too</button>` : "") +
+            `<button name="decision" value="text-only">Use only the text</button><button name="decision" value="rejected">Use neither</button>`,
         ),
       opts.nonce,
+      css,
     );
   }
 
@@ -125,6 +128,9 @@ const OUTCOMES: Record<string, string> = {
   "text-only": "Only the text will be used.",
   rejected: "Rejected. Nothing is used.",
   revise: "Thanks. These values are hidden now, and you will be asked to check again.",
+  "redact-uncertain": "The outlined words will be blacked out, and you will be asked to check again.",
+  reused: "This link works once, and it was opened again, so the request was withdrawn. Ask the agent to try again.",
+  elsewhere: "Open this page from the link the agent opened for you, in the same browser.",
   expired: "This request expired.",
 };
 

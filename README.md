@@ -249,9 +249,12 @@ The new code lives in npm workspaces under `packages/`:
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
   `reviewInputs` per context). Values the user says are still in clear come back so they
-  can be hidden and checked again. Each request has its own unguessable address, refuses
-  other host names and cross-site posts, and expires after 30 minutes; `openInBrowser`
-  opens it so the address does not pass through the model.
+  can be hidden and checked again. Each request opens through a single-use link that the
+  browser trades for a cookie only it holds, so a link seen in a process list or history is
+  worthless (a second use withdraws the request); the page refuses other host names and
+  cross-site posts, shows a frozen copy of what was asked, returns its digest with the
+  decision, and expires after 30 minutes. `openInBrowser` opens the link so it does not
+  pass through the model.
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against
   the MCP server with Anthropic, OpenAI or xAI models and has a judge model score the result.
   See [packages/eval/README.md](packages/eval/README.md).

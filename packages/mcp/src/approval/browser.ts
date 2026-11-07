@@ -1,7 +1,7 @@
 // Opens the approval page in the user's browser, so its address never has to pass through
 // the model: whoever has the address can decide.
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -21,11 +21,16 @@ export function browserCommand(platform: NodeJS.Platform = process.platform, env
   return file ? { file, args: (u) => [u] } : null;
 }
 
-/** Opens `url` in the default browser; false when there is no browser to open (a remote shell, CI). */
+/** Opens an approval page link in the default browser; false when there is no browser to open (a remote shell, CI). */
 export function openInBrowser(url: string, command: BrowserCommand | null = browserCommand()): Promise<boolean> {
-  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(url) || !command) return Promise.resolve(false);
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+\/a\/[\w-]{32}(\?k=[\w-]+)?$/.test(url) || !command) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const child = execFile(command.file, command.args(url), { timeout: 10_000, windowsHide: true }, (err) => resolve(!err));
-    child.unref();
+    // Detached and with no pipes: xdg-open may run the browser in the foreground, and its output is not needed.
+    const child = spawn(command.file, command.args(url), { stdio: "ignore", detached: true, windowsHide: true });
+    child.once("spawn", () => {
+      child.unref();
+      resolve(true);
+    });
+    child.once("error", () => resolve(false));
   });
 }
