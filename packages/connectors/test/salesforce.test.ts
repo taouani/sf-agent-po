@@ -52,6 +52,12 @@ describe("withoutNotices", () => {
   it("drops the CLI's update notice and its » marks from an error", () => {
     const stderr = " »   Warning: @salesforce/cli update available from 2.154.4 to 2.157.8.\n    RequiresProjectError: This command is required to run from within a\n    Salesforce project directory.\n";
     expect(withoutNotices(stderr)).toBe("RequiresProjectError: This command is required to run from within a Salesforce project directory.");
+    expect(withoutNotices(" ›   Warning: @salesforce/cli update available from 2.154.4 to 2.157.8.\n ›   RequiresProjectError: x")).toBe("RequiresProjectError: x");
+  });
+
+  it("falls back to Node's message when the notice was all the CLI printed", async () => {
+    const script = "process.stderr.write(' »   Warning: @salesforce/cli update available from 1 to 2.\\n'); process.exit(3)";
+    await expect(run(process.execPath, ["-e", script])).rejects.toThrow(/failed: Command failed/);
   });
 });
 

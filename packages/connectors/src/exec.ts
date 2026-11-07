@@ -35,16 +35,17 @@ export async function run(
     if (e.code === "ENOENT") {
       throw new Error(`Command "${cmd}" was not found. Install it and make sure it is on PATH.`);
     }
-    const detail = withoutNotices(e.stderr || e.stdout || e.message);
+    // The notice alone is no detail: fall back to stdout, then to Node's message.
+    const detail = withoutNotices(e.stderr ?? "") || withoutNotices(e.stdout ?? "") || e.message;
     throw new Error(`${cmd} ${args[0] ?? ""} failed: ${detail}`);
   }
 }
 
-/** A CLI's error output without its update notices and the "»" its lines start with. */
+/** A CLI's error output without its update notices and the "»" (Windows) or "›" its lines start with. */
 export function withoutNotices(output: string): string {
   return output
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*»\s*/, "").trim())
+    .map((line) => line.replace(/^\s*[»›]\s*/, "").trim())
     .filter((line) => line && !/^Warning:.*update available/i.test(line))
     .join(" ");
 }
