@@ -225,6 +225,10 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   // space in the workspace path never reaches a shell.
   const work = await mkdtemp(path.join(options.dir, `.retrieve-${orgId}-`));
   try {
+    // The CLI refuses to list or retrieve outside a Salesforce project, so the work folder
+    // is a minimal one. Retrieval goes to metadata folders, never into its package folder.
+    await mkdir(path.join(work, "force-app"));
+    await writeFile(path.join(work, "sfdx-project.json"), JSON.stringify({ packageDirectories: [{ path: "force-app", default: true }] }, null, 2));
     progress(`Listing the metadata in ${targetOrg}`);
     const packages = options.includePackages ?? ["unlocked"];
     await sf(["project", "generate", "manifest", "--from-org", targetOrg, ...packages.flatMap((p) => ["--include-packages", p]), "--output-dir", ".", "--name", "package"], {
@@ -271,7 +275,9 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       }
     }
     if (n > 1) await mergeProfiles(work, Array.from({ length: n }, (_, i) => `part-${i + 1}`));
-    for (const f of await readdir(work)) if (f.endsWith(".xml")) await remove(path.join(work, f));
+    // Only the retrieved parts are kept: the manifests, the project file and whatever the CLI
+    // left (.sf, .sfdx) go, and the project file would otherwise steer the scan.
+    for (const f of await readdir(work)) if (!/^part-\d+$/.test(f)) await remove(path.join(work, f));
     // The last retrieval is set aside, the new one moved in, and only then the old one removed.
     const dest = path.join(options.dir, orgId);
     const old = path.join(options.dir, `.old-${orgId}-${Date.now()}`);

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +23,8 @@ function fakeSf(
   return async (args, opts = {}) => {
     calls.push({ args, cwd: opts.cwd });
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
+    // Like the real CLI, which refuses both commands outside a Salesforce project.
+    if (args[0] === "project" && !existsSync(path.join(opts.cwd!, "sfdx-project.json"))) throw new Error("sf project failed: RequiresProjectError");
     if (args[1] === "generate") {
       writeFileSync(path.join(opts.cwd!, "package.xml"), manifest(org));
       return {};
@@ -134,6 +136,8 @@ describe("retrieveOrgMetadata", () => {
     // Only relative paths reach the CLI: the workspace path can hold the user's name.
     for (const c of calls) for (const a of c.args) expect(path.isAbsolute(a)).toBe(false);
     expect(readdirSync(path.join(dir, ORG_ID, "part-1"))).toEqual(["unpackaged"]);
+    // The work folder's project file is gone: it would steer the scan to an empty package folder.
+    expect(readdirSync(path.join(dir, ORG_ID))).toEqual(["part-1"]);
     // A second retrieval replaces the first, and leaves no work folder behind.
     await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
     expect(readdirSync(dir)).toEqual([ORG_ID]);
