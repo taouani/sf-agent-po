@@ -35,6 +35,9 @@ export class VaultKeyError extends Error {
 /** Types whose real value is never written back on publish: a credential must not land in Jira or Confluence. */
 export const NEVER_UNMASKED: readonly string[] = ["SECRET"];
 
+/** The type of a document's source (a file path, URL or issue key): kept exact, and not personal data to look for elsewhere. */
+export const SOURCE = "SOURCE";
+
 /** The type of label-like text found in a source document ("[PERSON_1]" written by someone), masked so it comes back as written. */
 const LITERAL = "LITERAL";
 
@@ -59,6 +62,7 @@ function normalise(type: string, value: string): string {
       return v.replace(/[^\p{L}\p{N}+]/gu, "").toUpperCase();
     case "SECRET":
     case LITERAL:
+    case SOURCE:
       return value; // exact: two secrets that differ by case are different secrets
     default:
       return v.toLowerCase();
@@ -87,6 +91,16 @@ export const pseudonymLabel = (type: string, n: number) => `[${pseudonymType(typ
 const CORE = String.raw`([A-Z][A-Z0-9_\\]*?)\\?_([1-9][0-9]*)`;
 const LABEL_IN_TEXT = new RegExp(String.raw`\\?\[${CORE}\\?\]|<${CORE}>|&lt;${CORE}&gt;`, "g");
 const LABEL_EXACT = /^\[?([A-Z][A-Z0-9_]*?)_([1-9][0-9]*)\]?$/;
+
+/** The pseudonyms written in `text`, in any form unmask accepts, as "[TYPE_n]", each once. */
+export function pseudonymsIn(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of text.matchAll(LABEL_IN_TEXT)) {
+    const type = (m[1] ?? m[3] ?? m[5])!.replace(/\\/g, "");
+    found.add(`[${type}_${m[2] ?? m[4] ?? m[6]}]`);
+  }
+  return [...found];
+}
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -118,6 +132,15 @@ export class Vault {
       ensureContext: db.prepare("INSERT OR IGNORE INTO context (name, created_at, updated_at) VALUES (?, ?, ?)"),
       get: db.prepare("SELECT lookup, original FROM pseudonym WHERE context = ? AND type = ? AND n = ?"),
       counts: db.prepare("SELECT type, count(*) AS c FROM pseudonym WHERE context = ? GROUP BY type"),
+      all: db.prepare(
+        `SELECT type, n, lookup, original FROM pseudonym WHERE context = ? AND rowid > ? AND type NOT IN ('${LITERAL}', '${SOURCE}', 'SECRET') ORDER BY rowid`,
+      ),
+      after: db.prepare("SELECT count(*) AS c FROM pseudonym WHERE context = ? AND rowid > ?"),
+      version: db.prepare(
+        `SELECT c.vault_generation AS generation, count(p.rowid) AS count, coalesce(max(p.rowid), 0) AS last
+         FROM context c LEFT JOIN pseudonym p ON p.context = c.name WHERE c.name = ? GROUP BY c.name`,
+      ),
+      generation: db.prepare("UPDATE context SET vault_generation = ? WHERE name = ? AND vault_generation IS NULL"),
     };
     const check = vaultKeyCheck(key);
     database.write(() => {
@@ -213,20 +236,52 @@ export class Vault {
    * pseudonym but is not in this context's vault is left alone. A value that replaces
    * "&lt;PERSON_1&gt;" is HTML-escaped, since the text around it is.
    */
-  unmask(context: string, text: string, { keep = NEVER_UNMASKED }: { keep?: readonly string[] } = {}): string {
+  unmask(context: string, text: string, { keep = NEVER_UNMASKED, kept }: { keep?: readonly string[]; kept?: Set<string> } = {}): string {
     const keepTypes = new Set(keep.map(pseudonymType));
     const cache = new Map<string, string | undefined>();
     return text.replace(LABEL_IN_TEXT, (whole, ...g: (string | undefined)[]) => {
       const entity = g[4] !== undefined;
       const type = (g[0] ?? g[2] ?? g[4])!.replace(/\\/g, "");
       const n = (g[1] ?? g[3] ?? g[5])!;
-      if (keepTypes.has(type)) return whole;
       const key = `${type}_${n}`;
+      if (keepTypes.has(type)) return kept?.add(`[${key}]`), whole;
       if (!cache.has(key)) cache.set(key, this.reveal(context, key, { secrets: true }));
       const value = cache.get(key);
-      if (value === undefined) return whole;
+      if (value === undefined) return kept?.add(`[${key}]`), whole;
       return entity ? escapeHtml(value) : value;
     });
+  }
+
+  /**
+   * The values a context already has pseudonyms for, so later documents mask them even
+   * where the rules and the model miss them; with `after`, only those added since that
+   * version's `last`. Literals, sources and secrets are left out: the first two are not
+   * personal data, and a short secret ("1234") would mask every number like it.
+   */
+  known(context: string, after = 0): { type: string; value: string }[] {
+    const rows = this.sql.all.all(context, after) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array }[];
+    return rows.map((r) => ({ type: r.type, value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original) }));
+  }
+
+  /**
+   * The context's vault version: a random id of the context's row, how many pseudonyms it
+   * has and the newest one's row. Any change gives another version, including a context
+   * deleted and created again (row ids can be reused, the random id is not).
+   */
+  version(context: string): { generation: string; count: number; last: number } {
+    type Row = { generation: string | null; count: number; last: number };
+    let row = this.sql.version.get(context) as Row | undefined;
+    if (!row) return { generation: "", count: 0, last: 0 };
+    if (row.generation === null) {
+      this.database.write(() => this.sql.generation.run(randomBytes(8).toString("hex"), context));
+      row = this.sql.version.get(context) as Row;
+    }
+    return { generation: row.generation ?? "", count: row.count, last: row.last };
+  }
+
+  /** How many pseudonyms of the context were added after row `last` (of any type). */
+  countAfter(context: string, last: number): number {
+    return (this.sql.after.get(context, last) as { c: number }).c;
   }
 
   /** How many pseudonyms a context has, by type. */

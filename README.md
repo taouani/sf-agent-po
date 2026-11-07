@@ -222,6 +222,12 @@ The new code lives in npm workspaces under `packages/`:
   it up when it is created. The keychain protects the key at rest and while you are logged
   out; like any keychain item an app reads without a prompt, other programs running as you
   can read it too.
+  `Masker` ties these together at the edges (AR1): it masks each document's title, content and
+  metadata (keys, values and numbers) when it is added (`addDocuments`, or `maskContext` for
+  contexts imported from 0.x), replaces its source with a pseudonym, records what it masked
+  and whether the model ran, and puts real values back in approved output (`unmask`),
+  listing what stays masked. Names and addresses a context has masked once are masked in
+  every later document, even without the model (one-word names only in their own case).
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
 - `packages/eval`: measures the agents' output. It runs scenarios (inputs plus a rubric) against

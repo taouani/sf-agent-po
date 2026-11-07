@@ -3,6 +3,7 @@ import {
   applyPolicy,
   cnIdValid,
   detect,
+  compileDictionary,
   detectWithDictionary,
   detectWithRules,
   ibanValid,
@@ -143,6 +144,29 @@ describe("the dictionary", () => {
     expect(masked(joined, detectWithDictionary(joined, entries))).toEqual(["SarahWhitfield", "sarah.whitfield", "sarah_whitfield"]);
     const ja = "担当はやまだたろうです";
     expect(masked(ja, detectWithDictionary(ja, [{ value: "やまだ", type: "PERSON" }]))).toEqual(["やまだ"]);
+  });
+
+  it("finds the longest of values that share a start, each with its own type, and keeps case when asked", () => {
+    const entries = [
+      { value: "Anna", type: "PERSON" },
+      { value: "Anna Smith", type: "PERSON" },
+      { value: "Annabel Road 5", type: "ADDRESS" },
+      { value: "Grace", type: "PERSON", caseSensitive: true },
+      { value: "C++ (team)", type: "PERSON" },
+    ];
+    const text = "Anna Smith, anna, Annabel Road 5, Annabelle, Grace, grace, C++ (team)";
+    const spans = detectWithDictionary(text, entries);
+    expect(spans.map((s) => [text.slice(s.start, s.end), s.type])).toEqual([
+      ["Anna Smith", "PERSON"],
+      ["anna", "PERSON"],
+      ["Annabel Road 5", "ADDRESS"],
+      ["C++ (team)", "PERSON"],
+      ["Grace", "PERSON"],
+    ]);
+    // Compiled once, a long list still finds its values in one pass.
+    const many = compileDictionary(Array.from({ length: 3000 }, (_, i) => ({ value: `Name${i} Family${i}`, type: "PERSON" })));
+    expect(many.size).toBe(3000);
+    expect(many.find("met name2999 family2999 and Name12 Family1").map((s) => s.start)).toEqual([4]);
   });
 });
 
