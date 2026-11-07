@@ -138,11 +138,13 @@ export class Vault {
       get: db.prepare("SELECT lookup, original FROM pseudonym WHERE context = ? AND type = ? AND n = ?"),
       counts: db.prepare("SELECT type, count(*) AS c FROM pseudonym WHERE context = ? GROUP BY type"),
       all: db.prepare(
-        `SELECT type, n, lookup, original FROM pseudonym WHERE context = ? AND rowid > ? AND type NOT IN ('${LITERAL}', '${SOURCE}', 'SECRET') ORDER BY rowid`,
+        `SELECT type, n, lookup, original, declared FROM pseudonym WHERE context = ? AND rowid > ? AND type NOT IN ('${LITERAL}', '${SOURCE}', 'SECRET') ORDER BY rowid`,
       ),
       after: db.prepare("SELECT count(*) AS c FROM pseudonym WHERE context = ? AND rowid > ?"),
+      declare: db.prepare("UPDATE pseudonym SET declared = 1 WHERE context = ? AND lookup = ?"),
       version: db.prepare(
-        `SELECT c.vault_generation AS generation, count(p.rowid) AS count, coalesce(max(p.rowid), 0) AS last
+        `SELECT c.vault_generation AS generation, count(p.rowid) AS count, coalesce(max(p.rowid), 0) AS last,
+           coalesce(sum(p.declared), 0) AS declared
          FROM context c LEFT JOIN pseudonym p ON p.context = c.name WHERE c.name = ? GROUP BY c.name`,
       ),
       generation: db.prepare("UPDATE context SET vault_generation = ? WHERE name = ? AND vault_generation IS NULL"),
@@ -190,6 +192,21 @@ export class Vault {
   /** The pseudonym of `value` in `context`, created on first use. The same value always gets the same one. */
   pseudonym(context: string, type: string, value: string): string {
     return this.database.write(() => this.pseudonymIn(context, type, value));
+  }
+
+  /**
+   * The pseudonym of a value the user said must be hidden: like `pseudonym`, and the value is
+   * marked so that every later input of the context masks it (see `known`).
+   */
+  declare(context: string, type: string, value: string): string {
+    return this.database.write(() => {
+      // A value the context knows under another type keeps its pseudonym: one value, one label.
+      const types = (this.sql.counts.all(context) as { type: string }[]).map((r) => r.type).filter((t) => t !== LITERAL && t !== SOURCE);
+      const t = types.find((k) => this.sql.find.get(context, this.lookup(context, k, value))) ?? pseudonymType(type);
+      const label = this.pseudonymIn(context, t, value);
+      this.sql.declare.run(context, this.lookup(context, t, value));
+      return label;
+    });
   }
 
   private pseudonymIn(context: string, type: string, value: string): string {
@@ -262,26 +279,31 @@ export class Vault {
    * where the rules and the model miss them; with `after`, only those added since that
    * version's `last`. Literals, sources and secrets are left out: the first two are not
    * personal data, and a short secret ("1234") would mask every number like it.
+   * `declared` marks values the user named (see `declare`).
    */
-  known(context: string, after = 0): { type: string; value: string }[] {
-    const rows = this.sql.all.all(context, after) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array }[];
-    return rows.map((r) => ({ type: r.type, value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original) }));
+  known(context: string, after = 0): { type: string; value: string; declared: boolean }[] {
+    const rows = this.sql.all.all(context, after) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array; declared: number }[];
+    return rows.map((r) => ({
+      type: r.type,
+      value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original),
+      declared: r.declared === 1,
+    }));
   }
 
   /**
    * The context's vault version: a random id of the context's row, how many pseudonyms it
-   * has and the newest one's row. Any change gives another version, including a context
-   * deleted and created again (row ids can be reused, the random id is not).
+   * has, the newest one's row and how many are declared. Any change gives another version,
+   * including a context deleted and created again (row ids can be reused, the random id is not).
    */
-  version(context: string): { generation: string; count: number; last: number } {
-    type Row = { generation: string | null; count: number; last: number };
+  version(context: string): { generation: string; count: number; last: number; declared: number } {
+    type Row = { generation: string | null; count: number; last: number; declared: number };
     let row = this.sql.version.get(context) as Row | undefined;
-    if (!row) return { generation: "", count: 0, last: 0 };
+    if (!row) return { generation: "", count: 0, last: 0, declared: 0 };
     if (row.generation === null) {
       this.database.write(() => this.sql.generation.run(randomBytes(8).toString("hex"), context));
       row = this.sql.version.get(context) as Row;
     }
-    return { generation: row.generation ?? "", count: row.count, last: row.last };
+    return { generation: row.generation ?? "", count: row.count, last: row.last, declared: row.declared };
   }
 
   /** How many pseudonyms of the context were added after row `last` (of any type). */

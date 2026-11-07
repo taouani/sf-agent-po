@@ -83,4 +83,28 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE context ADD COLUMN vault_generation TEXT;
     `,
   },
+  {
+    version: 5,
+    name: "confirmed images and declared values",
+    sql: `
+      -- Values the user said must be hidden (on the approval page): masked in every later
+      -- input of the context, however short, where values the model found are left out.
+      ALTER TABLE pseudonym ADD COLUMN declared INTEGER NOT NULL DEFAULT 0;
+
+      -- A redacted image the user confirmed (FE4), next to the document holding its masked
+      -- text. Replacing the document removes the image; a new one is stored only after the
+      -- user confirmed it again. digest is the approval page's requestDigest of what they saw.
+      CREATE TABLE image (
+        context       TEXT NOT NULL,
+        document      TEXT NOT NULL,
+        png           BLOB NOT NULL,
+        width         INTEGER NOT NULL,
+        height        INTEGER NOT NULL,
+        digest        TEXT NOT NULL,
+        confirmed_at  TEXT NOT NULL,
+        PRIMARY KEY (context, document),
+        FOREIGN KEY (context, document) REFERENCES document(context, id) ON DELETE CASCADE
+      );
+    `,
+  },
 ];

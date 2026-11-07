@@ -234,3 +234,32 @@ describe("several processes writing at once", () => {
     db.close();
   }, 60_000);
 });
+
+describe("confirmed images", () => {
+  const png = Buffer.from([137, 80, 78, 71]);
+  const doc = { kind: "other" as const, title: "[SOURCE_1]", source: "[SOURCE_1]", content: "text", masked: true };
+
+  it("stores an image with its document, and drops it when the document is replaced or removed", () => {
+    const db = new Database(":memory:");
+    const repo = new ContextRepository(db);
+    const saved = repo.addImageDocument("acme", doc, { png, width: 4, height: 2, digest: "d1" });
+    expect(repo.getImage("acme", saved.id)).toMatchObject({ png, width: 4, height: 2, digest: "d1" });
+    expect(repo.imageIds("acme")).toEqual(new Set([saved.id]));
+
+    // Chosen as text only the next time: the old image goes.
+    repo.addImageDocument("acme", { ...doc, content: "other text" });
+    expect(repo.getImage("acme", saved.id)).toBeUndefined();
+
+    repo.addImageDocument("acme", doc, { png, width: 4, height: 2, digest: "d2" });
+    repo.addDocuments("acme", [{ ...doc, content: "replaced as text" }]);
+    expect(repo.getImage("acme", saved.id)).toBeUndefined();
+
+    repo.addImageDocument("acme", doc, { png, width: 4, height: 2, digest: "d3" });
+    repo.removeDocument("acme", saved.id);
+    expect(db.db.prepare("SELECT count(*) AS n FROM image").get()).toEqual({ n: 0 });
+
+    repo.addImageDocument("acme", doc, { png, width: 4, height: 2, digest: "d4" });
+    repo.delete("acme");
+    expect(db.db.prepare("SELECT count(*) AS n FROM image").get()).toEqual({ n: 0 });
+  });
+});

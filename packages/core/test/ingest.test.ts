@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ContextRepository, Database, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "../src/index.js";
+import { ContextRepository, Database, declaredType, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "../src/index.js";
 
 /** A stand-in for the detection model that knows a few names. */
 const fakeModel =
@@ -206,5 +206,42 @@ describe("unmasking on publish", () => {
     expect(out.kept).toEqual(["[SECRET_1]", "[PERSON_7]"]);
     // A literal written in a source comes back as text, not as a pseudonym left masked.
     expect(masker.unmask("acme", "[LITERAL_1]")).toEqual({ text: "[PERSON_1]", kept: [] });
+  });
+});
+
+describe("values the user declares", () => {
+  it("names the type from the rules, or a name, or a private value", () => {
+    expect(declaredType("karim@example.com")).toBe("EMAIL");
+    expect(declaredType("+33 6 12 34 56 78")).toBe("PHONE");
+    expect(declaredType("Karim Benali")).toBe("PERSON");
+    expect(declaredType("O'Neil")).toBe("PERSON");
+    expect(declaredType("刘洋")).toBe("PERSON");
+    expect(declaredType("project bluebird")).toBe("PRIVATE");
+    expect(declaredType("Room 4B")).toBe("PRIVATE");
+  });
+
+  it("masks a declared value in every later input, however short, in any case", async () => {
+    const { masker, vault } = setup();
+    const { entries, ignored } = masker.declare("acme", ["Al", " bluebird ", "x", "[PERSON_1]", ""]);
+    expect(entries).toEqual([
+      { type: "PERSON", value: "Al", caseSensitive: false },
+      { type: "PRIVATE", value: "bluebird", caseSensitive: false },
+    ]);
+    expect(ignored).toEqual(["x", "[PERSON_1]"]);
+    expect(vault.known("acme").map((k) => k.declared)).toEqual([true, true]);
+    // A learned value as short as "Al" is never looked for; a declared one is.
+    expect((await masker.mask("acme", "AL and Al run Bluebird; also Alice.")).text).toBe("[PERSON_1] and [PERSON_1] run [PRIVATE_1]; also Alice.");
+  });
+
+  it("picks up a known value declared later, even from another masker", async () => {
+    const { masker, vault } = setup(fakeModel(["al"]));
+    await masker.mask("acme", "ask al"); // learned from the model, too short to look for again
+    const other = new Masker({ vault });
+    expect((await other.mask("acme", "ask al")).text).toBe("ask al");
+    const before = vault.version("acme");
+    masker.declare("acme", ["al"]);
+    // The same pseudonym, now declared: no second one under another type.
+    expect(vault.version("acme")).toMatchObject({ count: before.count, declared: 1 });
+    expect((await other.mask("acme", "ask al")).text).toBe("ask [PERSON_1]");
   });
 });

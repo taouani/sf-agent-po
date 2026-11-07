@@ -13,3 +13,4 @@ export {
   requestDigest,
 } from "./approval/server.js";
 export { isPrerelease, reviewsInputs } from "./approval/settings.js";
+export { Intake, IntakeError, MAX_ROUNDS, pageReviewer, reviewText, type ImageInput, type IntakeOptions, type IntakeResult, type Reviewer, type SetAside } from "./inputs.js";

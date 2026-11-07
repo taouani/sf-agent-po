@@ -5,6 +5,7 @@ export {
   DOCUMENT_KINDS,
   documentId,
   validateContextName,
+  type ConfirmedImage,
   type ContextInfo,
   type DocumentKind,
   type ImportedContext,

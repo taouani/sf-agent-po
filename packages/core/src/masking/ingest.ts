@@ -3,6 +3,7 @@
 
 import type { ContextRepository, NewDocument, SourceDocument } from "../store/contexts.js";
 import { detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
+import { detectWithRules } from "./rules.js";
 import { blackOut, decodeImage, encodePng, orient, pageText, redactionBox, TRUSTED_FROM, UNCERTAIN_BELOW, worthChecking, type Box, type OcrResult, type RgbaImage, type TextRecognizer } from "./image.js";
 import type { Span } from "./spans.js";
 import { compileDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
@@ -29,7 +30,7 @@ export interface MaskerOptions {
 
 /** Known values compiled once; values learned since are kept apart until there are enough to recompile. */
 interface KnownCache {
-  version: { generation: string; count: number; last: number };
+  version: { generation: string; count: number; last: number; declared: number };
   entries: DictionaryEntry[];
   base: CompiledDictionary;
   recent: DictionaryEntry[];
@@ -77,9 +78,11 @@ const FOUND_BY_RULES = new Set(["EMAIL", "PHONE", "IBAN", "CARD", "IP"]);
  * digit-only values would match unrelated text ("1234", "Al"); CJK names are short by nature. A one-word value must match
  * its case, so a word the model once took for a name ("May") does not mask "may".
  */
-function asDictionaryEntry(e: { type: string; value: string }, allowed: Set<string>): DictionaryEntry | undefined {
-  if (FOUND_BY_RULES.has(e.type)) return undefined;
+function asDictionaryEntry(e: { type: string; value: string; declared?: boolean }, allowed: Set<string>): DictionaryEntry | undefined {
   const value = e.value.trim();
+  // The user named it: mask it wherever it appears, in any case, as they asked.
+  if (e.declared) return declaredEntry(e.type, value);
+  if (FOUND_BY_RULES.has(e.type)) return undefined;
   // Chinese, Japanese and Korean names are two or three characters long. Only names, written
   // wholly in those scripts, may be that short: CJK values match inside words.
   const cjkName = e.type === "PERSON" && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\s・·]+$/u.test(value);
@@ -90,6 +93,29 @@ function asDictionaryEntry(e: { type: string; value: string }, allowed: Set<stri
   const first = value[0]!;
   if (oneWord && e.type === "PERSON" && first.toLowerCase() !== first.toUpperCase() && !/^\p{Lu}/u.test(value)) return undefined;
   return { type: e.type, value, caseSensitive: oneWord };
+}
+
+/** Values the user names that are shorter than this are not taken: they would mask most words. */
+export const DECLARED_MIN_LENGTH = 2;
+
+function declaredEntry(type: string, value: string): DictionaryEntry | undefined {
+  if ([...value].length < DECLARED_MIN_LENGTH || !/[\p{L}\p{N}]/u.test(value)) return undefined;
+  return { type, value, caseSensitive: false };
+}
+
+/**
+ * The type of a value the user named: what a rule finds in the whole value (an email, a
+ * phone number), else a name when it reads like one, else PRIVATE. The type only names the
+ * pseudonym ("[PERSON_4]"); every type is masked.
+ */
+export function declaredType(value: string): string {
+  const v = value.trim();
+  const whole = detectWithRules(v).find((s) => s.start === 0 && s.end === v.length);
+  if (whole) return whole.type;
+  const words = v.split(/\s+/u);
+  return words.length <= 4 && words.every((w) => /^\p{Lu}[\p{L}\p{M}'’.-]*$/u.test(w) || /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}・·]+$/u.test(w))
+    ? "PERSON"
+    : "PRIVATE";
 }
 
 /**
@@ -124,10 +150,11 @@ export class Masker {
     let cache = this.known.get(context);
     if (cache) {
       const v = cache.version;
-      const unchanged = v.generation === version.generation && v.count === version.count && v.last === version.last;
+      const unchanged = v.generation === version.generation && v.count === version.count && v.last === version.last && v.declared === version.declared;
       // Only rows added after the cached ones: take them in. Anything else (a delete, a new context): reload.
       const added = !unchanged && v.generation === version.generation && version.last > v.last ? vault.known(context, v.last) : undefined;
-      if (added && version.count === v.count + vault.countAfter(context, v.last)) {
+      // A value declared that was already known changes `declared` without adding a row: reload.
+      if (added && version.count === v.count + vault.countAfter(context, v.last) && version.declared === v.declared + added.filter((e) => e.declared).length) {
         const fresh = added.flatMap((e) => asDictionaryEntry(e, this.allowed) ?? []);
         cache.version = version;
         if (fresh.length) {
@@ -157,6 +184,28 @@ export class Masker {
    */
   remember(context: string, entries: readonly DictionaryEntry[]): void {
     for (const e of entries) if (e.value.trim()) this.opts.vault.pseudonym(context, e.type, e.value.trim());
+  }
+
+  /**
+   * Hides values the user said are still in clear (the approval page's `missed`), in this
+   * context from now on, whatever their length or case. Returns the entries, to pass as the
+   * `dictionary` of the next masking of the same input, and the values not taken (too short,
+   * or no letter or digit, or already a pseudonym).
+   */
+  declare(context: string, values: readonly string[]): { entries: DictionaryEntry[]; ignored: string[] } {
+    const entries: DictionaryEntry[] = [];
+    const ignored: string[] = [];
+    for (const raw of values) {
+      const value = raw.trim();
+      const entry = pseudonymLikeSpans(value).length ? undefined : declaredEntry(declaredType(value), value);
+      if (!entry) {
+        if (value) ignored.push(value);
+        continue;
+      }
+      const label = this.opts.vault.declare(context, entry.type, entry.value);
+      entries.push({ ...entry, type: label.slice(1, label.lastIndexOf("_")) });
+    }
+    return { entries, ignored };
   }
 
   /** Masks `text` for `context`. `dictionary` adds values to mask in this call only. */
