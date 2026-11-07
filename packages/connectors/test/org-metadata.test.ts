@@ -15,7 +15,11 @@ const manifest = (types: Record<string, string[]>) =>
     .join("")}<version>62.0</version></Package>`;
 
 /** A fake sf CLI: lists `org`, and writes each retrieve's members as metadata-format files. */
-function fakeSf(org: Record<string, string[]>, calls: { args: string[]; cwd?: string }[] = []): SfRunner {
+function fakeSf(
+  org: Record<string, string[]>,
+  calls: { args: string[]; cwd?: string }[] = [],
+  behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean } = {},
+): SfRunner {
   return async (args, opts = {}) => {
     calls.push({ args, cwd: opts.cwd });
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
@@ -26,6 +30,18 @@ function fakeSf(org: Record<string, string[]>, calls: { args: string[]; cwd?: st
     if (args[1] === "retrieve") {
       const wanted = readManifest(readFileSync(path.join(opts.cwd!, args[args.indexOf("--manifest") + 1]!), "utf8"), Object.keys(org)).entries;
       const out = path.join(opts.cwd!, args[args.indexOf("--target-metadata-dir") + 1]!);
+      if (behaviour.limit && wanted.reduce((n, e) => n + e.members.length, 0) > behaviour.limit) throw new Error("sf project retrieve failed: LIMIT_EXCEEDED: Too many files");
+      if (behaviour.empty) {
+        mkdirSync(path.join(out, "unpackaged"), { recursive: true });
+        writeFileSync(path.join(out, "unpackaged", "package.xml"), "<Package/>");
+        return { status: "Succeeded", messages: behaviour.messages };
+      }
+      if (behaviour.junk) {
+        mkdirSync(path.join(out, "unpackaged"), { recursive: true });
+        writeFileSync(path.join(out, "unpackaged", "package.xml"), "<Package/>");
+        writeFileSync(path.join(out, "unpackaged", "notes.txt"), "not metadata");
+        return { status: "Succeeded" };
+      }
       const root = path.join(out, "unpackaged");
       const write = (rel: string, content: string) => {
         mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
@@ -52,7 +68,7 @@ function fakeSf(org: Record<string, string[]>, calls: { args: string[]; cwd?: st
         }
       }
       for (const [o, fields] of objects) write(`objects/${o}.object`, `<?xml version="1.0"?><CustomObject>${fields.join("")}</CustomObject>`);
-      return { status: "Succeeded" };
+      return { status: "Succeeded", ...(behaviour.messages ? { messages: behaviour.messages } : {}) };
     }
     throw new Error(`unexpected sf ${args.join(" ")}`);
   };
@@ -148,6 +164,51 @@ describe("retrieveOrgMetadata", () => {
   });
 });
 
+describe("retrieveOrgMetadata, when things go wrong", () => {
+  it("reports what the org could not return, and fails when it returns nothing", async () => {
+    const dir = tmp();
+    const sf = fakeSf({ ApexClass: ["A"] }, [], { messages: [{ problem: "Entity of type 'ApexClass' named 'Gone' cannot be found" }] });
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(r.warnings).toEqual(["Entity of type 'ApexClass' named 'Gone' cannot be found"]);
+    const empty = fakeSf({ ApexClass: ["A"] }, [], { empty: true, messages: [{ problem: "INSUFFICIENT_ACCESS" }] });
+    await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: empty })).rejects.toThrow(/returned nothing for part 1: INSUFFICIENT_ACCESS/);
+    // The good retrieval is still there.
+    expect(readdirSync(path.join(dir, ORG_ID), { recursive: true }).some((f) => String(f).endsWith("A.cls"))).toBe(true);
+  });
+
+  it("splits a part the org refuses as too large, lists unlocked packages, and skips the display it was given", async () => {
+    const dir = tmp();
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const sf = fakeSf({ ApexClass: ["A", "B", "C", "D"] }, calls, { limit: 2 });
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", org: { id: ORG_ID }, dir, sf });
+    expect(r.parts).toBe(2);
+    expect(calls.some((c) => c.args[1] === "display")).toBe(false);
+    expect(calls.find((c) => c.args[1] === "generate")!.args).toContain("unlocked");
+    expect(readdirSync(path.join(dir, ORG_ID, "part-2"), { recursive: true }).some((f) => String(f).endsWith(".cls"))).toBe(true);
+  });
+
+  it("removes the work folders of runs that died", async () => {
+    const dir = tmp();
+    mkdirSync(path.join(dir, `.retrieve-${ORG_ID}-dead`, "part-1"), { recursive: true });
+    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
+    expect(readdirSync(dir)).toEqual([ORG_ID]);
+  });
+
+  it("keeps an object's layouts with it", () => {
+    const parts = splitManifest(
+      [
+        { type: "CustomObject", members: ["Account", "Policy__c"] },
+        { type: "Layout", members: ["Account-Account Layout", "Policy__c-Policy Layout"] },
+      ],
+      2,
+    );
+    for (const part of parts) {
+      const objects = part.find((e) => e.type === "CustomObject")?.members ?? [];
+      for (const l of part.find((e) => e.type === "Layout")?.members ?? []) expect(objects).toContain(l.split("-")[0]);
+    }
+  });
+});
+
 describe("indexing", () => {
   it("indexes an org under its org id, and a project under its folder name and a hash of its path", async () => {
     const workspace = tmp();
@@ -165,6 +226,37 @@ describe("indexing", () => {
     expect(p.source).not.toContain(tmpdir());
   });
 
+  it("leaves the workspace out of a project, and its path out of errors", async () => {
+    const project = tmp();
+    const workspace = path.join(project, ".sf-agent");
+    const idx = index();
+    await indexOrg(idx, "dev", { workspace, sf: fakeSf({ ApexClass: ["FromOrg"] }) });
+    mkdirSync(path.join(project, "classes"), { recursive: true });
+    writeFileSync(path.join(project, "classes", "Mine.cls"), "public class Mine {}");
+    const p = await indexProject(idx, project, { workspace });
+    expect(Object.keys(p.stats.counts ?? {})).toEqual(["ApexClass"]);
+    expect(idx.component(p.id, "ApexClass", "FromOrg")).toBeUndefined();
+    // A workspace elsewhere, by its path.
+    const other = path.join(project, "ws");
+    await indexOrg(idx, "dev", { workspace: other, sf: fakeSf({ ApexClass: ["Again"] }) });
+    expect(idx.component((await indexProject(idx, project, { workspace: other })).id, "ApexClass", "Again")).toBeUndefined();
+
+    const failing: SfRunner = async (args, opts) => {
+      if (args[1] === "retrieve") throw new Error(`sf project retrieve failed: ENOENT ${path.join(workspace, "orgs", "x")}`);
+      return fakeSf({ ApexClass: ["A"] })(args, opts);
+    };
+    const err = await indexOrg(idx, "dev", { workspace, sf: failing }).catch((e: Error) => e);
+    expect(err.message).toContain("<workspace>");
+    expect(err.message).not.toContain(project);
+    expect(JSON.stringify(idx.snapshots())).not.toContain(project);
+  });
+
+  it("refuses an org retrieval with nothing the index can read", async () => {
+    const workspace = tmp();
+    const idx = index();
+    await expect(indexOrg(idx, "dev", { workspace, sf: fakeSf({ ApexClass: ["A"] }, [], { junk: true }) })).rejects.toThrow(/Nothing could be read/);
+  });
+
   it("runs in the background, one run per target, and reports failures", async () => {
     const workspace = tmp();
     const indexer = new BackgroundIndexer(index(), { workspace, sf: fakeSf({ ApexClass: ["A"] }) });
@@ -176,6 +268,7 @@ describe("indexing", () => {
     await indexer.settle();
     expect(a.job).toMatchObject({ state: "ready", snapshot: { status: "ready" } });
     expect(missing.job).toMatchObject({ state: "failed", message: expect.stringMatching(/cannot be read/) });
+    expect(missing.job.target).toMatch(/^repo:nope#/);
     expect(indexer.list()).toHaveLength(2);
     // A finished run can be started again.
     expect(indexer.start({ kind: "org", targetOrg: "dev" }).job).not.toBe(a.job);

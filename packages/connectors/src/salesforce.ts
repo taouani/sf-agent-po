@@ -37,9 +37,14 @@ export const defaultSfRunner: SfRunner = async (args, opts = {}) => {
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    throw new Error(`sf ${args.slice(0, 2).join(" ")} returned unexpected output: ${stdout.slice(0, 300)}`);
+    // Shown in part to help, with anything token-shaped taken out (org display prints one).
+    const shown = stdout.slice(0, 300).replace(/("accessToken"\s*:\s*")[^"]*/gi, "$1…").replace(/00D\w{12,15}![\w.]+/g, "…");
+    throw new Error(`sf ${args.slice(0, 2).join(" ")} returned unexpected output: ${shown}`);
   }
-  if (parsed.status !== 0) throw new Error(`sf ${args.slice(0, 2).join(" ")} failed: ${parsed.message ?? "unknown error"}`);
+  if (parsed.status !== 0) {
+    const detail = parsed.message ?? parsed.result?.errorMessage ?? parsed.result?.messages?.[0]?.problem ?? parsed.name ?? "unknown error";
+    throw new Error(`sf ${args.slice(0, 2).join(" ")} failed: ${detail}`);
+  }
   return parsed.result;
 };
 

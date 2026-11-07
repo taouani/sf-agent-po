@@ -3,9 +3,10 @@
 
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { scanProject, type MetadataIndex, type SnapshotInfo } from "@sf-agent-po/core";
+import os from "node:os";
+import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type SnapshotInfo } from "@sf-agent-po/core";
 import { run } from "./exec.js";
-import { checkOrgArg, retrieveOrgMetadata, type RetrieveOptions } from "./org-metadata.js";
+import { checkOrgArg, orgIdOf, retrieveOrgMetadata, type RetrieveOptions } from "./org-metadata.js";
 import { defaultSfRunner } from "./salesforce.js";
 
 export type IndexTarget = { kind: "project"; dir: string } | { kind: "org"; targetOrg: string };
@@ -25,7 +26,9 @@ export interface IndexOptions {
  */
 export function projectSource(dir: string): string {
   const full = path.resolve(dir);
-  return `repo:${path.basename(full)}#${createHash("sha256").update(full).digest("hex").slice(0, 8)}`;
+  // Windows paths do not care about case: C:\Repo and c:\repo are one project.
+  const key = process.platform === "win32" ? full.toLowerCase() : full;
+  return `repo:${path.basename(full)}#${createHash("sha256").update(key).digest("hex").slice(0, 8)}`;
 }
 
 /** The commit a git checkout is at, or undefined. */
@@ -39,29 +42,77 @@ async function gitRevision(dir: string): Promise<string | undefined> {
   }
 }
 
+/** An error's message with the workspace and home folder taken out: they hold the user's name. */
+function scrubbed(err: unknown, workspace?: string): Error {
+  let message = (err as Error)?.message ?? String(err);
+  for (const [p, as] of [[workspace, "<workspace>"], [os.homedir(), "~"]] as const) {
+    if (p && p.length > 1) message = message.split(path.resolve(p)).join(as);
+  }
+  const out = new Error(message);
+  if (err instanceof Error && err.stack) out.stack = err.stack.replace((err as Error).message, message);
+  return out;
+}
+
+/** Runs a step and scrubs what it throws. */
+async function scrubbing<T>(workspace: string | undefined, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    throw scrubbed(err, workspace);
+  }
+}
+
 /** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */
-export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force"> = {}): Promise<SnapshotInfo> {
+export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
   const revision = await gitRevision(dir);
   options.progress?.(`Reading ${path.basename(path.resolve(dir))}`);
-  return index.build({ source: projectSource(dir), kind: "repo", ...(revision ? { revision } : {}) }, () => scanProject(dir), { force: options.force });
+  try {
+    const read = () => scrubbing(options.workspace, () => scanProject(dir, { exclude: options.workspace ? [options.workspace] : [] }));
+    return await index.build({ source: projectSource(dir), kind: "repo", ...(revision ? { revision } : {}) }, read, {
+      force: options.force,
+    });
+  } catch (err) {
+    throw scrubbed(err, options.workspace);
+  }
 }
 
 /** Retrieves an org's metadata with the user's sf CLI and indexes it. */
 export async function indexOrg(index: MetadataIndex, targetOrg: string, options: IndexOptions): Promise<SnapshotInfo> {
   checkOrgArg(targetOrg);
   const sf = options.sf ?? defaultSfRunner;
-  // The org id names the source, so that two aliases of one org share its index.
-  const info = (await sf(["org", "display", "--target-org", targetOrg])) as { id?: string };
-  if (typeof info?.id !== "string" || !/^[A-Za-z0-9]{15,18}$/.test(info.id)) throw new Error(`sf org display gave no org id for ${targetOrg}.`);
-  return index.build(
-    { source: `org:${info.id}`, kind: "org", revision: new Date().toISOString() },
-    async () => {
-      const retrieved = await retrieveOrgMetadata({ targetOrg, dir: path.join(options.workspace, "orgs"), sf, progress: options.progress });
-      options.progress?.("Reading the retrieved metadata");
-      return scanProject(retrieved.dir);
-    },
-    { force: options.force },
-  );
+  try {
+    // The org id names the source, so that two aliases of one org share its index.
+    const shown: unknown = await sf(["org", "display", "--target-org", targetOrg]);
+    const id = orgIdOf(shown);
+    if (!id) throw new Error(`sf org display gave no org id for ${targetOrg}.`);
+    const alias = (shown as { alias?: unknown }).alias;
+    return await index.build(
+      { source: `org:${id}`, kind: "org", revision: new Date().toISOString() },
+      // Errors are scrubbed inside the read too, because the index stores what it throws.
+      (lease) => scrubbing(options.workspace, async () => {
+        const retrieved = await retrieveOrgMetadata({
+          targetOrg,
+          org: { id, ...(typeof alias === "string" ? { alias } : {}) },
+          dir: path.join(options.workspace, "orgs"),
+          sf,
+          progress: options.progress,
+          heartbeat: () => lease.renew(),
+        });
+        options.progress?.("Reading the retrieved metadata");
+        const parsed = await scanProject(retrieved.dir);
+        // Files came back, but nothing the index reads: the retrieval went wrong somewhere.
+        if (!parsed.components.some((c) => !c.missing)) throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
+        // What the org could not return is reported with what could not be read.
+        const warnings = retrieved.warnings.map((reason) => ({ file: "(retrieve)", reason }));
+        const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
+        const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
+        return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
+      }),
+      { force: options.force },
+    );
+  } catch (err) {
+    throw scrubbed(err, options.workspace);
+  }
 }
 
 export function indexTarget(index: MetadataIndex, target: IndexTarget, options: IndexOptions): Promise<SnapshotInfo> {
@@ -69,7 +120,7 @@ export function indexTarget(index: MetadataIndex, target: IndexTarget, options: 
 }
 
 export interface IndexJob {
-  /** "project:<folder>" or "org:<alias>", as it was asked for. */
+  /** What is indexed, without the folder's path: "repo:<name>#<hash>" or "org:<alias>". */
   target: string;
   state: "running" | "ready" | "failed";
   startedAt: string;
@@ -96,7 +147,7 @@ export class BackgroundIndexer {
     const key = target.kind === "project" ? `project:${path.resolve(target.dir)}` : `org:${target.targetOrg}`;
     const running = this.jobs.get(key);
     if (running?.job.state === "running") return running;
-    const job: IndexJob = { target: key, state: "running", startedAt: new Date().toISOString() };
+    const job: IndexJob = { target: target.kind === "project" ? projectSource(target.dir) : key, state: "running", startedAt: new Date().toISOString() };
     const done = indexTarget(this.index, target, { ...this.options, progress: (m) => (job.message = m) }).then(
       (snapshot) => Object.assign(job, { state: "ready" as const, snapshot, finishedAt: new Date().toISOString(), message: undefined }),
       (err: unknown) => Object.assign(job, { state: "failed" as const, finishedAt: new Date().toISOString(), message: (err as Error)?.message ?? String(err) }),

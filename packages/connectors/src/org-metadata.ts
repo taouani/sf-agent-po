@@ -23,7 +23,7 @@ export const DEFAULT_ORG_TYPES = [
 /** Child types of an object: retrieved with their object, in its file. */
 const OBJECT_CHILDREN = new Set(["CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink", "BusinessProcess", "SharingReason", "Index"]);
 /** Types made of a source file and its metadata file, or of a folder of files. */
-const FILES_PER_MEMBER: Record<string, number> = { ApexClass: 2, ApexTrigger: 2, ApexPage: 2, ApexComponent: 2, LightningComponentBundle: 5, AuraDefinitionBundle: 5 };
+const FILES_PER_MEMBER: Record<string, number> = { ApexClass: 2, ApexTrigger: 2, ApexPage: 2, ApexComponent: 2, LightningComponentBundle: 8, AuraDefinitionBundle: 10 };
 /** One retrieve may return 10,000 files; a little room is kept. */
 export const MAX_FILES_PER_RETRIEVE = 9_000;
 /** Elements a profile lists per component: what a retrieve in several parts must merge. */
@@ -62,6 +62,26 @@ export function readManifest(xml: string, types: readonly string[] = DEFAULT_ORG
 }
 
 /**
+ * Which members travel together: an object with its children and its layouts (a profile's
+ * layout assignment names a layout and a record type of one object), anything else alone.
+ */
+function groupOf(type: string, member: string): string {
+  const owner = (sep: string) => {
+    const at = member.indexOf(sep);
+    return (at > 0 ? member.slice(0, at) : member).toLowerCase();
+  };
+  if (type === "CustomObject") return `object:${member.toLowerCase()}`;
+  if (OBJECT_CHILDREN.has(type)) return `object:${owner(".")}`;
+  if (type === "Layout") return `object:${owner("-")}`;
+  return `${type}:${member}`;
+}
+
+/** The files a part is expected to bring back. */
+export function estimateFiles(entries: readonly ManifestEntry[]): number {
+  return entries.reduce((n, e) => n + (OBJECT_CHILDREN.has(e.type) ? 0 : e.members.length * (FILES_PER_MEMBER[e.type] ?? 1)), 0);
+}
+
+/**
  * The manifest split into retrieves of at most `maxFiles` files each. An object and its
  * fields, record types and rules stay together, since they come back in one file. Profiles go
  * in every part: a profile only lists permissions for what is retrieved with it, and the parts
@@ -75,11 +95,11 @@ export function splitManifest(entries: readonly ManifestEntry[], maxFiles = MAX_
   for (const e of entries) {
     if (e === profiles) continue;
     for (const m of e.members) {
-      const key = e.type === "CustomObject" ? `object:${m.toLowerCase()}` : OBJECT_CHILDREN.has(e.type) ? `object:${m.slice(0, m.indexOf(".")).toLowerCase()}` : `${e.type}:${m}`;
+      const key = groupOf(e.type, m);
       const group = groups.get(key) ?? { files: 0, items: [] };
       if (!groups.has(key)) groups.set(key, group);
-      // An object's children add nothing: they are in its file.
-      group.files = Math.max(group.files, OBJECT_CHILDREN.has(e.type) ? 1 : FILES_PER_MEMBER[e.type] ?? 1);
+      // An object's children add nothing: they are in its file, which counts once.
+      group.files = OBJECT_CHILDREN.has(e.type) ? Math.max(group.files, 1) : group.files + (FILES_PER_MEMBER[e.type] ?? 1);
       group.items.push([e.type, m]);
     }
   }
@@ -119,78 +139,181 @@ export interface OrgRetrieval {
   dir: string;
   orgId: string;
   alias?: string;
-  /** Members retrieved, by type. */
+  /** Members asked for, by type. */
   counts: Record<string, number>;
   /** How many retrieves it took. */
   parts: number;
+  /** What the CLI said it could not retrieve (a component missing, or not visible to the user). */
+  warnings: string[];
   retrievedAt: string;
 }
 
 export interface RetrieveOptions {
   /** The org's alias or username, as `sf org login` saved it. */
   targetOrg: string;
+  /** The org's id and alias, when the caller already asked `sf org display`. */
+  org?: { id: string; alias?: string };
   /** Where the org's folders go: the retrieval replaces `<dir>/<org id>`. */
   dir: string;
   types?: readonly string[];
+  /**
+   * Package metadata to list besides the org's own: "unlocked" by default (teams build their
+   * own code in unlocked packages); "managed" adds installed packages such as CPQ.
+   */
+  includePackages?: readonly ("unlocked" | "managed")[];
   sf?: SfRunner;
   /** Called as the work moves on, with a short line for the user. */
   progress?: (message: string) => void;
+  /** Called between long steps, to say the run is alive (MetadataIndex's lease). */
+  heartbeat?: () => void;
   /** Files one retrieve may return (MAX_FILES_PER_RETRIEVE by default). */
   maxFilesPerRetrieve?: number;
   /** How long one retrieve may take, in minutes (60 by default). */
   waitMinutes?: number;
 }
 
+/** The org id from `sf org display`, checked. */
+export function orgIdOf(info: unknown): string | undefined {
+  const id = (info as { id?: unknown } | undefined)?.id;
+  return typeof id === "string" && /^[A-Za-z0-9]{15,18}$/.test(id) ? id : undefined;
+}
+
+/** Removing a folder on Windows can meet files another process (an antivirus) still holds. */
+const remove = (p: string) => rm(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
+/** A retrieve's problems, from the CLI's result: messages with a `problem`, or an error. */
+function problemsOf(result: unknown): string[] {
+  const r = (result ?? {}) as { messages?: unknown; errorMessage?: unknown };
+  const messages = Array.isArray(r.messages) ? r.messages : r.messages ? [r.messages] : [];
+  const out = messages
+    .map((m) => (m && typeof m === "object" ? (m as { problem?: unknown }).problem : undefined))
+    .filter((p): p is string => typeof p === "string" && p !== "");
+  if (typeof r.errorMessage === "string" && r.errorMessage) out.push(r.errorMessage);
+  return out;
+}
+
+/** A retrieve refused for its size: the 10,000-file or the zip size limit. */
+const tooLarge = (err: unknown) => /LIMIT_EXCEEDED|too many files|exceed(?:s|ed)? the (?:maximum|limit)|maximum size/i.test((err as Error)?.message ?? "");
+
 /**
  * Lists what the org holds, keeps the types the index uses, and retrieves them in metadata
- * format, in several parts when there are too many files for one. Profiles, which only list
- * permissions for what is retrieved with them, are merged back into one file each.
+ * format, in several parts when there are too many files for one (a part the org refuses as
+ * too large is split again). Profiles, which only list permissions for what is retrieved with
+ * them, are merged back into one file each. The new retrieval replaces the last one only once
+ * it is complete.
  */
 export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<OrgRetrieval> {
   const { targetOrg } = options;
   checkOrgArg(targetOrg);
   const sf = options.sf ?? defaultSfRunner;
   const progress = options.progress ?? (() => {});
+  const heartbeat = options.heartbeat ?? (() => {});
   const wait = Math.max(1, Math.min(options.waitMinutes ?? 60, 240));
 
-  const info = (await sf(["org", "display", "--target-org", targetOrg])) as { id?: string; alias?: string };
-  const orgId = typeof info?.id === "string" && /^[A-Za-z0-9]{15,18}$/.test(info.id) ? info.id : undefined;
+  let info: { id?: string; alias?: unknown } | undefined = options.org;
+  if (!info) {
+    const shown: unknown = await sf(["org", "display", "--target-org", targetOrg]);
+    info = { id: orgIdOf(shown), alias: (shown as { alias?: unknown } | undefined)?.alias };
+  }
+  const orgId = info.id;
   if (!orgId) throw new Error(`sf org display gave no org id for ${targetOrg}.`);
 
   await mkdir(options.dir, { recursive: true });
+  // Work folders of runs that died (the caller holds the lease, so none is alive).
+  for (const f of await readdir(options.dir)) if (f.startsWith(`.retrieve-${orgId}-`) || f.startsWith(`.old-${orgId}-`)) await remove(path.join(options.dir, f));
   // Work in a folder of its own; the CLI is given relative paths only, so a user name with a
   // space in the workspace path never reaches a shell.
   const work = await mkdtemp(path.join(options.dir, `.retrieve-${orgId}-`));
   try {
     progress(`Listing the metadata in ${targetOrg}`);
-    await sf(["project", "generate", "manifest", "--from-org", targetOrg, "--output-dir", ".", "--name", "package"], { cwd: work, timeoutMs: wait * 60_000 });
+    const packages = options.includePackages ?? ["unlocked"];
+    await sf(["project", "generate", "manifest", "--from-org", targetOrg, ...packages.flatMap((p) => ["--include-packages", p]), "--output-dir", ".", "--name", "package"], {
+      cwd: work,
+      timeoutMs: wait * 60_000,
+    });
+    heartbeat();
     const { entries, version } = readManifest(await readFile(path.join(work, "package.xml"), "utf8"), options.types ?? DEFAULT_ORG_TYPES);
     // An empty listing is a CLI or permission problem, not an empty org: it must not replace
     // a good index.
     if (!entries.length) throw new Error(`The metadata listing of ${targetOrg} is empty: check that the user can view setup and configuration.`);
     const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
-    const parts = splitManifest(entries, options.maxFilesPerRetrieve);
-    for (const [i, part] of parts.entries()) {
-      const name = `part-${i + 1}`;
+    const queue = splitManifest(entries, options.maxFilesPerRetrieve);
+    const warnings: string[] = [];
+    let n = 0;
+    while (queue.length) {
+      const part = queue.shift()!;
+      const name = `part-${++n}`;
       await writeFile(path.join(work, `${name}.xml`), writeManifest(part, version));
-      progress(parts.length > 1 ? `Retrieving part ${i + 1} of ${parts.length}` : `Retrieving ${entries.reduce((n, e) => n + e.members.length, 0)} components`);
-      await sf(
-        ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
-        { cwd: work, timeoutMs: (wait + 5) * 60_000 },
-      );
+      progress(queue.length || n > 1 ? `Retrieving part ${n} of ${n + queue.length}` : `Retrieving ${entries.reduce((k, e) => k + e.members.length, 0)} components`);
+      let result: unknown;
+      try {
+        result = await sf(
+          ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
+          { cwd: work, timeoutMs: (wait + 5) * 60_000 },
+        );
+      } catch (err) {
+        // Too large for one retrieve after all: split it in two and go on.
+        const files = estimateFiles(part);
+        if (!tooLarge(err) || files < 2) throw err;
+        await remove(path.join(work, name));
+        queue.unshift(...splitManifest(part, Math.ceil(files / 2)));
+        n--;
+        continue;
+      }
+      heartbeat();
+      warnings.push(...problemsOf(result));
       // The zip the CLI kept beside the unzipped folder is not needed.
-      for (const f of await readdir(path.join(work, name))) if (f.endsWith(".zip")) await rm(path.join(work, name, f), { force: true });
+      const out = path.join(work, name);
+      const kept = await readdir(out).catch(() => [] as string[]);
+      for (const f of kept) if (f.endsWith(".zip")) await remove(path.join(out, f));
+      if (!(await filesUnder(out).catch(() => [] as string[])).some((f) => !f.endsWith("package.xml"))) {
+        throw new Error(`The org returned nothing for part ${n}${warnings.length ? `: ${warnings.slice(-3).join("; ")}` : ""}.`);
+      }
     }
-    if (parts.length > 1) await mergeProfiles(work, parts.map((_, i) => `part-${i + 1}`));
-    for (const f of await readdir(work)) if (f.endsWith(".xml")) await rm(path.join(work, f), { force: true });
-    // The new retrieval replaces the last one only once it is complete.
+    if (n > 1) await mergeProfiles(work, Array.from({ length: n }, (_, i) => `part-${i + 1}`));
+    for (const f of await readdir(work)) if (f.endsWith(".xml")) await remove(path.join(work, f));
+    // The last retrieval is set aside, the new one moved in, and only then the old one removed.
     const dest = path.join(options.dir, orgId);
-    await rm(dest, { recursive: true, force: true });
-    await rename(work, dest);
-    return { dir: dest, orgId, ...(typeof info.alias === "string" ? { alias: info.alias } : {}), counts, parts: parts.length, retrievedAt: new Date().toISOString() };
+    const old = path.join(options.dir, `.old-${orgId}-${Date.now()}`);
+    const had = await rename(dest, old).then(
+      () => true,
+      (err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") return false;
+        throw err;
+      },
+    );
+    try {
+      await renameRetrying(work, dest);
+    } catch (err) {
+      if (had) await rename(old, dest).catch(() => {});
+      throw err;
+    }
+    if (had) await remove(old);
+    return {
+      dir: dest,
+      orgId,
+      ...(typeof info.alias === "string" ? { alias: info.alias } : {}),
+      counts,
+      parts: n,
+      warnings,
+      retrievedAt: new Date().toISOString(),
+    };
   } catch (err) {
-    await rm(work, { recursive: true, force: true });
+    await remove(work);
     throw err;
+  }
+}
+
+/** A rename, tried again for a few seconds while Windows holds the new files (EPERM, EBUSY). */
+async function renameRetrying(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await rename(from, to);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt >= 10 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw err;
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
 }
 

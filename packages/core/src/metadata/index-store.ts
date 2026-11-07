@@ -117,6 +117,12 @@ const toSnapshot = (r: SnapshotRow): SnapshotInfo => ({
 
 const COLUMNS = "c.id, c.type, c.name, c.parent, c.parent_type, c.label, c.file, c.present, c.attrs, c.text";
 
+/** What a run holds while it reads: renewing it keeps another run of the source from starting. */
+export interface BuildLease {
+  /** Says the run is alive; call it between long steps (each part of an org retrieval). */
+  renew(): void;
+}
+
 /** The metadata index in the workspace database: snapshots, components, edges, search. */
 export class MetadataIndex {
   constructor(private readonly database: Database) {}
@@ -130,13 +136,14 @@ export class MetadataIndex {
    * found in one transaction, and marks it ready. Older snapshots of the same source are
    * then removed. If reading fails, the snapshot is marked failed and the error rethrown;
    * the previous ready snapshot stays in use. While another run of the same source is under
-   * way (started less than an hour ago), this refuses, unless `force` is set.
+   * way (started, or renewed its lease, less than an hour ago), this refuses, unless `force`
+   * is set.
    */
-  async build(source: SnapshotSource, read: () => Promise<ParsedMetadata>, options: { force?: boolean } = {}): Promise<SnapshotInfo> {
+  async build(source: SnapshotSource, read: (lease: BuildLease) => Promise<ParsedMetadata>, options: { force?: boolean } = {}): Promise<SnapshotInfo> {
     const id = this.database.write(() => {
       const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
       const running = this.db
-        .prepare("SELECT started_at FROM metadata_snapshot WHERE source = ? AND status = 'building' AND started_at > ? ORDER BY id DESC LIMIT 1")
+        .prepare("SELECT started_at FROM metadata_snapshot WHERE source = ? AND status = 'building' AND coalesce(heartbeat_at, started_at) > ? ORDER BY id DESC LIMIT 1")
         .get(source.source, since) as { started_at: string } | undefined;
       if (running && !options.force) throw new Error(`${source.source} is already being indexed (since ${running.started_at}).`);
       const r = this.db
@@ -144,20 +151,43 @@ export class MetadataIndex {
         .get(source.source, source.kind, source.revision ?? null, new Date().toISOString()) as { id: number };
       return r.id;
     });
+    this.building.add(id);
+    const lease: BuildLease = {
+      renew: () => {
+        if (this.building.has(id)) this.database.write(() => this.db.prepare("UPDATE metadata_snapshot SET heartbeat_at = ? WHERE id = ? AND status = 'building'").run(new Date().toISOString(), id));
+      },
+    };
     try {
-      const parsed = await read();
+      const parsed = await read(lease);
       return this.database.write(() => {
         this.store(id, source.source, parsed);
         return this.snapshotById(id)!;
       });
     } catch (err) {
-      this.database.write(() => {
-        this.db
-          .prepare("UPDATE metadata_snapshot SET status = 'failed', finished_at = ?, stats = ? WHERE id = ?")
-          .run(new Date().toISOString(), JSON.stringify({ error: (err as Error).message }), id);
-      });
+      this.fail(id, (err as Error)?.message ?? String(err));
       throw err;
+    } finally {
+      this.building.delete(id);
     }
+  }
+
+  private readonly building = new Set<number>();
+
+  private fail(id: number, error: string): void {
+    this.database.write(() => {
+      this.db
+        .prepare("UPDATE metadata_snapshot SET status = 'failed', finished_at = ?, stats = ? WHERE id = ? AND status = 'building'")
+        .run(new Date().toISOString(), JSON.stringify({ error }), id);
+    });
+  }
+
+  /**
+   * Marks every run this index started and has not finished as failed: for a process that is
+   * being stopped, so that its runs do not block the next one for an hour.
+   */
+  abandon(reason = "stopped"): void {
+    for (const id of this.building) this.fail(id, reason);
+    this.building.clear();
   }
 
   private store(id: number, source: string, parsed: ParsedMetadata): void {
@@ -187,7 +217,7 @@ export class MetadataIndex {
     // first, so it replaces every other; a run still building elsewhere is left alone unless
     // its lease ran out (it died).
     const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
-    this.db.prepare("DELETE FROM metadata_snapshot WHERE source = ? AND id != ? AND (status != 'building' OR started_at <= ?)").run(source, id, since);
+    this.db.prepare("DELETE FROM metadata_snapshot WHERE source = ? AND id != ? AND (status != 'building' OR coalesce(heartbeat_at, started_at) <= ?)").run(source, id, since);
   }
 
   /** The newest ready snapshot of a source. */

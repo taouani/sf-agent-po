@@ -77,7 +77,17 @@ async function index(argv: string[]): Promise<void> {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(opts.workspace, { recursive: true });
     database = new Database(databaseFile(opts.workspace));
-    const snapshot = await indexTarget(new MetadataIndex(database), opts.target, {
+    const metadata = new MetadataIndex(database);
+    // Stopped with Ctrl-C: the run is marked failed, so that the next one need not wait for
+    // its lease to run out.
+    const stop = () => {
+      metadata.abandon("stopped by the user");
+      database?.close();
+      process.exit(130);
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+    const snapshot = await indexTarget(metadata, opts.target, {
       workspace: opts.workspace,
       force: opts.force,
       progress: (m) => console.error(m),
