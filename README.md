@@ -271,7 +271,10 @@ The new code lives in npm workspaces under `packages/`:
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
   browser. `industry_guidance` gives the industry templates. `sf-agent-po-next init` writes the
-  agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. It also holds the approval page (AR5): a small
+  agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. `node scripts/pack-next.mjs --smoke` builds the
+  installable pre-release, one `sf-agent-po` package with core, connectors, the model runtime
+  and the content bundled inside, then installs it in an empty folder and runs it (CI does
+  this on the three systems). Nothing is published by it. It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
   text), and checks masked inputs before the agents use them (on by default in pre-releases,
