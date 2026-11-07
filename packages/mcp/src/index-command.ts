@@ -48,10 +48,18 @@ export function describeSnapshot(s: SnapshotInfo): string[] {
   const counts = Object.entries(s.stats.counts ?? {}).sort(([, a], [, b]) => (b ?? 0) - (a ?? 0));
   const total = counts.reduce((n, [, c]) => n + (c ?? 0), 0);
   const skipped = s.stats.skippedCount ?? s.stats.skipped?.length ?? 0;
+  // What the org did not return comes first, as "(retrieve)" entries; then unreadable files.
+  const listed = s.stats.skipped ?? [];
+  const retrieve = listed.filter((f) => f.file === "(retrieve)");
+  const files = listed.filter((f) => f.file !== "(retrieve)");
+  const unread = skipped - retrieve.length;
   return [
     `Indexed ${total} components, ${s.stats.edges ?? 0} links, ${s.stats.referenced ?? 0} referenced from outside the project.`,
     ...counts.slice(0, 12).map(([type, n]) => `  ${type}: ${n}`),
     ...(counts.length > 12 ? [`  and ${counts.length - 12} more types`] : []),
-    ...(skipped ? [`${skipped} ${skipped === 1 ? "file" : "files"} could not be read:`, ...(s.stats.skipped ?? []).slice(0, 10).map((f) => `  ${f.file}: ${f.reason}`)] : []),
+    ...(retrieve.length
+      ? ["The org did not return everything it listed:", ...retrieve.slice(0, 10).map((f) => `  ${f.reason}`), ...(retrieve.length > 10 ? [`  and ${retrieve.length - 10} more`] : [])]
+      : []),
+    ...(unread > 0 ? [`${unread} ${unread === 1 ? "file" : "files"} could not be read:`, ...files.slice(0, 10).map((f) => `  ${f.file}: ${f.reason}`)] : []),
   ];
 }
