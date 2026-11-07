@@ -304,7 +304,13 @@ The new code lives in npm workspaces under `packages/`:
   metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
   only; the types the index uses, in parts of at most 9,000 files, with profiles merged back),
   under `<workspace>/orgs/<org id>-<suffix>`, the last complete one named by `<org id>.json`. A project is named by its folder and a hash of its path,
-  an org by its id. `BackgroundIndexer` runs the same without blocking, for the server. `node scripts/pack-next.mjs --smoke` builds the
+  an org by its id. `BackgroundIndexer` runs the same without blocking, for the server, whose
+  metadata tools let the agents index and read the org: `metadata_index` (in the background),
+  `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,
+  rules, record-triggered flows and triggers), `metadata_search` and `metadata_component` (one
+  component, its children and what it reads, writes, calls or grants, one or two links away).
+  API names are returned as they are; labels, descriptions, formulas, picklist values and the
+  names of reports, dashboards, documents and email templates are masked like inputs. `node scripts/pack-next.mjs --smoke` builds the
   installable pre-release, one `sf-agent-po` package with core, connectors, the model runtime
   and the content bundled inside, then installs it in an empty folder and runs it (CI does
   this on the three systems). Nothing is published by it: the `Release next` workflow

@@ -6,7 +6,8 @@ export const EVIDENCE_RULES = `## Working from evidence
 
 - Start with \`context_show\`, then \`context_read\` for the documents you need. Read every design, metadata and org document before deciding anything about the existing org.
 - Cite the context documents behind each decision or requirement with their ids, for example [doc-1a2b3c4d5e].
-- Never claim that an object, field, flow, class or integration exists unless a metadata or org document shows it. If no metadata or org document is in the context, say so and treat the current state as unknown.
+- For the existing org, use the metadata index: \`metadata_summary\` first, then \`metadata_search\` and \`metadata_component\` for each object, field, flow or class the work touches, to see what reads, writes, triggers on or grants it. If \`metadata_sources\` shows nothing indexed, ask the user whether to index their org or project with \`metadata_index\`.
+- Never claim that an object, field, flow, class or integration exists unless the metadata index, or a metadata or org document, shows it. If neither is available, say so and treat the current state as unknown. The index does not see dynamic Apex, SOQL built from strings or long formula chains: say so when a conclusion depends on them.
 - When the inputs conflict (for example an email and a Jira ticket disagree), do not pick silently: record the conflict as an open question, name both sources, and state the assumption you used.
 - Mark every assumption as an assumption. Put every gap you cannot close as an open question with the role who can answer it (business owner, product manager, security, architect).
 - Security, privacy and compliance inputs (for example from the security team) are requirements, not suggestions. Trace each one to where it is addressed.`;

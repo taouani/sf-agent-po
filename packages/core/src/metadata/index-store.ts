@@ -68,6 +68,19 @@ export interface Related {
   depth: number;
 }
 
+/** An object of the project, with what is built on it. */
+export interface ObjectSummary {
+  name: string;
+  label?: string;
+  fields: number;
+  rules: number;
+  /** Record-triggered flows and Apex triggers that run on its records. */
+  flows: number;
+  triggers: number;
+  /** Components that link to it, other than its own children. */
+  linked: number;
+}
+
 interface ComponentRow {
   id: number;
   type: string;
@@ -236,10 +249,11 @@ export class MetadataIndex {
     return (this.db.prepare("SELECT * FROM metadata_snapshot ORDER BY id DESC").all() as unknown as SnapshotRow[]).map(toSnapshot);
   }
 
+  /** A component by type and API name; the case of the name does not matter (Salesforce ignores it). */
   component(snapshot: number, type: ComponentType, name: string): IndexedComponent | undefined {
     const r = this.db
-      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ?`)
-      .get(snapshot, type, name) as ComponentRow | undefined;
+      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ? COLLATE NOCASE ORDER BY c.name = ? DESC LIMIT 1`)
+      .get(snapshot, type, name, name) as ComponentRow | undefined;
     return r && toComponent(r);
   }
 
@@ -253,6 +267,27 @@ export class MetadataIndex {
         .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent_type = ? AND c.parent = ? ORDER BY c.type, c.name`)
         .all(snapshot, parentType, parent) as unknown as ComponentRow[]
     ).map(toComponent);
+  }
+
+  /**
+   * The objects of a snapshot that the project holds, busiest first: how many fields and other
+   * children each has, how much automation runs on its records (flows and triggers), and how
+   * many components link to it.
+   */
+  objectSummary(snapshot: number, limit = 30): ObjectSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT o.name, o.label,
+           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'CustomField') AS fields,
+           (SELECT count(*) FROM component f WHERE f.snapshot = o.snapshot AND f.parent_type = 'CustomObject' AND f.parent = o.name AND f.type = 'ValidationRule') AS rules,
+           (SELECT count(*) FROM edge e JOIN component s ON s.id = e.src WHERE e.dst = o.id AND e.kind = 'triggers_on' AND s.type = 'Flow') AS flows,
+           (SELECT count(*) FROM edge e JOIN component s ON s.id = e.src WHERE e.dst = o.id AND e.kind = 'triggers_on' AND s.type = 'ApexTrigger') AS triggers,
+           (SELECT count(DISTINCT e.src) FROM edge e WHERE e.dst = o.id AND e.kind != 'part_of') AS linked
+         FROM component o WHERE o.snapshot = ? AND o.type = 'CustomObject' AND o.present = 1
+         ORDER BY flows + triggers DESC, fields DESC, o.name LIMIT ?`,
+      )
+      .all(snapshot, Math.min(Math.max(limit, 1), 500)) as unknown as (Omit<ObjectSummary, "label"> & { label: string | null })[];
+    return rows.map(({ label, ...r }) => ({ ...r, ...(label ? { label } : {}) }));
   }
 
   /**

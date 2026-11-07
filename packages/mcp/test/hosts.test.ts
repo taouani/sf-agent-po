@@ -9,7 +9,8 @@ import { poBacklogPrompt } from "../src/agents/product-owner.js";
 import { saHighLevelDesignPrompt } from "../src/agents/solution-architect.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ContextRepository, Database, Masker, newVaultKey, Vault } from "@sf-agent-po/core";
+import { BackgroundIndexer } from "@sf-agent-po/connectors";
+import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, Vault } from "@sf-agent-po/core";
 import { ApprovalServer, createServer } from "../src/index.js";
 
 async function connect() {
@@ -22,6 +23,8 @@ async function connect() {
     recognizer: async () => Promise.reject(new Error("no OCR")),
     version: "1.0.0",
     reviewer: () => ({ review: async () => Promise.reject(new Error("no review in these tests")) }),
+    // As the real server has: the agents' files name the metadata tools.
+    metadata: { index: new MetadataIndex(db), indexer: new BackgroundIndexer(new MetadataIndex(db), { workspace: os.tmpdir() }) },
   });
   const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
