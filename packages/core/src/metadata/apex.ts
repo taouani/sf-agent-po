@@ -190,6 +190,15 @@ class Declarations {
   }
 }
 
+/** Apex the index cannot follow, by what it does. */
+const DYNAMIC: readonly (readonly [string, RegExp])[] = [
+  ["query built from a string", /\bdatabase ?\. ?(?:query|querywithbinds|countquery|countquerywithbinds|getquerylocator|getquerylocatorwithbinds|getcursor|getcursorwithbinds) ?\((?! ?\[)/i],
+  ["search built from a string", /\bsearch ?\. ?query ?\((?! ?\[)/i],
+  ["class named at run time", /\btype ?\. ?forname ?\(/i],
+  // Not .getDescribe(): most of it is a field or object check on a name the code spells out.
+  ["describe calls", /\bschema ?\. ?(?:getglobaldescribe|describesobjects|describetabs) ?\(/i],
+];
+
 /**
  * An Apex class or trigger from its source. Queries read their object and fields; DML writes
  * the object of the record or list it is given; `record.Field = x` writes a field and
@@ -230,6 +239,11 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     if (sharing) attrs.sharing = sharing[1]!.toLowerCase();
     if (/@ ?istest\b/i.test(code)) attrs.isTest = true;
   }
+
+  // What the index cannot follow: queries built from strings, classes named at run time,
+  // describes (fields read by name through a map look the same as any map, so they are not flagged). Impact analysis flags such code as a blind spot.
+  const dynamic = DYNAMIC.filter(([, re]) => re.test(code)).map(([what]) => what);
+  if (dynamic.length) attrs.dynamic = dynamic;
 
   // Queries: their object and fields are read; then they are taken out, so that their words
   // are not taken for variables.

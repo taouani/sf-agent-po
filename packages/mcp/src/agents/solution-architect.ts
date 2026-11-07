@@ -49,7 +49,7 @@ Sharing model, access by persona, encryption, authentication, audit, data reside
 Performance, volumes, limits, availability, data retention and archiving, backup and restore.
 
 ## 12. Impact on the existing org
-Components added, changed or retired, and conflicts or risks with what exists.
+Components added, changed or retired, and conflicts or risks with what exists, from \`metadata_impact\`: what depends on each one, and its weak links.
 
 ## 13. Delivery approach
 Environments, DevOps, data migration, release sequencing, suggested phases or MVP.

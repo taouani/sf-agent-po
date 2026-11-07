@@ -314,6 +314,11 @@ The new code lives in npm workspaces under `packages/`:
   context, and `scope_show` gives them with their fields, rules, record types, the flows, triggers,
   code and layouts linked to them, what that automation calls (two hops), who grants access, and
   the objects outside the scope that it touches.
+  `metadata_impact` takes the components a piece of work adds, changes or deletes and lists what
+  depends on each, one or two links away, with the weak links: Apex the index cannot follow
+  (queries built from strings, classes named at run time, describes, files too large to read),
+  inactive flows, dependents outside the confirmed scope, and the automation that saves records a
+  new rule or required field can stop.
   API names are returned as they are; labels, descriptions, formulas, picklist values and the
   names of reports, dashboards, documents and email templates are masked before they are
   returned (masked names can be passed back), and long details are cut. `node scripts/pack-next.mjs --smoke` builds the
