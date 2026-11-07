@@ -246,5 +246,6 @@ describe.runIf(process.env.SF_AGENT_PO_KEYCHAIN_TEST === "1")("this computer's k
       if (process.platform === "darwin") runCommand("security", ["delete-generic-password", "-s", "sf-agent-po", "-a", keyId]);
       if (process.platform === "linux") runCommand("secret-tool", ["clear", "service", "sf-agent-po", "account", keyId]);
     }
-  });
+    // Each Windows PowerShell start takes a second or two, and saving reads the key back.
+  }, 60_000);
 });
