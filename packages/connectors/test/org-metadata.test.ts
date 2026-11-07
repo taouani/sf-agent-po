@@ -9,6 +9,10 @@ import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
 
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** The folder an org's pointer file names as its last complete retrieval. */
+const current = (dir: string) => (JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { folder: string }).folder;
+
 const manifest = (types: Record<string, string[]>) =>
   `<?xml version="1.0" encoding="UTF-8"?><Package xmlns="http://soap.sforce.com/2006/04/metadata">${Object.entries(types)
     .map(([name, members]) => `<types>${members.map((m) => `<members>${m}</members>`).join("")}<name>${name}</name></types>`)
@@ -129,18 +133,21 @@ describe("retrieveOrgMetadata", () => {
     const calls: { args: string[]; cwd?: string }[] = [];
     const sf = fakeSf({ ApexClass: ["RenewalService"], CustomObject: ["Policy__c"], CustomField: ["Policy__c.Status__c"], EmailTemplate: ["x/y"] }, calls);
     const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
-    expect(first).toMatchObject({ dir: path.join(dir, ORG_ID), orgId: ORG_ID, alias: "dev", parts: 1, counts: { ApexClass: 1, CustomObject: 1, CustomField: 1 } });
+    expect(first).toMatchObject({ dir: expect.stringMatching(new RegExp(`^${escape(path.join(dir, ORG_ID))}-\\w+$`)), orgId: ORG_ID, alias: "dev", parts: 1, counts: { ApexClass: 1, CustomObject: 1, CustomField: 1 } });
     expect(JSON.stringify(first)).not.toContain("SECRET");
     const retrieve = calls.find((c) => c.args[1] === "retrieve")!;
     expect(retrieve.args).toEqual(["project", "retrieve", "start", "--manifest", "part-1.xml", "--target-metadata-dir", "part-1", "--unzip", "--wait", "60", "--target-org", "dev"]);
     // Only relative paths reach the CLI: the workspace path can hold the user's name.
     for (const c of calls) for (const a of c.args) expect(path.isAbsolute(a)).toBe(false);
-    expect(readdirSync(path.join(dir, ORG_ID, "part-1"))).toEqual(["unpackaged"]);
+    expect(readdirSync(path.join(first.dir, "part-1"))).toEqual(["unpackaged"]);
     // The work folder's project file is gone: it would steer the scan to an empty package folder.
-    expect(readdirSync(path.join(dir, ORG_ID))).toEqual(["part-1"]);
-    // A second retrieval replaces the first, and leaves no work folder behind.
-    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
-    expect(readdirSync(dir)).toEqual([ORG_ID]);
+    expect(readdirSync(first.dir)).toEqual(["part-1"]);
+    expect(current(dir)).toBe(path.basename(first.dir));
+    // A second retrieval replaces the first, without renaming a folder, and the first goes.
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(second.dir).not.toBe(first.dir);
+    expect(readdirSync(dir).sort()).toEqual([path.basename(second.dir), `${ORG_ID}.json`].sort());
+    expect(current(dir)).toBe(path.basename(second.dir));
   });
 
   it("refuses an org argument the CLI could read as more, and cleans up after a failure", async () => {
@@ -176,8 +183,10 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     expect(r.warnings).toEqual(["Entity of type 'ApexClass' named 'Gone' cannot be found"]);
     const empty = fakeSf({ ApexClass: ["A"] }, [], { empty: true, messages: [{ problem: "INSUFFICIENT_ACCESS" }] });
     await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: empty })).rejects.toThrow(/returned nothing for part 1: INSUFFICIENT_ACCESS/);
-    // The good retrieval is still there.
-    expect(readdirSync(path.join(dir, ORG_ID), { recursive: true }).some((f) => String(f).endsWith("A.cls"))).toBe(true);
+    // The good retrieval is still there, and still the current one.
+    expect(current(dir)).toBe(path.basename(r.dir));
+    expect(readdirSync(dir).sort()).toEqual([path.basename(r.dir), `${ORG_ID}.json`].sort());
+    expect(readdirSync(r.dir, { recursive: true }).some((f) => String(f).endsWith("A.cls"))).toBe(true);
   });
 
   it("splits a part the org refuses as too large, lists unlocked packages, and skips the display it was given", async () => {
@@ -188,14 +197,14 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     expect(r.parts).toBe(2);
     expect(calls.some((c) => c.args[1] === "display")).toBe(false);
     expect(calls.find((c) => c.args[1] === "generate")!.args).toContain("unlocked");
-    expect(readdirSync(path.join(dir, ORG_ID, "part-2"), { recursive: true }).some((f) => String(f).endsWith(".cls"))).toBe(true);
+    expect(readdirSync(path.join(r.dir, "part-2"), { recursive: true }).some((f) => String(f).endsWith(".cls"))).toBe(true);
   });
 
-  it("removes the work folders of runs that died", async () => {
+  it("removes the folders of runs that died, and of earlier versions, but not other orgs'", async () => {
     const dir = tmp();
-    mkdirSync(path.join(dir, `.retrieve-${ORG_ID}-dead`, "part-1"), { recursive: true });
-    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
-    expect(readdirSync(dir)).toEqual([ORG_ID]);
+    for (const f of [`.retrieve-${ORG_ID}-dead`, `.old-${ORG_ID}-1`, ORG_ID, `${ORG_ID}-dead`, "00D000000000002AAA-x"]) mkdirSync(path.join(dir, f, "part-1"), { recursive: true });
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
+    expect(readdirSync(dir).sort()).toEqual(["00D000000000002AAA-x", path.basename(r.dir), `${ORG_ID}.json`].sort());
   });
 
   it("keeps an object's layouts with it", () => {

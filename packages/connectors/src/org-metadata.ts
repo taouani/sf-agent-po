@@ -1,7 +1,7 @@
 // Retrieves an org's metadata through the user's Salesforce CLI, in metadata format, for the
 // metadata index (decision B). Read-only: it lists and retrieves, never deploys.
 
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseMetadataXml } from "@sf-agent-po/core";
 import { defaultSfRunner, type SfRunner } from "./salesforce.js";
@@ -153,7 +153,10 @@ export interface RetrieveOptions {
   targetOrg: string;
   /** The org's id and alias, when the caller already asked `sf org display`. */
   org?: { id: string; alias?: string };
-  /** Where the org's folders go: the retrieval replaces `<dir>/<org id>`. */
+  /**
+   * Where the org's folders go: each retrieval gets `<dir>/<org id>-<suffix>`, and
+   * `<dir>/<org id>.json` names the last complete one.
+   */
   dir: string;
   types?: readonly string[];
   /**
@@ -219,11 +222,14 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   if (!orgId) throw new Error(`sf org display gave no org id for ${targetOrg}.`);
 
   await mkdir(options.dir, { recursive: true });
-  // Work folders of runs that died (the caller holds the lease, so none is alive).
-  for (const f of await readdir(options.dir)) if (f.startsWith(`.retrieve-${orgId}-`) || f.startsWith(`.old-${orgId}-`)) await remove(path.join(options.dir, f));
-  // Work in a folder of its own; the CLI is given relative paths only, so a user name with a
-  // space in the workspace path never reaches a shell.
-  const work = await mkdtemp(path.join(options.dir, `.retrieve-${orgId}-`));
+  // Folders of runs that died, and of earlier versions (the caller holds the lease, so no
+  // other run is alive). The last complete retrieval stays until a new one replaces it.
+  await removeStale(options.dir, orgId, await currentRetrieval(options.dir, orgId));
+  // Work in a folder of its own, which becomes the retrieval: folders are never renamed,
+  // because Windows refuses to while an antivirus or an editor still holds new files in them.
+  // The CLI is given relative paths only, so a user name with a space in the workspace path
+  // never reaches a shell.
+  const work = await mkdtemp(path.join(options.dir, `${orgId}-`));
   try {
     // The CLI refuses to list or retrieve outside a Salesforce project, so the work folder
     // is a minimal one. Retrieval goes to metadata folders, never into its package folder.
@@ -275,51 +281,51 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       }
     }
     if (n > 1) await mergeProfiles(work, Array.from({ length: n }, (_, i) => `part-${i + 1}`));
-    // Only the retrieved parts are kept: the manifests, the project file and whatever the CLI
-    // left (.sf, .sfdx) go, and the project file would otherwise steer the scan.
-    for (const f of await readdir(work)) if (!/^part-\d+$/.test(f)) await remove(path.join(work, f));
-    // The last retrieval is set aside, the new one moved in, and only then the old one removed.
-    const dest = path.join(options.dir, orgId);
-    const old = path.join(options.dir, `.old-${orgId}-${Date.now()}`);
-    const had = await rename(dest, old).then(
-      () => true,
-      (err: NodeJS.ErrnoException) => {
-        if (err.code === "ENOENT") return false;
-        throw err;
-      },
-    );
-    try {
-      await renameRetrying(work, dest);
-    } catch (err) {
-      if (had) await rename(old, dest).catch(() => {});
-      throw err;
-    }
-    if (had) await remove(old);
+    // Only the retrieved parts are kept. The project file must go, as it would steer the scan
+    // to its empty package folder; the manifests and what the CLI left (.sf, .sfdx) may stay
+    // if Windows holds them, and go with the folder later.
+    await rm(path.join(work, "sfdx-project.json"), { force: true, maxRetries: 10, retryDelay: 300 });
+    for (const f of await readdir(work)) if (!/^part-\d+$/.test(f)) await remove(path.join(work, f)).catch(() => {});
+    const retrievedAt = new Date().toISOString();
+    // A small file names the new retrieval, and only then are the earlier ones removed.
+    await writeFile(pointerFile(options.dir, orgId), JSON.stringify({ folder: path.basename(work), retrievedAt }, null, 2));
+    await removeStale(options.dir, orgId, path.basename(work));
     return {
-      dir: dest,
+      dir: work,
       orgId,
       ...(typeof info.alias === "string" ? { alias: info.alias } : {}),
       counts,
       parts: n,
       warnings,
-      retrievedAt: new Date().toISOString(),
+      retrievedAt,
     };
   } catch (err) {
-    await remove(work);
+    await remove(work).catch(() => {});
     throw err;
   }
 }
 
-/** A rename, tried again for a few seconds while Windows holds the new files (EPERM, EBUSY). */
-async function renameRetrying(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await rename(from, to);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (attempt >= 10 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw err;
-      await new Promise((r) => setTimeout(r, 300));
-    }
+/** The file naming an org's last complete retrieval. */
+const pointerFile = (dir: string, orgId: string) => path.join(dir, `${orgId}.json`);
+
+/** The folder name of an org's last complete retrieval, if there is one. */
+async function currentRetrieval(dir: string, orgId: string): Promise<string | undefined> {
+  try {
+    const folder = (JSON.parse(await readFile(pointerFile(dir, orgId), "utf8")) as { folder?: unknown }).folder;
+    return typeof folder === "string" && folder.startsWith(`${orgId}-`) && !/[\\/]/.test(folder) ? folder : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Removes an org's retrieval folders except `keep`, and those of earlier versions (`<org id>`,
+ * `.retrieve-…`, `.old-…`). A folder Windows will not let go of yet is left for the next run.
+ */
+async function removeStale(dir: string, orgId: string, keep: string | undefined): Promise<void> {
+  for (const f of await readdir(dir)) {
+    const stale = f === orgId || f.startsWith(`.retrieve-${orgId}-`) || f.startsWith(`.old-${orgId}-`) || (f.startsWith(`${orgId}-`) && f !== keep);
+    if (stale) await remove(path.join(dir, f)).catch(() => {});
   }
 }
 
