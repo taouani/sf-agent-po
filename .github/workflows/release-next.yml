@@ -17,6 +17,10 @@ on:
         description: "Build, check and pack, but do not publish"
         type: boolean
         default: true
+      provenance:
+        description: "Sign the package with npm provenance (untick only while Sigstore's transparency log is down)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -58,21 +62,35 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: node scripts/pack-next.mjs --smoke --smoke-server
       # Values reach the scripts through the environment, never inside them.
+      # Provenance is signed before anything is uploaded, and Sigstore's transparency log
+      # sometimes answers 500 (TLOG_CREATE_ENTRY_ERROR): the publish is tried three times, and
+      # an attempt that failed after npm accepted the version counts as done.
       - name: Publish
         if: ${{ !inputs.dry-run }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          PROVENANCE: ${{ inputs.provenance }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::The NPM_TOKEN secret is not set"; exit 1; fi
-          npm publish ".pack-next/sf-agent-po-$VERSION.tgz" --tag next --access public --provenance
+          set -- ".pack-next/sf-agent-po-$VERSION.tgz" --tag next --access public
+          if [ "$PROVENANCE" = "true" ]; then set -- "$@" --provenance; fi
+          for attempt in 1 2 3; do
+            if npm publish "$@"; then exit 0; fi
+            if npm view "sf-agent-po@$VERSION" version > /dev/null 2>&1; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
+            if [ "$attempt" -lt 3 ]; then echo "Attempt $attempt failed; trying again in $((attempt * 60)) s"; sleep $((attempt * 60)); fi
+          done
+          echo "::error::The publish failed three times. If the error is TLOG_CREATE_ENTRY_ERROR, Sigstore's transparency log is down (https://status.sigstore.dev): run again later, or untick provenance."
+          exit 1
       - name: Summary
         env:
           VERSION: ${{ steps.version.outputs.version }}
           DRY_RUN: ${{ inputs.dry-run }}
+          PROVENANCE: ${{ inputs.provenance }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run: sf-agent-po@$VERSION was built and checked, not published." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Published sf-agent-po@$VERSION with the tag next: https://www.npmjs.com/package/sf-agent-po" >> "$GITHUB_STEP_SUMMARY"
+            note=""; if [ "$PROVENANCE" != "true" ]; then note=" (without provenance)"; fi
+            echo "Published sf-agent-po@$VERSION with the tag next$note: https://www.npmjs.com/package/sf-agent-po" >> "$GITHUB_STEP_SUMMARY"
           fi

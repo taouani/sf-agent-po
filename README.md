@@ -276,7 +276,7 @@ The new code lives in npm workspaces under `packages/`:
   and the content bundled inside, then installs it in an empty folder and runs it (CI does
   this on the three systems). Nothing is published by it: the `Release next` workflow
   publishes `sf-agent-po@next` to npm, only when started by hand from main, after the checks,
-  the tests and both smoke tests, with provenance (it runs in the `npm-next` environment, which holds the `NPM_TOKEN` secret and can require
+  the tests and both smoke tests, with provenance (retried when Sigstore's transparency log fails, and optional while it is down; it runs in the `npm-next` environment, which holds the `NPM_TOKEN` secret and can require
   an approval, and it needs a new
   `-next.n` version in `packages/mcp/package.json` each time; it is a dry run by default). It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
