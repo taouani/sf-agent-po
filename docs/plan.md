@@ -2,7 +2,7 @@
 
 > Copy of the [sf-agent-po v1 plan](https://claude.ai/artifact/FHCBeeVFd6Y4pCsSkPpWG8) Claude Doc, which stays the working version. Agreed with Tarek on 6 Nov 2026; progress updated on 7 Nov 2026. The two diagrams are only in the doc.
 
-sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](https://claude.ai/artifact/JBucxLtXXBCrmhTQVjDSde).
+sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](https://claude.ai/artifact/JBucxLtXXBCrmhTQVjDSde).
 
 **Status on 7 Nov 2026.** Phases 0 to 3 are built and merged (PRs #6 to #41), about four months ahead of the roadmap; 1.0.0-next.4 is on npm and next.5 is ready. The one open item from those phases is the evaluation baseline, which waits on OpenRouter credit. Section 8 has the progress, limitations, backlog and what is needed from you.
 
@@ -38,7 +38,7 @@ You made 21 decisions on 6 Nov 2026. You accepted every recommendation except on
 | RT1 | Model runtime (7 Nov 2026) | The WebAssembly build of ONNX Runtime and a pure-JS tokenizer, bundled in the package (about 16 MB, no native code) | The native runtime added about 550 MB to every install; the cost is about 3 times slower masking and about 900 MB peak memory |
 | KC1 | Where the vault key lives (7 Nov 2026) | OS tools (macOS security, Windows DPAPI, Linux secret-tool), a 0600 key file with a warning as fallback | No native keyring module to install |
 | PB1 | How pre-releases ship (7 Nov 2026) | One sf-agent-po package on npm under the next tag, published only by a workflow you start; trusted publishing replaces the npm token before January 2027 | Nothing publishes without you; users run npx sf-agent-po@next |
-| RM1 | Using the time gained (7 Nov 2026) | 1.0 stays on 30 June 2027; four items join v1: traceability matrix in Confluence, Jira sub-tasks from a detailed design, incremental re-index, reports, dashboards and integrations in the index | Phases 0 to 3 finished about four months early; extra scope uses the time without moving the date |
+| RM1 | Using the time gained (7 Nov 2026) | 1.0 stays on 30 June 2027; four items join v1: a traceability matrix in Confluence; Jira sub-tasks from a detailed design; incremental re-index; reports, dashboards and integrations in the index | Phases 0 to 3 finished about four months early; extra scope uses the time without moving the date |
 
 ## 2. Target architecture
 
@@ -138,7 +138,7 @@ The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](h
 
 Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put the end of phase 3 at G2 on 5 March 2027. Every PR had a separate review agent; 502 tests pass on Windows, macOS and Linux. The build is no longer the bottleneck: what limits the next phases is evaluation credit and your live testing.
 
-**Decision RM1 (7 Nov 2026).** 1.0 stays on 30 June 2027, and the time gained goes to items that were Could or after 1.0. You confirmed four items the same day. The traceability matrix in Confluence and Jira sub-tasks from a detailed design go to phase 4. Incremental re-index, and reports, dashboards and integrations in the index, go to phase 5.
+**Decision RM1 (7 Nov 2026).** 1.0 stays on 30 June 2027, and the time gained goes to items that were Could or after 1.0. You confirmed four items the same day. The traceability matrix in Confluence and Jira sub-tasks from a detailed design go to phase 4. Incremental re-index, and reports, dashboards and integrations in the index, go to phase 5. Phase weeks stay the original estimates: the four months gained absorb these items, so the buffer before 30 June 2027 is unchanged or larger.
 
 ### Achieved
 
@@ -157,7 +157,7 @@ Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put 
 
 ### Limitations today
 
-- **The index cannot see inside dynamic code.** Queries and searches built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced.
+- **The index cannot see inside dynamic code.** Queries and searches built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced yet (phase 5 adds reports and integrations, RM1).
 - **The dynamic Apex flags need a re-index.** An index built before next.5 has none.
 - **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory.
 - **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace and masks it each time a tool returns it to the model. Documents are masked when added (AR1) and shown on the input review page; metadata text is not.
@@ -165,6 +165,7 @@ Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put 
 - **Some paths are tested with fakes only.** v1 publishing to Confluence and Jira has not been tried live, as far as I know.
 - **Hosts.** Claude Code is not tested; Cursor reports its version as "cursor-vscode 1.0.0".
 - **Two loaders.** The 0.x `context_add_file` still uses the old file loader until the old server is removed.
+- **Remote repos need a local checkout.** v1 indexes an org or a local folder; cloning from GitHub, GitLab or Azure DevOps still works only through the 0.x server.
 - **Publishing uses an npm token.** npm stops accepting such tokens for direct publish around January 2027.
 
 ### Backlog
@@ -174,12 +175,13 @@ Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put 
 | Eval baseline on 0.x | OpenRouter key has no credit | Before G3 |
 | Claude Code host check | You test it when ready | Phase 5 |
 | Trusted publishing (no npm token) | Needs a setting on npmjs.com | Before January 2027 |
+| Index GitHub, GitLab and Azure DevOps repos directly | The clone connector exists and is tested, but only 0.x uses it; v1 indexes an org or a local checkout | Phase 5, before the old server is removed |
 | Cursor version string | Cosmetic | Phase 5 |
 | Batch masking calls | Speed only; correct today | Phase 5 |
 | Move 0.x `context_add_file` to the new loader | Goes away with the old server | Phase 5 |
 | Metadata text on the input review page | Needs your call on whether to review it | Open question |
 | Native model runtime as an option | RT1 chose WebAssembly for install size | After 1.0 |
-| Web app, Atlassian Data Center, Azure DevOps Boards, telemetry | Won't, by the goal | After 1.0 |
+| Web app, Atlassian Data Center, Azure DevOps Boards, telemetry | Won't for v1 in the feature list (FE1) | After 1.0, if ever |
 
 ### Inputs needed from you
 
