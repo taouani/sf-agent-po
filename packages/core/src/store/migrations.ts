@@ -38,4 +38,14 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: "document order",
+    sql: `
+      -- Documents keep the order they were added in. Ties on added_at (one batch,
+      -- or a whole 0.x import) used to fall back to the id hash.
+      ALTER TABLE document ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+      UPDATE document SET seq = rowid;
+    `,
+  },
 ];

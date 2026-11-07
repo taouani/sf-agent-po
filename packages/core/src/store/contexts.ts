@@ -34,6 +34,15 @@ export type NewDocument = Pick<SourceDocument, "kind" | "title" | "source" | "co
   masked?: boolean;
 };
 
+/** A whole context as the importer hands it over, with its original dates. */
+export interface ImportedContext {
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  settings?: Record<string, unknown>;
+  documents: (NewDocument & { addedAt: string })[];
+}
+
 export interface ContextInfo {
   name: string;
   createdAt: string;
@@ -125,7 +134,7 @@ export class ContextRepository {
   }
 
   documents(name: string): SourceDocument[] {
-    const rows = this.db.prepare("SELECT * FROM document WHERE context = ? ORDER BY added_at, id").all(name) as unknown as DocumentRow[];
+    const rows = this.db.prepare("SELECT * FROM document WHERE context = ? ORDER BY seq, id").all(name) as unknown as DocumentRow[];
     return rows.map(toDocument);
   }
 
@@ -171,27 +180,49 @@ export class ContextRepository {
     });
   }
 
+  /**
+   * Imports a whole context with its own dates, in one transaction, for the
+   * 0.x JSON importer. Documents keep their id, which depends only on the
+   * source. An existing context is left alone unless `replace` is set, in
+   * which case it is deleted first. Returns false when it was left alone.
+   */
+  importContext(ctx: ImportedContext, { replace = false } = {}): boolean {
+    validateContextName(ctx.name);
+    return this.database.write(() => {
+      if (this.get(ctx.name)) {
+        if (!replace) return false;
+        this.db.prepare("DELETE FROM context WHERE name = ?").run(ctx.name);
+      }
+      this.db
+        .prepare("INSERT INTO context (name, created_at, updated_at, settings) VALUES (?, ?, ?, ?)")
+        .run(ctx.name, ctx.createdAt, ctx.updatedAt, JSON.stringify(ctx.settings ?? {}));
+      for (const d of ctx.documents) this.put(ctx.name, d, d.addedAt, d.addedAt);
+      return true;
+    });
+  }
+
   delete(name: string): boolean {
     return this.database.write(() => this.db.prepare("DELETE FROM context WHERE name = ?").run(name).changes > 0);
   }
 
   /**
-   * Inserts or replaces a document. Replacing keeps the original `added_at`
-   * and position (0.x moved a re-added document to the end and reset its
-   * date; no caller relied on that).
+   * Inserts or replaces a document. A new document goes to the end of the
+   * context (`seq`). Replacing keeps the original `added_at` and position
+   * (0.x moved a re-added document to the end and reset its date; no caller
+   * relied on that).
    */
   private put(name: string, d: NewDocument, now: string, addedAt?: string): void {
     const id = documentId(d.source);
     const { changes } = this.db
       .prepare(
-        `INSERT INTO document (context, id, kind, title, source, content, metadata, masked, added_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO document (context, id, kind, title, source, content, metadata, masked, added_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM document WHERE context = ?))
          ON CONFLICT (context, id) DO UPDATE SET
            kind = excluded.kind, title = excluded.title, content = excluded.content,
            metadata = excluded.metadata, masked = excluded.masked, updated_at = excluded.updated_at
          WHERE document.source = excluded.source`,
       )
-      .run(name, id, d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now);
+      .run(name, id, d.kind, d.title, d.source, d.content, JSON.stringify(d.metadata ?? {}), d.masked ? 1 : 0, addedAt ?? now, now, name);
     if (changes === 0) {
       // Two different sources hashed to the same id: never let one overwrite the other.
       throw new Error(`Document id ${id} is already used by another source in context "${name}".`);
