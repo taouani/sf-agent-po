@@ -88,6 +88,16 @@ const CORE = String.raw`([A-Z][A-Z0-9_\\]*?)\\?_([1-9][0-9]*)`;
 const LABEL_IN_TEXT = new RegExp(String.raw`\\?\[${CORE}\\?\]|<${CORE}>|&lt;${CORE}&gt;`, "g");
 const LABEL_EXACT = /^\[?([A-Z][A-Z0-9_]*?)_([1-9][0-9]*)\]?$/;
 
+/** The pseudonyms written in `text`, in any form unmask accepts, as "[TYPE_n]", each once. */
+export function pseudonymsIn(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of text.matchAll(LABEL_IN_TEXT)) {
+    const type = (m[1] ?? m[3] ?? m[5])!.replace(/\\/g, "");
+    found.add(`[${type}_${m[2] ?? m[4] ?? m[6]}]`);
+  }
+  return [...found];
+}
+
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 /**
@@ -118,6 +128,8 @@ export class Vault {
       ensureContext: db.prepare("INSERT OR IGNORE INTO context (name, created_at, updated_at) VALUES (?, ?, ?)"),
       get: db.prepare("SELECT lookup, original FROM pseudonym WHERE context = ? AND type = ? AND n = ?"),
       counts: db.prepare("SELECT type, count(*) AS c FROM pseudonym WHERE context = ? GROUP BY type"),
+      all: db.prepare("SELECT type, n, lookup, original FROM pseudonym WHERE context = ? AND type <> ? ORDER BY type, n"),
+      total: db.prepare("SELECT count(*) AS c FROM pseudonym WHERE context = ?"),
     };
     const check = vaultKeyCheck(key);
     database.write(() => {
@@ -227,6 +239,20 @@ export class Vault {
       if (value === undefined) return whole;
       return entity ? escapeHtml(value) : value;
     });
+  }
+
+  /**
+   * The values a context already has pseudonyms for, so later documents mask them even
+   * where the rules and the model miss them. Literals are left out: they are not personal data.
+   */
+  known(context: string): { type: string; value: string }[] {
+    const rows = this.sql.all.all(context, LITERAL) as { type: string; n: number; lookup: Uint8Array; original: Uint8Array }[];
+    return rows.map((r) => ({ type: r.type, value: this.decrypt(this.aad(context, pseudonymLabel(r.type, r.n), r.lookup), r.original) }));
+  }
+
+  /** How many pseudonyms a context has in all; changes whenever one is added. */
+  size(context: string): number {
+    return (this.sql.total.get(context) as { c: number }).c;
   }
 
   /** How many pseudonyms a context has, by type. */

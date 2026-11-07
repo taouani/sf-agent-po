@@ -172,6 +172,31 @@ export class ContextRepository {
     });
   }
 
+  /**
+   * Replaces `expected` with `doc` only if it is still as it was read, for slow work
+   * (masking) done outside a transaction. Returns false when the document changed or was
+   * removed meanwhile.
+   */
+  replaceIfUnchanged(name: string, expected: SourceDocument, doc: NewDocument): boolean {
+    if (doc.source !== expected.source) throw new Error("replaceIfUnchanged cannot change a document's source.");
+    return this.database.write(() => {
+      const current = this.getDocument(name, documentId(doc.source));
+      const same =
+        current &&
+        current.source === expected.source &&
+        current.updatedAt === expected.updatedAt &&
+        current.masked === expected.masked &&
+        current.title === expected.title &&
+        current.content === expected.content &&
+        JSON.stringify(current.metadata) === JSON.stringify(expected.metadata);
+      if (!same) return false;
+      const now = new Date().toISOString();
+      this.put(name, doc, now);
+      this.touch(name, now);
+      return true;
+    });
+  }
+
   removeDocument(name: string, id: string): boolean {
     return this.database.write(() => {
       const { changes } = this.db.prepare("DELETE FROM document WHERE context = ? AND id = ?").run(name, id);
