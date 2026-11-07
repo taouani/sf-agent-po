@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
-import { BackgroundIndexer, indexOrg, indexProject, projectSource } from "../src/indexing.js";
+import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
 import { readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
@@ -297,5 +297,24 @@ describe("indexing", () => {
     // A finished run can be started again.
     expect(indexer.start({ kind: "org", targetOrg: "dev" }).job).not.toBe(a.job);
     await indexer.settle();
+  });
+});
+
+describe("retrieve warnings and unretrievable members", () => {
+  it("counts the components the org listed but did not return, by type", () => {
+    const missing = (t: string, n: string) => `Entity of type '${t}' named '${n}' cannot be found`;
+    expect(summarizeWarnings([missing("ListView", "A.x"), missing("ListView", "B.y"), "Some other problem", missing("CustomField", "C.z__c")])).toEqual([
+      "2 ListView components were listed but not returned, such as A.x, B.y",
+      "CustomField C.z__c was listed but not returned",
+      "Some other problem",
+    ]);
+  });
+
+  it("leaves historical trending objects out of the listing", () => {
+    const { entries } = readManifest(manifest({ CustomObject: ["Opportunity__hd", "Policy__c"], CustomField: ["Opportunity__hd.Amount__c", "Policy__c.Status__c"] }));
+    expect(entries).toEqual([
+      { type: "CustomObject", members: ["Policy__c"] },
+      { type: "CustomField", members: ["Policy__c.Status__c"] },
+    ]);
   });
 });

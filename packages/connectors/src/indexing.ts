@@ -62,6 +62,24 @@ async function scrubbing<T>(workspace: string | undefined, step: () => Promise<T
   }
 }
 
+/**
+ * The CLI's retrieve warnings, with the many "cannot be found" ones (components the org lists
+ * but does not return, such as list views of some standard objects) counted by type.
+ */
+export function summarizeWarnings(warnings: readonly string[]): string[] {
+  const missing = new Map<string, string[]>();
+  const other: string[] = [];
+  for (const w of warnings) {
+    const m = /^Entity of type '([^']+)' named '([^']+)' cannot be found/.exec(w);
+    if (m) missing.set(m[1]!, [...(missing.get(m[1]!) ?? []), m[2]!]);
+    else other.push(w);
+  }
+  const counted = [...missing].sort(([, a], [, b]) => b.length - a.length).map(([type, names]) =>
+    names.length === 1 ? `${type} ${names[0]} was listed but not returned` : `${names.length} ${type} components were listed but not returned, such as ${names.slice(0, 3).join(", ")}`,
+  );
+  return [...counted, ...other];
+}
+
 /** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */
 export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
   const revision = await gitRevision(dir);
@@ -103,7 +121,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         // Files came back, but nothing the index reads: the retrieval went wrong somewhere.
         if (!parsed.components.some((c) => !c.missing)) throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
         // What the org could not return is reported with what could not be read.
-        const warnings = retrieved.warnings.map((reason) => ({ file: "(retrieve)", reason }));
+        const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };

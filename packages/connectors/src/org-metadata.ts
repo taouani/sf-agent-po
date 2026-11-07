@@ -32,6 +32,12 @@ const PROFILE_LISTS = [
   "fieldPermissions", "flowAccesses", "layoutAssignments", "objectPermissions", "pageAccesses", "recordTypeVisibilities", "tabVisibilities",
 ];
 
+/**
+ * Members an org lists but never returns: those of historical trending objects (`__hd`),
+ * which the Metadata API cannot retrieve.
+ */
+const unretrievable = (member: string) => /__hd(?:$|\.)/.test(member);
+
 /** Org aliases and usernames passed to the CLI: nothing a shell or the CLI could read as more. */
 const ORG_ARG = /^[\w.@+-]+$/;
 
@@ -55,7 +61,7 @@ export function readManifest(xml: string, types: readonly string[] = DEFAULT_ORG
   for (const t of asList(pkg.types) as Record<string, unknown>[]) {
     const name = typeof t.name === "string" ? t.name : undefined;
     if (!name || !wanted.has(name)) continue;
-    const members = (asList(t.members) as unknown[]).filter((m): m is string => typeof m === "string" && m !== "").sort();
+    const members = (asList(t.members) as unknown[]).filter((m): m is string => typeof m === "string" && m !== "" && !unretrievable(m)).sort();
     if (members.length) entries.push({ type: name, members });
   }
   return { entries, ...(typeof pkg.version === "string" ? { version: pkg.version } : {}) };

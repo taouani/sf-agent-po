@@ -40,4 +40,28 @@ describe("index command", () => {
       "  objects/X.object: not XML",
     ]);
   });
+
+  it("tells what the org did not return apart from what could not be read", () => {
+    const lines = describeSnapshot({
+      id: 1,
+      source: "org:00D",
+      kind: "org",
+      status: "ready",
+      startedAt: "2026-11-07T00:00:00Z",
+      stats: {
+        counts: { ApexClass: 1 },
+        skipped: [
+          { file: "(retrieve)", reason: "200 ListView components were listed but not returned, such as A.B" },
+          { file: "classes/X.cls", reason: "too long" },
+        ],
+        skippedCount: 2,
+      },
+    });
+    expect(lines.slice(2)).toEqual([
+      "The org did not return everything it listed:",
+      "  200 ListView components were listed but not returned, such as A.B",
+      "1 file could not be read:",
+      "  classes/X.cls: too long",
+    ]);
+  });
 });

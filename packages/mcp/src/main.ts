@@ -14,9 +14,10 @@ async function main(): Promise<void> {
   const { ContextRepository, Database, Masker, openVault } = await import("@sf-agent-po/core");
   const { ApprovalServer } = await import("./approval/server.js");
   const { createServer } = await import("./server.js");
-  const { databaseFile, lazyDetector, lazyRecognizer } = await import("./startup.js");
+  const { databaseFile, ensureWorkspace, lazyDetector, lazyRecognizer } = await import("./startup.js");
   const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
   const workspace = path.resolve(process.env.SF_AGENT_WORKSPACE ?? path.join(process.cwd(), ".sf-agent"));
+  ensureWorkspace(workspace);
   const database = new Database(databaseFile(workspace));
   let opened: ReturnType<typeof openVault>;
   try {
@@ -73,9 +74,8 @@ async function index(argv: string[]): Promise<void> {
     if ("help" in opts) return console.log(opts.help);
     const { Database, MetadataIndex } = await import("@sf-agent-po/core");
     const { indexTarget } = await import("@sf-agent-po/connectors");
-    const { databaseFile } = await import("./startup.js");
-    const { mkdirSync } = await import("node:fs");
-    mkdirSync(opts.workspace, { recursive: true });
+    const { databaseFile, ensureWorkspace } = await import("./startup.js");
+    ensureWorkspace(opts.workspace);
     database = new Database(databaseFile(opts.workspace));
     const metadata = new MetadataIndex(database);
     // Stopped with Ctrl-C: the run is marked failed, so that the next one need not wait for

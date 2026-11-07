@@ -16,7 +16,7 @@ export { isPrerelease, reviewsInputs } from "./approval/settings.js";
 export { Intake, IntakeError, MAX_ROUNDS, pageReviewer, reviewText, type ImageInput, type IntakeOptions, type IntakeResult, type Reviewer, type SetAside } from "./inputs.js";
 export { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 export { createServer, describeDoc, MAX_IMAGES, type ServerOptions } from "./server.js";
-export { databaseFile, lazyDetector, lazyRecognizer } from "./startup.js";
+export { databaseFile, ensureWorkspace, lazyDetector, lazyRecognizer } from "./startup.js";
 export { artifactSource, getArtifact, KeyedLock, pageLink, saveArtifact, updateArtifactMeta, type Artifact, type ArtifactMeta } from "./artifacts.js";
 export { registerPublishTools, unmaskStorage, type PublishKit } from "./publish.js";
 export { type JiraMapping } from "./artifacts.js";
