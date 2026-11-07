@@ -12,6 +12,7 @@ import { requestDigest, type ApprovalServer, type PublishRequest } from "./appro
 import { describeCounts } from "./approval/page.js";
 import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
+import { registerPublishTools } from "./publish.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
 export interface ServerOptions {
@@ -136,6 +137,8 @@ export function createServer(opts: ServerOptions): McpServer {
         progress.stop();
       }
     };
+
+  registerPublishTools(server, { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName });
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
 
