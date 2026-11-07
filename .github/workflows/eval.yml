@@ -2,8 +2,9 @@ name: Eval
 
 # Runs the evaluation scenarios against the MCP server with real models.
 # It calls paid APIs, so it only runs by hand. Keys come from the repository's
-# Actions secrets ANTHROPIC_API_KEY, OPENAI_API_KEY and XAI_API_KEY; a model whose
-# key is missing fails with a clear message.
+# Actions secrets ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY
+# (one key for many vendors: openrouter:anthropic/<model>); a model whose key is missing
+# fails with a clear message.
 
 on:
   workflow_dispatch:
@@ -45,6 +46,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           MODELS: ${{ inputs.models }}
           JUDGE: ${{ inputs.judge }}
           SCENARIOS: ${{ inputs.scenarios }}

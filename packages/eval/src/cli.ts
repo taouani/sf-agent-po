@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { createModel } from "./models.js";
+import { checkOpenRouterModels, createModel } from "./models.js";
 import { reportMarkdown } from "./report.js";
 import { runScenario, stdioServer, type ScenarioResult } from "./run.js";
 import { listScenarios } from "./scenario.js";
@@ -13,7 +13,8 @@ const USAGE = `Usage: sf-agent-eval --models <provider:model,...> [options]
 Runs every scenario with every model against the server, has a judge model score
 the output against each scenario's rubric, and writes report.md and results.json.
 
-  --models     Models to evaluate, e.g. anthropic:claude-opus-5-5,openai:<model>,xai:<model>
+  --models     Models to evaluate, e.g. anthropic:claude-opus-5-5,openai:<model>,xai:<model>,
+               or through OpenRouter: openrouter:anthropic/<model>,openrouter:x-ai/<model>
   --judge      Judge model (default: the first model)
   --scenarios  Scenario ids, comma-separated (default: all)
   --server     Command that starts the MCP server, split on spaces, or a JSON array
@@ -23,7 +24,7 @@ the output against each scenario's rubric, and writes report.md and results.json
   --max-turns  Turn limit per task (default: 40)
   --list       List the scenarios and exit
 
-Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY and XAI_API_KEY.`;
+Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY.`;
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -53,8 +54,11 @@ async function main(): Promise<number> {
   }
   const wanted = values.scenarios?.split(",").map((s) => s.trim()).filter(Boolean);
   const scenarios = wanted ? wanted.map((id) => all.find((s) => s.id === id) ?? fail(`Unknown scenario "${id}". Known: ${all.map((s) => s.id).join(", ")}`)) : all;
-  const models = values.models.split(",").map((m) => createModel(m.trim()));
+  const specs = values.models.split(",").map((m) => m.trim());
+  const models = specs.map((m) => createModel(m));
   const judge = values.judge ? createModel(values.judge) : models[0]!;
+  // After the cheap checks (the spec, the key): this one asks OpenRouter.
+  await checkOpenRouterModels([...specs, ...(values.judge ? [values.judge] : [])]);
 
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   const [command, ...args] = values.server ? serverCommand(values.server) : [process.execPath, join(repoRoot, "dist", "index.js")];

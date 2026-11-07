@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createModel, type CallTool, type ToolSpec } from "../src/index.js";
+import { checkOpenRouterModels, createModel, type CallTool, type ToolSpec } from "../src/index.js";
 
 const tools: ToolSpec[] = [
   { name: "design_save", description: "Saves a design.", inputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] } },
@@ -117,4 +117,81 @@ describe("OpenAI-compatible agent loop", () => {
     expect(toolMessages.map((m: any) => m.tool_call_id)).toEqual(["c1", "c2"]);
     expect(toolMessages[1].content).toMatch(/Invalid JSON/);
   });
+
+  /** A streamed completion, as OpenRouter sends it: chunks, then usage, then [DONE]. */
+  const streamed = (deltas: Record<string, unknown>[], finish: string) => {
+    const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices, ...extra })}\n\n`;
+    const body =
+      deltas.map((delta) => chunk([{ index: 0, delta, finish_reason: null }])).join("") +
+      chunk([{ index: 0, delta: {}, finish_reason: finish }]) +
+      chunk([], { usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } }) +
+      "data: [DONE]\n\n";
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  };
+
+  it("streams from OpenRouter with max_tokens, which it passes on to every vendor", async () => {
+    const urls: string[] = [];
+    const bodies: any[] = [];
+    const answers = [
+      streamed([{ role: "assistant", content: null, tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "design_save", arguments: '{"title":' } }] }, { tool_calls: [{ index: 0, function: { arguments: '"HLD"}' } }] }], "tool_calls"),
+      streamed([{ role: "assistant", content: "Do" }, { content: "ne." }], "stop"),
+      streamed([{ role: "assistant", content: "Fine." }], "stop"),
+    ];
+    const fakeFetch = (async (url: string, init: RequestInit) => {
+      urls.push(String(url));
+      bodies.push(JSON.parse(init.body as string));
+      return answers.shift()!;
+    }) as typeof fetch;
+    const model = createModel("openrouter:anthropic/claude-opus-5.5", { OPENROUTER_API_KEY: "k" }, fakeFetch);
+    const run = await model.runAgent("Draft.", tools, callTool);
+    expect(run).toMatchObject({ finalText: "Done.", turns: 2, stop: "done", inputTokens: 14, outputTokens: 6 });
+    expect(run.toolCalls).toEqual([{ name: "design_save", args: { title: "HLD" }, isError: false }]);
+    expect(await model.complete("Judge.", "Score this.")).toBe("Fine.");
+
+    expect(urls[0]).toMatch(/^https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
+    expect(bodies[0]).toMatchObject({ model: "anthropic/claude-opus-5.5", max_tokens: 32_000, stream: true, stream_options: { include_usage: true } });
+    expect(bodies[0].max_completion_tokens).toBeUndefined();
+    // The assistant turn goes back as the API knows it.
+    const assistant = bodies[1].messages.find((m: any) => m.role === "assistant");
+    expect(assistant.tool_calls[0]).toMatchObject({ id: "c1", function: { name: "design_save", arguments: '{"title":"HLD"}' } });
+    expect(assistant).not.toHaveProperty("parsed");
+    expect(() => createModel("openrouter:x-ai/grok", {})).toThrow(/OPENROUTER_API_KEY/);
+  });
 });
+
+describe("checkOpenRouterModels", () => {
+  const list = (async () =>
+    new Response(
+      JSON.stringify({
+        data: [
+          { id: "anthropic/claude-opus-5.5", created: 3 },
+          { id: "anthropic/claude-sonnet-4.5", created: 1 },
+          { id: "anthropic/claude-sonnet-5.5", created: 2 },
+          { id: "x-ai/grok-5", created: 1 },
+          { id: "x-ai/grok-5:free", created: 1 },
+        ],
+      }),
+    )) as unknown as typeof fetch;
+
+  it("accepts listed ids and routing variants, and names the vendor's newest models for an unknown one", async () => {
+    await expect(checkOpenRouterModels(["anthropic:claude-opus-5-5"], async () => fail())).resolves.toBeUndefined();
+    await expect(checkOpenRouterModels(["openrouter:anthropic/claude-opus-5.5", "openrouter:x-ai/grok-5:free", "openrouter:anthropic/claude-sonnet-5.5:nitro"], list)).resolves.toBeUndefined();
+    await expect(checkOpenRouterModels(["openrouter:anthropic/claude-opus-5-5"], list)).rejects.toThrow(
+      /"anthropic\/claude-opus-5-5" is not a model OpenRouter lists\. Its newest anthropic models: anthropic\/claude-opus-5\.5, anthropic\/claude-sonnet-5\.5, anthropic\/claude-sonnet-4\.5\./,
+    );
+  });
+
+  it("warns and goes on when the list cannot be read", async () => {
+    const warnings: string[] = [];
+    const html = (async () => new Response("<html>proxy</html>")) as unknown as typeof fetch;
+    const down = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    await expect(checkOpenRouterModels(["openrouter:anthropic/x"], html, (m) => warnings.push(m))).resolves.toBeUndefined();
+    await expect(checkOpenRouterModels(["openrouter:anthropic/x"], down, (m) => warnings.push(m))).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe("OpenRouter's model list could not be read (HTTP 503), so the model ids are not checked.");
+  });
+});
+
+function fail(): never {
+  throw new Error("fetched");
+}
