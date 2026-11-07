@@ -1,0 +1,257 @@
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { classify, Database, formulaCode, formulaFields, MetadataIndex, packagePath, parseMetadataXml, scanProject, type ParsedComponent } from "../src/index.js";
+
+const fixtures = join(import.meta.dirname, "fixtures", "metadata");
+const open: Database[] = [];
+afterEach(() => {
+  for (const db of open.splice(0)) db.close();
+});
+const fresh = () => {
+  const db = new Database(":memory:");
+  open.push(db);
+  return new MetadataIndex(db);
+};
+
+describe("classify", () => {
+  it("knows object files and their children in both formats", () => {
+    expect(classify("force-app/main/default/objects/Account/Account.object-meta.xml")).toEqual({ kind: "object", object: "Account" });
+    expect(classify("x/objects/Account/fields/Industry.field-meta.xml")).toEqual({ kind: "field", object: "Account", child: "Industry" });
+    expect(classify("x/objects/Account/validationRules/V.validationRule-meta.xml")).toEqual({ kind: "validationRule", object: "Account", child: "V" });
+    expect(classify("src/objects/Claim__c.object")).toEqual({ kind: "mdapiObject", object: "Claim__c" });
+    expect(classify("x/objects/Account/listViews/All.listView-meta.xml")).toBeUndefined();
+    expect(classify("x/classes/Foo.cls")).toBeUndefined();
+  });
+});
+
+describe("scanProject", () => {
+  it("reads objects, fields, record types and rules in source format", async () => {
+    const { components, edges, skipped } = await scanProject(join(fixtures, "source"));
+    const byName = new Map(components.map((c) => [`${c.type}:${c.name}`, c]));
+
+    const policy = byName.get("CustomObject:Policy__c")!;
+    expect(policy).toMatchObject({ label: "Policy", file: "force-app/main/default/objects/Policy__c/Policy__c.object-meta.xml" });
+    expect(policy.attrs).toMatchObject({ custom: true, sharingModel: "ReadWrite", nameField: { label: "Policy Number", type: "AutoNumber" } });
+    // Free text, with entities decoded, goes to text, never to attrs.
+    expect(policy.text).toBe("Insurance policy sold by Jeanne Dupont's team");
+
+    expect(byName.get("CustomField:Policy__c.Holder__c")).toMatchObject({ parent: "Policy__c", attrs: { type: "Lookup", referenceTo: ["Account"] } });
+    const status = byName.get("CustomField:Policy__c.Status__c")!;
+    // Picklist values can name clients: they are free text, and attrs only count them.
+    expect(status.attrs).toMatchObject({ type: "Picklist", required: true, restricted: true, picklistValues: 2 });
+    expect(JSON.stringify(status.attrs)).not.toContain("Lapsed");
+    expect(status.text).toBe("Active\nLapsed");
+    expect(byName.get("RecordType:Policy__c.Motor")).toMatchObject({ label: "Motor", attrs: { active: true } });
+    expect(byName.get("ValidationRule:Policy__c.Premium_Required")!.text).toBe("An active policy needs a premium");
+
+    // Account has only a field folder: it is in the project, without an object file.
+    expect(byName.get("CustomObject:Account")).toMatchObject({ file: "force-app/main/default/objects/Account", attrs: { custom: false } });
+    expect(byName.get("CustomObject:Account")!.missing).toBeUndefined();
+    // Referenced but outside the project: placeholders.
+    expect(byName.get("CustomObject:User")?.missing).toBe(true);
+    expect(byName.get("CustomField:Account.Industry")).toMatchObject({ missing: true, parent: "Account" });
+
+    expect(skipped).toEqual([{ file: "force-app/main/default/objects/Account/fields/Broken__c.field-meta.xml", reason: "a document type declaration is not read" }]);
+
+    const has = (from: string, kind: string, to: string) => edges.some((e) => `${e.from.type}:${e.from.name}` === from && e.kind === kind && `${e.to.type}:${e.to.name}` === to);
+    expect(has("CustomField:Policy__c.Holder__c", "references", "CustomObject:Account")).toBe(true);
+    expect(has("CustomField:Policy__c.Holder__c", "part_of", "CustomObject:Policy__c")).toBe(true);
+    expect(has("ValidationRule:Policy__c.Premium_Required", "reads", "CustomField:Policy__c.Status__c")).toBe(true);
+    expect(has("ValidationRule:Policy__c.Premium_Required", "reads", "CustomField:Policy__c.Premium__c")).toBe(true);
+    // Through the lookup to Account, then the standard Owner relationship to User.
+    expect(has("CustomField:Policy__c.Holder_Industry__c", "reads", "CustomField:Account.Industry")).toBe(true);
+    expect(has("CustomField:Policy__c.Holder_Industry__c", "reads", "CustomField:Account.OwnerId")).toBe(true);
+    expect(has("CustomField:Policy__c.Holder_Industry__c", "reads", "CustomField:User.Email")).toBe(true);
+    // Function names, literals and $User are not fields.
+    expect(edges.some((e) => /ISPICKVAL|ISBLANK|Active|Alias|admin/.test(e.to.name))).toBe(false);
+  });
+
+  it("reads children inside .object files in metadata format", async () => {
+    const { components, edges, skipped } = await scanProject(join(fixtures, "mdapi"));
+    expect(skipped).toEqual([]);
+    const names = components.filter((c) => !c.missing).map((c) => `${c.type}:${c.name}`).sort();
+    expect(names).toEqual([
+      "CustomField:Claim__c.Amount__c",
+      "CustomField:Claim__c.Policy__c",
+      "CustomObject:Claim__c",
+      "RecordType:Claim__c.Theft",
+      "ValidationRule:Claim__c.Amount_Positive",
+    ]);
+    expect(components.find((c) => c.name === "Claim__c.Amount__c")!.file).toBe("src/objects/Claim__c.object");
+    expect(edges).toContainEqual({ from: { type: "ValidationRule", name: "Claim__c.Amount_Positive" }, to: { type: "CustomField", name: "Claim__c.Amount__c" }, kind: "reads" });
+    expect(components.find((c) => c.name === "Policy__c")).toMatchObject({ type: "CustomObject", missing: true });
+  });
+});
+
+describe("formulaFields", () => {
+  const fields = new Map<string, Map<string, ParsedComponent>>([
+    ["case", new Map([["contract__c", { type: "CustomField", name: "Case.Contract__c", attrs: { referenceTo: ["Contract__c"] }, text: "" }]])],
+    ["contract__c", new Map()],
+  ]);
+  const of = (o: string) => fields.get(o.toLowerCase());
+  const objects: Record<string, string> = { case: "Case", contract__c: "Contract__c" };
+  const named = (o: string) => objects[o.toLowerCase()];
+
+  it("matches names without case and keeps the declared spelling", () => {
+    expect(formulaFields("contract__R.owner.name", "Case", of, named).sort()).toEqual(["Case.Contract__c", "Contract__c.ownerId", "User.name"]);
+  });
+
+  it("knows where standard relationships lead, and stops where it cannot tell", () => {
+    expect(formulaFields("Parent.Name", "Account", of).sort()).toEqual(["Account.Name", "Account.ParentId"]);
+    expect(formulaFields("Who.Name & What.Name", "Task", of).sort()).toEqual(["Task.WhatId", "Task.WhoId"]);
+    expect(formulaFields("Manager.Email & Foo.Bar", "User", of).sort()).toEqual(["User.Email", "User.FooId", "User.ManagerId"]);
+    // Polymorphic syntax names the type; person account relationships end in __pr.
+    expect(formulaFields("Owner:User.Email", "Case", of, named).sort()).toEqual(["Case.OwnerId", "User.Email"]);
+    expect(formulaFields("Advisor__pr.Phone", "Account", of).sort()).toEqual(["Account.Advisor__pc"]);
+  });
+
+  it("leaves out numbers, and strips comments and strings in order", () => {
+    expect(formulaFields("Amount__c * 1.5e3", "Case", of)).toEqual(["Case.Amount__c"]);
+    expect(formulaFields('"a/*" & Amount__c & "*/" & Other__c', "Case", of).sort()).toEqual(["Case.Amount__c", "Case.Other__c"]);
+    expect(formulaCode('A /* "x" */ & "/* y" & B')).toBe("A   &   & B");
+  });
+
+  it("stays fast on unclosed comments and strings, and on huge formulas", () => {
+    const started = Date.now();
+    formulaFields("/* ".repeat(40_000), "Case", of);
+    formulaFields('"\\'.repeat(6_000), "Case", of);
+    expect(formulaFields("A__c & ".repeat(5_000), "Case", of)).toEqual([]);
+    expect(() => parseMetadataXml(`<a>${"<!--".repeat(200_000)}</a>`)).toThrow();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("follows custom and standard relationships", () => {
+    expect(formulaFields("Contract__r.Owner.Name & Account.Name", "Case", of, named).sort()).toEqual(
+      ["Account.Name", "Case.AccountId", "Case.Contract__c", "Contract__c.OwnerId", "User.Name"].sort(),
+    );
+  });
+
+  it("leaves out functions, keywords, literals, comments and globals", () => {
+    expect(formulaFields('IF( NOT(IsClosed), "Open: Status", TRUE ) /* Priority */ && $Profile.Name = \'x\'', "Case", of)).toEqual(["Case.IsClosed"]);
+  });
+});
+
+describe("MetadataIndex", () => {
+  it("stores a snapshot, finds components and walks the graph", async () => {
+    const index = fresh();
+    const snap = await index.build({ source: "repo:source", kind: "repo", revision: "abc123" }, () => scanProject(join(fixtures, "source")));
+    expect(snap).toMatchObject({ status: "ready", revision: "abc123", stats: { counts: { CustomObject: 2, CustomField: 5, RecordType: 1, ValidationRule: 1 } } });
+    expect(snap.stats.skipped).toHaveLength(1);
+    expect(index.latest("repo:source")?.id).toBe(snap.id);
+
+    // Part of an API name, a label with an accent folded, and a word of the free text.
+    expect(index.search(snap.id, "Premium").map((c) => c.name)).toContain("Policy__c.Premium__c");
+    expect(index.search(snap.id, "annuelle")[0]?.name).toBe("Policy__c.Premium__c");
+    expect(index.search(snap.id, "reclame")).toEqual([]);
+    expect(index.search(snap.id, "lapsed").map((c) => c.name)).toEqual(["Policy__c.Status__c"]);
+    // An exact name comes first; types filter; short words match by substring.
+    expect(index.search(snap.id, "policy__c")[0]?.name).toBe("Policy__c");
+    expect(index.search(snap.id, "Policy", { types: ["RecordType"] }).map((c) => c.name)).toEqual(["Policy__c.Motor"]);
+    expect(index.search(snap.id, "Id").map((c) => c.name)).toContain("Account.OwnerId");
+    expect(index.search(snap.id, '"; DROP')).toEqual([]);
+
+    expect(index.children(snap.id, "policy__c").map((c) => c.name)).toEqual([
+      "Policy__c.Holder__c",
+      "Policy__c.Holder_Industry__c",
+      "Policy__c.Premium__c",
+      "Policy__c.Status__c",
+      "Policy__c.Motor",
+      "Policy__c.Premium_Required",
+    ]);
+
+    const premium = index.component(snap.id, "CustomField", "Policy__c.Premium__c")!;
+    const near = index.related(premium.id);
+    expect(near.map((r) => `${r.direction} ${r.kind} ${r.component.name}`)).toEqual(["out part_of Policy__c", "in reads Policy__c.Premium_Required"]);
+    // Two hops out from the formula field: through Account to its owner field and User.
+    const formula = index.component(snap.id, "CustomField", "Policy__c.Holder_Industry__c")!;
+    const deep = index.related(formula.id, { depth: 2 }).filter((r) => r.direction === "out");
+    expect(deep.find((r) => r.component.name === "User")).toMatchObject({ depth: 2, component: { missing: true } });
+    expect(index.related(formula.id, { kinds: ["references"] })).toEqual([]);
+  });
+
+  it("keeps only the newest snapshot of a source, and the old one when a run fails", async () => {
+    const index = fresh();
+    const first = await index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")));
+    await expect(index.build({ source: "s", kind: "repo" }, () => Promise.reject(new Error("disk gone")))).rejects.toThrow("disk gone");
+    expect(index.latest("s")?.id).toBe(first.id);
+    expect(index.snapshots()[0]).toMatchObject({ status: "failed", stats: { error: "disk gone" } });
+
+    const second = await index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")));
+    expect(index.snapshots().map((s) => s.id)).toEqual([second.id]);
+    expect(index.search(second.id, "Claim").length).toBeGreaterThan(0);
+    expect(index.search(first.id, "Claim")).toEqual([]);
+  });
+});
+
+describe("scanProject on awkward projects", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sf-agent-meta-"));
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+  const write = (rel: string, xml: string) => {
+    mkdirSync(join(tmp, rel, ".."), { recursive: true });
+    writeFileSync(join(tmp, rel), xml);
+  };
+
+  it("fails when the project folder or a package folder cannot be read", async () => {
+    await expect(scanProject(join(tmp, "nope"))).rejects.toThrow(/the project folder cannot be read/);
+    write("sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "force-app" }] }));
+    await expect(scanProject(tmp)).rejects.toThrow(/^force-app cannot be read: ENOENT/);
+    write("sfdx-project.json", "{ not json");
+    await expect(scanProject(tmp)).rejects.toThrow("sfdx-project.json is not valid JSON");
+  });
+
+  it("matches names without case, and links roll-ups and dependent picklists", async () => {
+    write("objects/Policy__c.object", `<CustomObject>
+      <fields><fullName>Holder__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></fields>
+      <fields><fullName>Region__c</fullName><type>Picklist</type></fields>
+      <fields><fullName>City__c</fullName><type>Picklist</type><valueSet><controllingField>region__c</controllingField></valueSet></fields>
+      <fields><fullName>Label__c</fullName><type>Text</type><formula>holder__r.Name &amp; HOLDER__C</formula></fields>
+      <fields><fullName>Claims_Total__c</fullName><type>Summary</type><summarizedField>Claim__c.Amount__c</summarizedField><summaryForeignKey>Claim__c.Policy__c</summaryForeignKey><summaryOperation>sum</summaryOperation></fields>
+    </CustomObject>`);
+    write("objects/claim__c.object", `<CustomObject><fields><fullName>Amount__c</fullName><type>Currency</type></fields></CustomObject>`);
+    const { components, edges } = await scanProject(tmp);
+    const names = components.map((c) => `${c.type}:${c.name}`);
+    // No placeholder next to the real field because of a different case.
+    expect(names.filter((n) => n.toLowerCase() === "customfield:policy__c.holder__c")).toEqual(["CustomField:Policy__c.Holder__c"]);
+    const reads = (from: string) => edges.filter((e) => e.from.name === from && e.kind === "reads").map((e) => e.to.name).sort();
+    expect(reads("Policy__c.Label__c")).toEqual(["Account.Name", "Policy__c.Holder__c"]);
+    expect(reads("Policy__c.City__c")).toEqual(["Policy__c.Region__c"]);
+    // The roll-up reads the declared claim__c spelling, and the placeholder for Policy__c on it.
+    expect(reads("Policy__c.Claims_Total__c")).toEqual(["claim__c.Amount__c", "claim__c.Policy__c"]);
+    expect(components.find((c) => c.name === "claim__c.Policy__c")).toMatchObject({ missing: true, parent: "claim__c" });
+  });
+
+  it("normalises package paths and refuses ones that leave the project", () => {
+    expect(packagePath(".")).toBe("");
+    expect(packagePath("./force-app/")).toBe("force-app");
+    expect(packagePath("force-app\\main")).toBe("force-app/main");
+    expect(packagePath("../other")).toBeUndefined();
+    expect(packagePath("/abs")).toBeUndefined();
+    expect(packagePath("C:/abs")).toBeUndefined();
+  });
+});
+
+describe("MetadataIndex runs of the same source", () => {
+  it("keeps the good snapshot when a scan fails, and lets one run at a time", async () => {
+    const index = fresh();
+    const good = await index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")));
+    await expect(index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "nope")))).rejects.toThrow(/cannot be read/);
+    expect(index.latest("s")?.id).toBe(good.id);
+
+    // A run under way holds the source; force goes ahead, and the one that finishes last wins.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = index.build({ source: "s", kind: "repo", revision: "slow" }, async () => {
+      await gate;
+      return scanProject(join(fixtures, "mdapi"));
+    });
+    await expect(index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")))).rejects.toThrow("s is already being indexed");
+    const quick = await index.build({ source: "s", kind: "repo", revision: "quick" }, () => scanProject(join(fixtures, "mdapi")), { force: true });
+    expect(index.latest("s")?.id).toBe(quick.id);
+    release();
+    const late = await slow;
+    expect(index.latest("s")).toMatchObject({ id: late.id, revision: "slow" });
+    expect(index.snapshots().map((s) => s.id)).toEqual([late.id]);
+  });
+});

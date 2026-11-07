@@ -24,3 +24,4 @@ export {
   type IndustryTemplate,
 } from "./content/library.js";
 export * from "./masking/index.js";
+export * from "./metadata/index.js";

@@ -1,0 +1,64 @@
+import { XMLParser } from "fast-xml-parser";
+
+const parser = new XMLParser({
+  ignoreAttributes: true,
+  parseTagValue: false,
+  trimValues: true,
+  processEntities: true,
+  htmlEntities: true,
+});
+
+/**
+ * Parses a metadata file. A document type declaration is refused: Salesforce never writes
+ * one, and its entities could expand without limit.
+ */
+export function parseMetadataXml(xml: string): Record<string, unknown> {
+  if (/<!DOCTYPE|<!ENTITY/i.test(outsideCdataAndComments(xml))) throw new Error("a document type declaration is not read");
+  const parsed = parser.parse(xml) as unknown;
+  if (!parsed || typeof parsed !== "object") throw new Error("not XML");
+  return parsed as Record<string, unknown>;
+}
+
+/** A repeated element as an array, whether the file had none, one or several. */
+export const list = (v: unknown): unknown[] => (v === undefined || v === null || v === "" ? [] : Array.isArray(v) ? v : [v]);
+
+/** An element's text, or undefined when it is missing or not text. */
+export const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : typeof v === "number" ? String(v) : undefined);
+
+export const bool = (v: unknown): boolean | undefined => (v === "true" ? true : v === "false" ? false : undefined);
+
+export const num = (v: unknown): number | undefined => {
+  const s = str(v);
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+export const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+
+/**
+ * The markup with CDATA sections and comments taken out, in one pass: a regular expression
+ * would rescan to the end for every opener left unclosed, which takes hours on a large file.
+ * An unclosed one runs to the end of the file, as a parser would read it.
+ */
+export function outsideCdataAndComments(xml: string): string {
+  const out: string[] = [];
+  let i = 0;
+  // Each opener's next position is searched again only once the scan has passed it, so a
+  // kind that never occurs is looked for once, not once per section of the other kind.
+  let cdata = xml.indexOf("<![CDATA[");
+  let comment = xml.indexOf("<!--");
+  for (;;) {
+    if (cdata >= 0 && cdata < i) cdata = xml.indexOf("<![CDATA[", i);
+    if (comment >= 0 && comment < i) comment = xml.indexOf("<!--", i);
+    if (cdata < 0 && comment < 0) break;
+    const isCdata = cdata >= 0 && (comment < 0 || cdata < comment);
+    const start = isCdata ? cdata : comment;
+    out.push(xml.slice(i, start));
+    const end = xml.indexOf(isCdata ? "]]>" : "-->", start + (isCdata ? 9 : 4));
+    if (end < 0) return out.join("");
+    i = end + 3;
+  }
+  out.push(xml.slice(i));
+  return out.join("");
+}

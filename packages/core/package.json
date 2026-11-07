@@ -31,6 +31,7 @@
     "@tesseract.js-data/chi_sim": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
     "@tesseract.js-data/fra": "1.0.0",
+    "fast-xml-parser": "5.12.0",
     "jpeg-js": "0.4.4",
     "onnxruntime-common": "1.31.1",
     "pngjs": "7.0.0",

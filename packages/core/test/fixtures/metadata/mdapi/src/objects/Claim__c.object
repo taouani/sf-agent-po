@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Claim</label>
+    <pluralLabel>Claims</pluralLabel>
+    <sharingModel>ControlledByParent</sharingModel>
+    <fields>
+        <fullName>Policy__c</fullName>
+        <label>Policy</label>
+        <type>MasterDetail</type>
+        <referenceTo>Policy__c</referenceTo>
+        <relationshipName>Claims</relationshipName>
+    </fields>
+    <fields>
+        <fullName>Amount__c</fullName>
+        <label>Montant réclamé</label>
+        <type>Currency</type>
+    </fields>
+    <recordTypes>
+        <fullName>Theft</fullName>
+        <active>true</active>
+        <label>Theft</label>
+    </recordTypes>
+    <validationRules>
+        <fullName>Amount_Positive</fullName>
+        <active>true</active>
+        <errorConditionFormula>Amount__c &lt;= 0</errorConditionFormula>
+        <errorMessage>The amount must be positive</errorMessage>
+    </validationRules>
+</CustomObject>

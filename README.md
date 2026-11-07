@@ -238,6 +238,19 @@ The new code lives in npm workspaces under `packages/`:
   places), the OCR text masked for models that cannot see images, the words the OCR was
   unsure of, and whether the reading can be trusted, for the user to check before the image
   is used.
+  Metadata index: `MetadataIndex` is the local metadata index (decision B, phase 3).
+  `scanProject` reads a Salesforce project in source format (`sfdx-project.json` package
+  folders) or metadata format (`objects/*.object`): objects, fields, record types and
+  validation rules, with lookups, picklists and formulas. Each indexing run is a snapshot;
+  the newest ready one of a source is used, and a failed run leaves the previous one in
+  place. Components link by edges (`part_of`, `references`, and `reads` for the fields a
+  formula or rule uses, followed through relationships such as `Parent__r.Owner.Email`);
+  standard objects and fields that are only referenced become placeholders. `search` uses
+  SQLite full-text search (trigram, accents folded) and `related` walks the graph up to
+  three hops. Descriptions, help text, picklist values and messages (in `text`) and formulas
+  are stored as the project holds them, and are masked by whatever passes them to a model.
+  API names match without case. A project folder that cannot be read fails the run, so it
+  never replaces a good index.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
   Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into

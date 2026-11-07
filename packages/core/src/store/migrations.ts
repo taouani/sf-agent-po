@@ -118,4 +118,72 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 6,
+    name: "metadata index",
+    sql: `
+      -- One indexing run of a metadata source (decision B, DE2): a project folder or
+      -- repository at a revision, or an org at a retrieve time. Readers use the newest
+      -- ready snapshot of a source; a run that died stays 'building' and is ignored.
+      CREATE TABLE metadata_snapshot (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source       TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('repo', 'org')),
+        revision     TEXT,
+        status       TEXT NOT NULL CHECK (status IN ('building', 'ready', 'failed')),
+        started_at   TEXT NOT NULL,
+        finished_at  TEXT,
+        stats        TEXT NOT NULL DEFAULT '{}'   -- JSON: counts per type, files read, skipped
+      );
+      CREATE INDEX metadata_snapshot_source ON metadata_snapshot (source, status, id);
+
+      -- A component: an object, field, record type, validation rule, flow, class... name is
+      -- the full name ("Account.Industry__c"), parent the object it belongs to. present is 0
+      -- for a component only referenced (a standard object outside the project). text holds
+      -- the free text (descriptions, help text, picklist values, messages): it is stored as
+      -- the project holds it and masked when a tool returns it, never sent as is. API names
+      -- are case-insensitive in Salesforce, so name and parent compare without case.
+      CREATE TABLE component (
+        id        INTEGER PRIMARY KEY,
+        snapshot  INTEGER NOT NULL REFERENCES metadata_snapshot(id) ON DELETE CASCADE,
+        type      TEXT NOT NULL,
+        name      TEXT NOT NULL COLLATE NOCASE,
+        parent    TEXT COLLATE NOCASE,
+        label     TEXT,
+        file      TEXT,
+        present   INTEGER NOT NULL DEFAULT 1,
+        attrs     TEXT NOT NULL DEFAULT '{}',    -- JSON
+        text      TEXT NOT NULL DEFAULT '',
+        UNIQUE (snapshot, type, name)
+      );
+      CREATE INDEX component_parent ON component (snapshot, parent);
+
+      -- The dependency graph, walked with recursive queries (ST2).
+      CREATE TABLE edge (
+        src   INTEGER NOT NULL REFERENCES component(id) ON DELETE CASCADE,
+        dst   INTEGER NOT NULL REFERENCES component(id) ON DELETE CASCADE,
+        kind  TEXT NOT NULL,
+        PRIMARY KEY (src, dst, kind)
+      ) WITHOUT ROWID;
+      CREATE INDEX edge_dst ON edge (dst, kind);
+
+      -- Full-text search over names, labels and text; trigram so that part of an API name
+      -- matches, and accents fold (spike 5).
+      CREATE VIRTUAL TABLE component_fts USING fts5 (
+        name, label, text,
+        content = 'component', content_rowid = 'id',
+        tokenize = 'trigram remove_diacritics 1'
+      );
+      CREATE TRIGGER component_ai AFTER INSERT ON component BEGIN
+        INSERT INTO component_fts (rowid, name, label, text) VALUES (new.id, new.name, coalesce(new.label, ''), new.text);
+      END;
+      CREATE TRIGGER component_ad AFTER DELETE ON component BEGIN
+        INSERT INTO component_fts (component_fts, rowid, name, label, text) VALUES ('delete', old.id, old.name, coalesce(old.label, ''), old.text);
+      END;
+      CREATE TRIGGER component_au AFTER UPDATE ON component BEGIN
+        INSERT INTO component_fts (component_fts, rowid, name, label, text) VALUES ('delete', old.id, old.name, coalesce(old.label, ''), old.text);
+        INSERT INTO component_fts (rowid, name, label, text) VALUES (new.id, new.name, coalesce(new.label, ''), new.text);
+      END;
+    `,
+  },
 ];
