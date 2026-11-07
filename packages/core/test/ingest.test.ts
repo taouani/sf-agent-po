@@ -153,8 +153,14 @@ describe("known values", () => {
 
   it("looks for two-character CJK names, which are full names", async () => {
     const { masker } = setup();
-    masker.remember("acme", [{ value: "刘洋", type: "PERSON" }, { value: "Al", type: "PERSON" }]);
-    expect((await masker.mask("acme", "客户：刘洋，Al")).text).toBe("客户：[PERSON_1]，Al");
+    masker.remember("acme", [
+      { value: "刘洋", type: "PERSON" },
+      { value: "Al", type: "PERSON" },
+      { value: "上海", type: "ADDRESS" },
+      { value: "Al刘", type: "PERSON" },
+    ]);
+    // Short values other than CJK names are not looked for: CJK values match inside words.
+    expect((await masker.mask("acme", "客户：刘洋，Al，上海")).text).toBe("客户：[PERSON_1]，Al，上海");
   });
 
   it("matches a one-word name learned from the model in its own case only", async () => {

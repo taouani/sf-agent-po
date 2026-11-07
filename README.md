@@ -231,10 +231,13 @@ The new code lives in npm workspaces under `packages/`:
   Images (PNG, JPEG) are masked locally too (FE4): `createRecognizer` starts an OCR worker
   (Tesseract in WebAssembly, with English, French and Simplified Chinese data shipped in the
   package, so nothing is downloaded), and `Masker.maskImage` reads the image's words, finds
-  what to hide with the same detection, and blacks out each word that holds some of it. It
-  returns the redacted image as an upright PNG with no metadata (EXIF can hold names and
-  places), the OCR text masked for models that cannot see images, and the words the OCR was
-  unsure of, for the user to check before the image is used.
+  what to hide with the same detection, and blacks out each word that holds some of it (and
+  text that looks like a pseudonym). Transparent pixels are laid on white first, so the OCR
+  and every later reader see the same image, and a page the OCR reads poorly is tried turned.
+  It returns the redacted image as an upright PNG with no metadata (EXIF can hold names and
+  places), the OCR text masked for models that cannot see images, the words the OCR was
+  unsure of, and whether the reading can be trusted, for the user to check before the image
+  is used.
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
   Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into

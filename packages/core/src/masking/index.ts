@@ -19,7 +19,9 @@ export {
   orient,
   pageText,
   redactionBox,
+  TRUSTED_FROM,
   UNCERTAIN_BELOW,
+  worthChecking,
   type Box,
   type ImageFormat,
   type OcrLanguage,
@@ -30,7 +32,7 @@ export {
   type RgbaImage,
   type TextRecognizer,
 } from "./image.js";
-export { NEVER_UNMASKED, SOURCE, newVaultKey, pseudonymLabel, pseudonymsIn, pseudonymType, Vault, VAULT_KEY_BYTES, vaultKeyCheck, VaultKeyError } from "./vault.js";
+export { NEVER_UNMASKED, SOURCE, newVaultKey, pseudonymLabel, pseudonymLikeSpans, pseudonymsIn, pseudonymType, Vault, VAULT_KEY_BYTES, vaultKeyCheck, VaultKeyError } from "./vault.js";
 export {
   configDir,
   defaultKeysDir,

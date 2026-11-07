@@ -3,10 +3,10 @@
 
 import type { ContextRepository, NewDocument, SourceDocument } from "../store/contexts.js";
 import { detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
-import { blackOut, decodeImage, encodePng, pageText, redactionBox, UNCERTAIN_BELOW, type Box, type TextRecognizer } from "./image.js";
+import { blackOut, decodeImage, encodePng, orient, pageText, redactionBox, TRUSTED_FROM, UNCERTAIN_BELOW, worthChecking, type Box, type OcrResult, type RgbaImage, type TextRecognizer } from "./image.js";
 import type { Span } from "./spans.js";
 import { compileDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
-import { NEVER_UNMASKED, SOURCE, type Vault } from "./vault.js";
+import { NEVER_UNMASKED, pseudonymLikeSpans, SOURCE, type Vault } from "./vault.js";
 
 /** What masking a text or document did, for the user and the approval page. */
 export interface MaskReport {
@@ -50,6 +50,14 @@ export interface MaskedImage {
   ocr: {
     /** The OCR's confidence for the page, 0 to 100. */
     confidence: number;
+    /**
+     * False when the OCR read the page poorly (confidence under TRUSTED_FROM): text it did not
+     * read may hold personal data, so the image must not reach a model before the user has
+     * checked it.
+     */
+    trusted: boolean;
+    /** Degrees the image was turned clockwise because its text read best that way; the returned image is turned too. */
+    rotated: 0 | 90 | 180 | 270;
     words: number;
     /** The boxes blacked out. */
     redacted: Box[];
@@ -72,14 +80,28 @@ const FOUND_BY_RULES = new Set(["EMAIL", "PHONE", "IBAN", "CARD", "IP"]);
 function asDictionaryEntry(e: { type: string; value: string }, allowed: Set<string>): DictionaryEntry | undefined {
   if (FOUND_BY_RULES.has(e.type)) return undefined;
   const value = e.value.trim();
-  // Chinese, Japanese and Korean names are two or three characters long.
-  const shortest = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(value) ? 2 : 4;
+  // Chinese, Japanese and Korean names are two or three characters long. Only names, written
+  // wholly in those scripts, may be that short: CJK values match inside words.
+  const cjkName = e.type === "PERSON" && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\s・·]+$/u.test(value);
+  const shortest = cjkName ? 2 : 4;
   if ([...value].length < shortest || !/\p{L}/u.test(value) || allowed.has(value.toLowerCase())) return undefined;
   const oneWord = !/\s/u.test(value);
   // A one-word name in lower case is more likely a word the model took for a name; scripts without case are exempt.
   const first = value[0]!;
   if (oneWord && e.type === "PERSON" && first.toLowerCase() !== first.toUpperCase() && !/^\p{Lu}/u.test(value)) return undefined;
   return { type: e.type, value, caseSensitive: oneWord };
+}
+
+/**
+ * Refuses OCR boxes that do not fit the image: the OCR then worked on other pixels (Tesseract
+ * turns an image by any EXIF-like bytes it finds), and blacking out its boxes would miss.
+ */
+function checkBoxes(ocr: OcrResult, img: RgbaImage): void {
+  for (const line of ocr.lines)
+    for (const w of line) {
+      const b = w.box;
+      if (b.x0 < 0 || b.y0 < 0 || b.x1 > img.width + 1 || b.y1 > img.height + 1) throw new Error("The OCR's word positions do not fit the image, so it cannot be masked.");
+    }
 }
 
 /**
@@ -159,9 +181,12 @@ export class Masker {
 
   /**
    * Masks an image (PNG or JPEG): the OCR reads its text, the same detection as for
-   * documents finds what to hide, and every word that holds some of it is blacked out.
-   * The result is re-encoded as PNG, so EXIF data (a name, a place) is dropped too.
-   * `redactUncertain` also blacks out words the OCR was unsure of.
+   * documents finds what to hide, and every word that holds some of it is blacked out, as is
+   * text that looks like a pseudonym (a model could copy it, and publishing would turn it
+   * into a real name). The result is opaque and re-encoded as PNG, so EXIF data (a name, a
+   * place) is dropped. A page the OCR reads poorly is tried turned a quarter, a half and
+   * three quarters, and the best reading kept; if none reads well, the result is not
+   * `trusted`. `redactUncertain` also blacks out words the OCR was unsure of.
    */
   async maskImage(
     context: string,
@@ -169,24 +194,44 @@ export class Masker {
     recognizer: TextRecognizer,
     { dictionary = [], redactUncertain = false }: { dictionary?: readonly DictionaryEntry[]; redactUncertain?: boolean } = {},
   ): Promise<MaskedImage> {
-    const img = decodeImage(raw);
-    // The OCR gets the same upright pixels that are blacked out, so its boxes match them.
-    const upright = encodePng(img);
-    const ocr = await recognizer.recognize(upright);
+    const upright = decodeImage(raw);
+    // The OCR gets exactly the pixels that are blacked out and returned, so its boxes match them.
+    const read = async (img: RgbaImage, rotated: 0 | 90 | 180 | 270) => {
+      const png = encodePng(img);
+      const ocr = await recognizer.recognize(png);
+      checkBoxes(ocr, img);
+      return { img, png, ocr, rotated };
+    };
+    let best = await read(upright, 0);
+    if (best.ocr.confidence < TRUSTED_FROM) {
+      for (const [orientation, rotated] of [[6, 90], [3, 180], [8, 270]] as const) {
+        const tried = await read(orient(upright, orientation), rotated);
+        if (tried.ocr.confidence > best.ocr.confidence) best = tried;
+      }
+    }
+    const { img, png, ocr, rotated } = best;
     const { text, words } = pageText(ocr.lines);
     const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
     const spans = await this.spansFor(context, text, dictionary, report);
-    const hidden = (w: { start: number; end: number }) => spans.some((s) => s.start < w.end && w.start < s.end);
+    const hide = [...spans, ...pseudonymLikeSpans(text)];
+    const hidden = (w: { start: number; end: number }) => hide.some((s) => s.start < w.end && w.start < s.end);
     const redacted = words.filter(hidden).map(redactionBox);
-    const uncertain = words.filter((w) => !hidden(w) && w.confidence < UNCERTAIN_BELOW && /[\p{L}\p{N}]{2}/u.test(w.text)).map(redactionBox);
+    const uncertain = words.filter((w) => !hidden(w) && w.confidence < UNCERTAIN_BELOW && worthChecking(w.text)).map(redactionBox);
     const boxes = redactUncertain ? [...redacted, ...uncertain] : redacted;
     return {
-      image: boxes.length ? encodePng(blackOut(img, boxes)) : upright,
+      image: boxes.length ? encodePng(blackOut(img, boxes)) : png,
       width: img.width,
       height: img.height,
       text: (text.trim() ? this.opts.vault.mask(context, text, spans) : "").trimEnd(),
       report,
-      ocr: { confidence: ocr.confidence, words: words.length, redacted, uncertain: redactUncertain ? [] : uncertain },
+      ocr: {
+        confidence: ocr.confidence,
+        trusted: ocr.confidence >= TRUSTED_FROM,
+        rotated,
+        words: words.length,
+        redacted,
+        uncertain: redactUncertain ? [] : uncertain,
+      },
     };
   }
 

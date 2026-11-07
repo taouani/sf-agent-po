@@ -2,7 +2,8 @@
 // for documents finds what to hide, and those words are blacked out before any model sees
 // the image. Models that cannot see images get the OCR text, masked.
 
-import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import jpeg from "jpeg-js";
@@ -11,8 +12,12 @@ import { defaultModelDir } from "./model/files.js";
 
 const require = createRequire(import.meta.url);
 
-/** The most pixels an image may have: larger ones would take gigabytes once decoded. */
-export const IMAGE_LIMITS = { pixels: 50_000_000 };
+/**
+ * The most pixels an image may have. Each copy of a decoded image takes 4 bytes a pixel, and
+ * the OCR makes several, so a 25-megapixel image already peaks near a gigabyte; it is also
+ * far more than OCR needs.
+ */
+export const IMAGE_LIMITS = { pixels: 25_000_000 };
 
 /** An image as 8-bit RGBA pixels, row by row. */
 export interface RgbaImage {
@@ -131,13 +136,29 @@ export function decodeImage(raw: Uint8Array): RgbaImage {
   try {
     if (imageFormat(raw) === "png") {
       const png = PNG.sync.read(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength));
-      return { width: png.width, height: png.height, data: new Uint8Array(png.data.buffer, png.data.byteOffset, png.data.byteLength) };
+      return flatten({ width: png.width, height: png.height, data: new Uint8Array(png.data.buffer, png.data.byteOffset, png.data.byteLength) });
     }
-    const img = jpeg.decode(raw, { useTArray: true, formatAsRGBA: true, maxResolutionInMP: IMAGE_LIMITS.pixels / 1e6, maxMemoryUsageInMB: 2048 });
+    const img = jpeg.decode(raw, { useTArray: true, formatAsRGBA: true, maxResolutionInMP: IMAGE_LIMITS.pixels / 1e6, maxMemoryUsageInMB: 1024 });
     return orient({ width: img.width, height: img.height, data: img.data }, exifOrientation(raw));
   } catch (err) {
     throw new Error(`This image cannot be decoded: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Lays a transparent image on white and makes it opaque, in place. The OCR does not read
+ * pixels it sees as transparent, while a tool that drops the alpha channel shows them: the
+ * OCR and every later reader must see the same pixels.
+ */
+function flatten(img: RgbaImage): RgbaImage {
+  const d = img.data;
+  for (let i = 3; i < d.length; i += 4) {
+    const a = d[i]!;
+    if (a === 255) continue;
+    for (let c = i - 3; c < i; c++) d[c] = Math.round((d[c]! * a + 255 * (255 - a)) / 255);
+    d[i] = 255;
+  }
+  return img;
 }
 
 /** Encodes RGBA pixels as PNG, with no metadata (an EXIF block can hold a name or a place). */
@@ -187,6 +208,31 @@ export type OcrLanguage = (typeof OCR_LANGUAGES)[number];
 /** The language data variant: integer "best" models, the most accurate in the spike (100% on Chinese). */
 const OCR_DATA = "4.0.0_best_int";
 
+/** Copies already running, by destination file, so recognizers started together share them. */
+const copying = new Map<string, Promise<void>>();
+
+/** Copies a file unless the destination already has its size, through a uniquely named temporary file. */
+function copyOnce(src: string, dest: string): Promise<void> {
+  let job = copying.get(dest);
+  if (!job) {
+    job = (async () => {
+      const [want, have] = await Promise.all([stat(src), stat(dest).catch(() => undefined)]);
+      if (have?.size === want.size) return;
+      const part = `${dest}.${randomUUID()}.part`;
+      try {
+        await copyFile(src, part);
+        await rename(part, dest);
+      } catch (err) {
+        await rm(part, { force: true });
+        // Another process may have put the same file in place meanwhile.
+        if ((await stat(dest).catch(() => undefined))?.size !== want.size) throw err;
+      }
+    })().finally(() => copying.delete(dest));
+    copying.set(dest, job);
+  }
+  return job;
+}
+
 /**
  * Tesseract reads its language files from one folder, while each npm package has its own:
  * the files are copied once into the model cache.
@@ -194,16 +240,12 @@ const OCR_DATA = "4.0.0_best_int";
 async function languageFolder(languages: readonly OcrLanguage[], dir: string): Promise<string> {
   const folder = join(dir, `tessdata-${OCR_DATA}`);
   await mkdir(folder, { recursive: true });
-  for (const lang of languages) {
-    const file = `${lang}.traineddata.gz`;
-    const src = join(dirname(require.resolve(`@tesseract.js-data/${lang}/package.json`)), OCR_DATA, file);
-    const dest = join(folder, file);
-    const [want, have] = await Promise.all([stat(src), stat(dest).catch(() => undefined)]);
-    if (have?.size === want.size) continue;
-    const part = `${dest}.${process.pid}.part`;
-    await copyFile(src, part);
-    await rename(part, dest);
-  }
+  await Promise.all(
+    languages.map((lang) => {
+      const file = `${lang}.traineddata.gz`;
+      return copyOnce(join(dirname(require.resolve(`@tesseract.js-data/${lang}/package.json`)), OCR_DATA, file), join(folder, file));
+    }),
+  );
   return folder;
 }
 
@@ -225,7 +267,7 @@ export async function createRecognizer(opts: RecognizerOptions = {}): Promise<Te
   const worker = await createWorker([...languages], 1, { langPath, gzip: true, cacheMethod: "none" });
   return {
     async recognize(image) {
-      const { data } = await worker.recognize(Buffer.from(image), {}, { blocks: true, text: false });
+      const { data } = await worker.recognize(Buffer.from(image.buffer, image.byteOffset, image.byteLength), {}, { blocks: true, text: false });
       const lines: OcrWord[][] = [];
       for (const block of data.blocks ?? [])
         for (const para of block.paragraphs)
@@ -280,3 +322,13 @@ export function redactionBox(w: OcrWord): Box {
 
 /** Below this confidence a word that was left visible is reported as uncertain: the OCR may have misread a name. */
 export const UNCERTAIN_BELOW = 60;
+
+/**
+ * Below this page confidence the OCR read the page poorly (sideways text, a script it has no
+ * data for, a photo): text it did not read may hold personal data, so the image is not
+ * trusted until the user has checked it. Clean screenshots score about 90.
+ */
+export const TRUSTED_FROM = 70;
+
+/** Whether a word left visible is worth showing as uncertain: two letters or digits, or one CJK character. */
+export const worthChecking = (text: string) => /[\p{L}\p{N}].*[\p{L}\p{N}]/u.test(text) || CJK.test(text);

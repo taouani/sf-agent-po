@@ -17,7 +17,9 @@ import {
   orient,
   pageText,
   redactionBox,
+  TRUSTED_FROM,
   Vault,
+  worthChecking,
   type OcrWord,
   type RgbaImage,
   type TextRecognizer,
@@ -28,10 +30,10 @@ const FIXTURES = join(import.meta.dirname, "fixtures", "ocr");
 const masker = () => new Masker({ vault: new Vault(new Database(":memory:"), newVaultKey()) });
 
 const blank = (width: number, height: number): RgbaImage => ({ width, height, data: new Uint8Array(width * height * 4).fill(255) });
-const isBlack = (img: RgbaImage, x: number, y: number) => img.data[(y * img.width + x) * 4] === 0 && img.data[(y * img.width + x) * 4 + 1] === 0;
+const isBlack = (img: RgbaImage, x: number, y: number) => [0, 1, 2].every((c) => img.data[(y * img.width + x) * 4 + c] === 0);
 const word = (text: string, x0: number, y0: number, x1: number, y1: number, confidence = 95): OcrWord => ({ text, confidence, box: { x0, y0, x1, y1 } });
-const fakeOcr = (lines: OcrWord[][], seen: Uint8Array[] = []): TextRecognizer => ({
-  recognize: async (image) => (seen.push(image), { lines, confidence: 90 }),
+const fakeOcr = (lines: OcrWord[][], seen: Uint8Array[] = [], confidence: (call: number) => number = () => 90): TextRecognizer => ({
+  recognize: async (image) => (seen.push(image), { lines, confidence: confidence(seen.length) }),
   close: async () => {},
 });
 
@@ -68,6 +70,13 @@ describe("images", () => {
     huge.writeUInt32BE(100_000, 20);
     expect(() => decodeImage(huge)).toThrow(new RegExp(`over ${IMAGE_LIMITS.pixels / 1e6} million pixels`));
     expect(() => decodeImage(png.subarray(0, 40))).toThrow(/cannot be decoded/);
+  });
+
+  it("lays transparent pixels on white, so what the OCR cannot see is not there", () => {
+    const rgba = new PNG({ width: 2, height: 1 });
+    rgba.data = Buffer.from([0, 0, 0, 0, 0, 0, 0, 128]);
+    const img = decodeImage(PNG.sync.write(rgba));
+    expect([...img.data]).toEqual([255, 255, 255, 255, 127, 127, 127, 255]);
   });
 
   it("turns pixels the way each EXIF orientation says", () => {
@@ -115,6 +124,10 @@ describe("images", () => {
     expect(redactionBox(word("Tom", 10, 10, 40, 12))).toEqual({ x0: 7, y0: 7, x1: 43, y1: 15 });
     expect(redactionBox(word("刘洋", 10, 10, 40, 30))).toEqual({ x0: 6, y0: 6, x1: 56, y1: 34 });
   });
+
+  it("checks uncertain words that could be part of a name", () => {
+    expect(["Gr4ce", "ok", "刘", "a", "-", "1"].map(worthChecking)).toEqual([true, true, true, false, false, false]);
+  });
 });
 
 describe("masking an image", () => {
@@ -151,7 +164,34 @@ describe("masking an image", () => {
 
   it("gives back an image with no text unchanged, re-encoded", async () => {
     const out = await masker().maskImage("acme", encodePng(blank(20, 10)), fakeOcr([]));
-    expect(out).toMatchObject({ text: "", width: 20, height: 10, report: { counts: {} }, ocr: { words: 0, redacted: [], uncertain: [] } });
+    expect(out).toMatchObject({ text: "", width: 20, height: 10, report: { counts: {} }, ocr: { words: 0, redacted: [], uncertain: [], trusted: true, rotated: 0 } });
+  });
+
+  it("blacks out text that looks like a pseudonym, which publishing would turn into a name", async () => {
+    const out = await masker().maskImage("acme", encodePng(blank(240, 40)), fakeOcr([[word("Ask", 10, 10, 50, 30), word("[PERSON_1]", 60, 10, 160, 30)]]));
+    expect(out.text).toBe("Ask [LITERAL_1]");
+    expect(out.ocr.redacted).toEqual([redactionBox(word("[PERSON_1]", 60, 10, 160, 30))]);
+    expect(out.report.counts).toEqual({});
+  });
+
+  it("tries a poorly read page turned, keeps the best reading, and flags one that never reads well", async () => {
+    const seen: Uint8Array[] = [];
+    // Only the last try (turned 270°) reads well.
+    const out = await masker().maskImage("acme", encodePng(blank(40, 20)), fakeOcr([], seen, (call) => (call === 4 ? 88 : 30)));
+    expect(seen).toHaveLength(4);
+    expect(out.ocr).toMatchObject({ rotated: 270, trusted: true, confidence: 88 });
+    expect([out.width, out.height]).toEqual([20, 40]);
+    expect(imageSize(out.image)).toEqual({ width: 20, height: 40 });
+    const poor = await masker().maskImage("acme", encodePng(blank(40, 20)), fakeOcr([], [], () => TRUSTED_FROM - 1));
+    expect(poor.ocr).toMatchObject({ rotated: 0, trusted: false });
+    // A page that reads well is read once.
+    const once: Uint8Array[] = [];
+    await masker().maskImage("acme", encodePng(blank(40, 20)), fakeOcr([], once));
+    expect(once).toHaveLength(1);
+  });
+
+  it("refuses OCR boxes that do not fit the image", async () => {
+    await expect(masker().maskImage("acme", encodePng(blank(40, 20)), fakeOcr([[word("Tom", 10, 10, 30, 60)]]))).rejects.toThrow(/do not fit the image/);
   });
 });
 
@@ -215,6 +255,46 @@ describe("OCR redaction on real images", { timeout: 120_000 }, () => {
     const flat = out.text.replace(/\s/g, "");
     for (const s of sensitive) expect(flat).not.toContain(s.replace(/\s/g, ""));
     expect(out.text).toMatch(/\[PERSON_\d+\]/);
+  });
+
+  it("reads a page turned a quarter, and gives it back upright and redacted", async () => {
+    const m = masker();
+    m.remember("acme", KNOWN.map((value) => ({ type: "PERSON", value })));
+    const original = png("en-contact.png");
+    const out = await m.maskImage("acme", encodePng(orient(original, 6)), ocr);
+    expect(out.ocr).toMatchObject({ rotated: 270, trusted: true });
+    const redacted = decodeImage(out.image);
+    expect([redacted.width, redacted.height]).toEqual([original.width, original.height]);
+    const mask = png("en-contact.mask-0.png");
+    let total = 0;
+    let hidden = 0;
+    for (let y = 0; y < mask.height; y++)
+      for (let x = 0; x < mask.width; x++)
+        if (ink(mask, x, y)) {
+          total++;
+          if (isBlack(redacted, x, y)) hidden++;
+        }
+    expect(hidden / total).toBeGreaterThanOrEqual(0.98);
+    expect(out.text).toContain("Contact: [PERSON_1]");
+  });
+
+  it("does not read text hidden under transparent pixels, and does not give it back", async () => {
+    const img = png("en-contact.png");
+    for (let i = 3; i < img.data.length; i += 4) img.data[i] = 0;
+    const out = await masker().maskImage("acme", encodePng(img), ocr);
+    expect(out.ocr.words).toBe(0);
+    const back = PNG.sync.read(out.image);
+    expect(back.data.every((v) => v === 255)).toBe(true);
+  });
+
+  it("starts several recognizers at once on an empty cache", async () => {
+    const fresh = mkdtempSync(join(tmpdir(), "sf-agent-po-ocr-"));
+    try {
+      const started = await Promise.all([1, 2, 3].map(() => createRecognizer({ dir: fresh, languages: ["eng"] })));
+      await Promise.all(started.map((r) => r.close()));
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
   });
 
   it("refuses a language that is not shipped", async () => {
