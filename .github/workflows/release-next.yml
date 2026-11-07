@@ -63,8 +63,10 @@ jobs:
       - run: node scripts/pack-next.mjs --smoke --smoke-server
       # Values reach the scripts through the environment, never inside them.
       # Provenance is signed before anything is uploaded, and Sigstore's transparency log
-      # sometimes answers 500 (TLOG_CREATE_ENTRY_ERROR): the publish is tried three times, and
-      # an attempt that failed after npm accepted the version counts as done.
+      # sometimes answers 500 (TLOG_CREATE_ENTRY_ERROR). Such errors, and npm's own 5xx and
+      # network errors, are tried again, three attempts in all; any other error stops at once.
+      # A failed attempt counts as done when npm shows this very tarball under the version
+      # (checked after a wait, since the registry can take a moment to show it).
       - name: Publish
         if: ${{ !inputs.dry-run }}
         env:
@@ -72,15 +74,28 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PROVENANCE: ${{ inputs.provenance }}
         run: |
+          set -o pipefail
           if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::The NPM_TOKEN secret is not set"; exit 1; fi
-          set -- ".pack-next/sf-agent-po-$VERSION.tgz" --tag next --access public
-          if [ "$PROVENANCE" = "true" ]; then set -- "$@" --provenance; fi
+          tarball=".pack-next/sf-agent-po-$VERSION.tgz"
+          integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | base64 -w0)"
+          published() { [ "$(npm view "sf-agent-po@$VERSION" dist.integrity 2>/dev/null)" = "$integrity" ]; }
+          # An explicit false: npm would otherwise turn provenance on by itself under trusted publishing.
+          set -- "$tarball" --tag next --access public --provenance="$PROVENANCE"
+          log=$(mktemp)
           for attempt in 1 2 3; do
-            if npm publish "$@"; then exit 0; fi
-            if npm view "sf-agent-po@$VERSION" version > /dev/null 2>&1; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
-            if [ "$attempt" -lt 3 ]; then echo "Attempt $attempt failed; trying again in $((attempt * 60)) s"; sleep $((attempt * 60)); fi
+            if npm publish "$@" 2>&1 | tee "$log"; then exit 0; fi
+            if ! grep -Eq 'TLOG_CREATE_ENTRY_ERROR|code E5[0-9][0-9]|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' "$log"; then
+              if published; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
+              echo "::error::npm publish failed with an error that trying again would not fix: see the npm error above"
+              exit 1
+            fi
+            echo "Attempt $attempt failed with an error that can pass; waiting $((attempt * 60)) s"
+            sleep $((attempt * 60))
+            if published; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
           done
-          echo "::error::The publish failed three times. If the error is TLOG_CREATE_ENTRY_ERROR, Sigstore's transparency log is down (https://status.sigstore.dev): run again later, or untick provenance."
+          hint="run again later"
+          if [ "$PROVENANCE" = "true" ]; then hint="$hint, or untick provenance"; fi
+          echo "::error::The publish failed three times. If the error is TLOG_CREATE_ENTRY_ERROR, Sigstore's transparency log is down (https://status.sigstore.dev): $hint."
           exit 1
       - name: Summary
         env:
