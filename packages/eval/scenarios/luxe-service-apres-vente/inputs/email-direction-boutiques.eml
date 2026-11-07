@@ -1,0 +1,17 @@
+From: Marco Bellini <m.bellini@veronne.example>
+To: Inès Haddad <i.haddad@veronne.example>
+Cc: Claire Dumoulin <c.dumoulin@veronne.example>, Julie Perrin <j.perrin@veronne.example>
+Subject: Re: SAV : périmètre du pilote
+Date: Mon, 2 Nov 2026 11:05:00 +0100
+Content-Type: text/plain; charset=utf-8
+
+Inès,
+
+Après discussion avec Claire et Julie, on change le périmètre du pilote par rapport à l'atelier :
+
+- Le pilote de mars 2027 se limite aux 8 boutiques françaises et à l'atelier de Pantin. Pas de cuir exotique dans le pilote : les articles exotiques continuent sur le bon papier jusqu'à ce que la procédure CITES soit outillée (phase 2, juin au plus tôt).
+- Le paiement des réparations hors garantie se fait toujours en caisse Cegid au retrait de l'article. Pas de paiement en ligne ni d'acompte dans Salesforce au pilote. Il faut en revanche que la caisse retrouve le montant validé par le client.
+- Le suivi depuis le compte client du site est reporté : l'équipe e-commerce n'a pas de capacité avant septembre 2027. Au pilote, le suivi passe par email et SMS uniquement.
+- Les conseillers en boutique n'ont pas besoin d'une licence Service Cloud complète si une licence plus légère suffit. Julie veut une estimation du coût des licences avant validation.
+
+Marco
