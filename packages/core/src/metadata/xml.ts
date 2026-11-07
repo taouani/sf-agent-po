@@ -13,8 +13,7 @@ const parser = new XMLParser({
  * one, and its entities could expand without limit.
  */
 export function parseMetadataXml(xml: string): Record<string, unknown> {
-  const markup = xml.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, "");
-  if (/<!DOCTYPE|<!ENTITY/i.test(markup)) throw new Error("a document type declaration is not read");
+  if (/<!DOCTYPE|<!ENTITY/i.test(outsideCdataAndComments(xml))) throw new Error("a document type declaration is not read");
   const parsed = parser.parse(xml) as unknown;
   if (!parsed || typeof parsed !== "object") throw new Error("not XML");
   return parsed as Record<string, unknown>;
@@ -36,3 +35,30 @@ export const num = (v: unknown): number | undefined => {
 };
 
 export const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+
+/**
+ * The markup with CDATA sections and comments taken out, in one pass: a regular expression
+ * would rescan to the end for every opener left unclosed, which takes hours on a large file.
+ * An unclosed one runs to the end of the file, as a parser would read it.
+ */
+export function outsideCdataAndComments(xml: string): string {
+  const out: string[] = [];
+  let i = 0;
+  // Each opener's next position is searched again only once the scan has passed it, so a
+  // kind that never occurs is looked for once, not once per section of the other kind.
+  let cdata = xml.indexOf("<![CDATA[");
+  let comment = xml.indexOf("<!--");
+  for (;;) {
+    if (cdata >= 0 && cdata < i) cdata = xml.indexOf("<![CDATA[", i);
+    if (comment >= 0 && comment < i) comment = xml.indexOf("<!--", i);
+    if (cdata < 0 && comment < 0) break;
+    const isCdata = cdata >= 0 && (comment < 0 || cdata < comment);
+    const start = isCdata ? cdata : comment;
+    out.push(xml.slice(i, start));
+    const end = xml.indexOf(isCdata ? "]]>" : "-->", start + (isCdata ? 9 : 4));
+    if (end < 0) return out.join("");
+    i = end + 3;
+  }
+  out.push(xml.slice(i));
+  return out.join("");
+}

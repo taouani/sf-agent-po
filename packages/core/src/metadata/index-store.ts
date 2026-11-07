@@ -1,5 +1,12 @@
 import type { Database } from "../store/db.js";
 import type { ComponentType, EdgeKind, ParsedMetadata } from "./model.js";
+import { componentKey } from "./objects.js";
+
+/**
+ * How long a run that has not finished keeps others from indexing the same source. A run
+ * that died (the host closed) holds it no longer than this, and is then cleared away.
+ */
+export const BUILD_LEASE_MS = 60 * 60 * 1000;
 
 export interface SnapshotSource {
   /** What was indexed: a folder path, a repository URL, or an org alias. */
@@ -24,6 +31,8 @@ export interface SnapshotStats {
   referenced?: number;
   edges?: number;
   skipped?: { file: string; reason: string }[];
+  /** How many were skipped in all, when there were more than `skipped` lists. */
+  skippedCount?: number;
   error?: string;
 }
 
@@ -111,10 +120,16 @@ export class MetadataIndex {
    * Indexes a source: records a building snapshot, reads it with `read`, stores what it
    * found in one transaction, and marks it ready. Older snapshots of the same source are
    * then removed. If reading fails, the snapshot is marked failed and the error rethrown;
-   * the previous ready snapshot stays in use.
+   * the previous ready snapshot stays in use. While another run of the same source is under
+   * way (started less than an hour ago), this refuses, unless `force` is set.
    */
-  async build(source: SnapshotSource, read: () => Promise<ParsedMetadata>): Promise<SnapshotInfo> {
+  async build(source: SnapshotSource, read: () => Promise<ParsedMetadata>, options: { force?: boolean } = {}): Promise<SnapshotInfo> {
     const id = this.database.write(() => {
+      const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
+      const running = this.db
+        .prepare("SELECT started_at FROM metadata_snapshot WHERE source = ? AND status = 'building' AND started_at > ? ORDER BY id DESC LIMIT 1")
+        .get(source.source, since) as { started_at: string } | undefined;
+      if (running && !options.force) throw new Error(`${source.source} is already being indexed (since ${running.started_at}).`);
       const r = this.db
         .prepare("INSERT INTO metadata_snapshot (source, kind, revision, status, started_at) VALUES (?, ?, ?, 'building', ?) RETURNING id")
         .get(source.source, source.kind, source.revision ?? null, new Date().toISOString()) as { id: number };
@@ -122,7 +137,10 @@ export class MetadataIndex {
     });
     try {
       const parsed = await read();
-      this.database.write(() => this.store(id, source.source, parsed));
+      return this.database.write(() => {
+        this.store(id, source.source, parsed);
+        return this.snapshotById(id)!;
+      });
     } catch (err) {
       this.database.write(() => {
         this.db
@@ -131,7 +149,6 @@ export class MetadataIndex {
       });
       throw err;
     }
-    return this.snapshotById(id)!;
   }
 
   private store(id: number, source: string, parsed: ParsedMetadata): void {
@@ -143,27 +160,30 @@ export class MetadataIndex {
     let referenced = 0;
     for (const c of parsed.components) {
       const row = insert.get(id, c.type, c.name, c.parent ?? null, c.label ?? null, c.file ?? null, c.missing ? 0 : 1, JSON.stringify(c.attrs), c.text) as { id: number };
-      ids.set(`${c.type}:${c.name}`, row.id);
+      ids.set(componentKey(c.type, c.name), row.id);
       if (c.missing) referenced++;
       else counts[c.type] = (counts[c.type] ?? 0) + 1;
     }
     const edge = this.db.prepare("INSERT OR IGNORE INTO edge (src, dst, kind) VALUES (?, ?, ?)");
     let edges = 0;
     for (const e of parsed.edges) {
-      const src = ids.get(`${e.from.type}:${e.from.name}`);
-      const dst = ids.get(`${e.to.type}:${e.to.name}`);
+      const src = ids.get(componentKey(e.from.type, e.from.name));
+      const dst = ids.get(componentKey(e.to.type, e.to.name));
       if (src === undefined || dst === undefined || src === dst) continue;
       edges += Number(edge.run(src, dst, e.kind).changes);
     }
-    const stats: SnapshotStats = { counts, referenced, edges, skipped: parsed.skipped };
+    const stats: SnapshotStats = { counts, referenced, edges, skipped: parsed.skipped, ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}) };
     this.db.prepare("UPDATE metadata_snapshot SET status = 'ready', finished_at = ?, stats = ? WHERE id = ?").run(new Date().toISOString(), JSON.stringify(stats), id);
-    // Only the newest snapshot of a source is kept; a run still building elsewhere is left alone.
-    this.db.prepare("DELETE FROM metadata_snapshot WHERE source = ? AND id < ? AND status != 'building'").run(source, id);
+    // The run that finishes last holds the newest reading of the source, whichever started
+    // first, so it replaces every other; a run still building elsewhere is left alone unless
+    // its lease ran out (it died).
+    const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
+    this.db.prepare("DELETE FROM metadata_snapshot WHERE source = ? AND id != ? AND (status != 'building' OR started_at <= ?)").run(source, id, since);
   }
 
   /** The newest ready snapshot of a source. */
   latest(source: string): SnapshotInfo | undefined {
-    const r = this.db.prepare("SELECT * FROM metadata_snapshot WHERE source = ? AND status = 'ready' ORDER BY id DESC LIMIT 1").get(source) as SnapshotRow | undefined;
+    const r = this.db.prepare("SELECT * FROM metadata_snapshot WHERE source = ? AND status = 'ready' ORDER BY finished_at DESC, id DESC LIMIT 1").get(source) as SnapshotRow | undefined;
     return r && toSnapshot(r);
   }
 
@@ -179,7 +199,7 @@ export class MetadataIndex {
 
   component(snapshot: number, type: ComponentType, name: string): IndexedComponent | undefined {
     const r = this.db
-      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ? COLLATE NOCASE`)
+      .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ?`)
       .get(snapshot, type, name) as ComponentRow | undefined;
     return r && toComponent(r);
   }
@@ -188,7 +208,7 @@ export class MetadataIndex {
   children(snapshot: number, object: string): IndexedComponent[] {
     return (
       this.db
-        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent = ? COLLATE NOCASE ORDER BY c.type, c.name`)
+        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.parent = ? ORDER BY c.type, c.name`)
         .all(snapshot, object) as unknown as ComponentRow[]
     ).map(toComponent);
   }

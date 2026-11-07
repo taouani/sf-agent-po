@@ -126,7 +126,7 @@ export const MIGRATIONS: readonly Migration[] = [
       -- repository at a revision, or an org at a retrieve time. Readers use the newest
       -- ready snapshot of a source; a run that died stays 'building' and is ignored.
       CREATE TABLE metadata_snapshot (
-        id           INTEGER PRIMARY KEY,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
         source       TEXT NOT NULL,
         kind         TEXT NOT NULL CHECK (kind IN ('repo', 'org')),
         revision     TEXT,
@@ -141,13 +141,14 @@ export const MIGRATIONS: readonly Migration[] = [
       -- the full name ("Account.Industry__c"), parent the object it belongs to. present is 0
       -- for a component only referenced (a standard object outside the project). text holds
       -- the free text (descriptions, help text, picklist values, messages): it is stored as
-      -- the project holds it and masked when a tool returns it, never sent as is.
+      -- the project holds it and masked when a tool returns it, never sent as is. API names
+      -- are case-insensitive in Salesforce, so name and parent compare without case.
       CREATE TABLE component (
         id        INTEGER PRIMARY KEY,
         snapshot  INTEGER NOT NULL REFERENCES metadata_snapshot(id) ON DELETE CASCADE,
         type      TEXT NOT NULL,
-        name      TEXT NOT NULL,
-        parent    TEXT,
+        name      TEXT NOT NULL COLLATE NOCASE,
+        parent    TEXT COLLATE NOCASE,
         label     TEXT,
         file      TEXT,
         present   INTEGER NOT NULL DEFAULT 1,

@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { classify, Database, formulaFields, MetadataIndex, scanProject, type ParsedComponent } from "../src/index.js";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { classify, Database, formulaCode, formulaFields, MetadataIndex, packagePath, parseMetadataXml, scanProject, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -37,8 +39,10 @@ describe("scanProject", () => {
 
     expect(byName.get("CustomField:Policy__c.Holder__c")).toMatchObject({ parent: "Policy__c", attrs: { type: "Lookup", referenceTo: ["Account"] } });
     const status = byName.get("CustomField:Policy__c.Status__c")!;
-    expect(status.attrs).toMatchObject({ type: "Picklist", required: true, restricted: true, picklist: [{ value: "Active", default: true }, { value: "Lapsed" }] });
-    expect(status.text).toContain("Lapsed");
+    // Picklist values can name clients: they are free text, and attrs only count them.
+    expect(status.attrs).toMatchObject({ type: "Picklist", required: true, restricted: true, picklistValues: 2 });
+    expect(JSON.stringify(status.attrs)).not.toContain("Lapsed");
+    expect(status.text).toBe("Active\nLapsed");
     expect(byName.get("RecordType:Policy__c.Motor")).toMatchObject({ label: "Motor", attrs: { active: true } });
     expect(byName.get("ValidationRule:Policy__c.Premium_Required")!.text).toBe("An active policy needs a premium");
 
@@ -83,13 +87,43 @@ describe("scanProject", () => {
 
 describe("formulaFields", () => {
   const fields = new Map<string, Map<string, ParsedComponent>>([
-    ["Case", new Map([["Contract__c", { type: "CustomField", name: "Case.Contract__c", attrs: { referenceTo: ["Contract__c"] }, text: "" }]])],
-    ["Contract__c", new Map()],
+    ["case", new Map([["contract__c", { type: "CustomField", name: "Case.Contract__c", attrs: { referenceTo: ["Contract__c"] }, text: "" }]])],
+    ["contract__c", new Map()],
   ]);
-  const of = (o: string) => fields.get(o);
+  const of = (o: string) => fields.get(o.toLowerCase());
+  const objects: Record<string, string> = { case: "Case", contract__c: "Contract__c" };
+  const named = (o: string) => objects[o.toLowerCase()];
+
+  it("matches names without case and keeps the declared spelling", () => {
+    expect(formulaFields("contract__R.owner.name", "Case", of, named).sort()).toEqual(["Case.Contract__c", "Contract__c.ownerId", "User.name"]);
+  });
+
+  it("knows where standard relationships lead, and stops where it cannot tell", () => {
+    expect(formulaFields("Parent.Name", "Account", of).sort()).toEqual(["Account.Name", "Account.ParentId"]);
+    expect(formulaFields("Who.Name & What.Name", "Task", of).sort()).toEqual(["Task.WhatId", "Task.WhoId"]);
+    expect(formulaFields("Manager.Email & Foo.Bar", "User", of).sort()).toEqual(["User.Email", "User.FooId", "User.ManagerId"]);
+    // Polymorphic syntax names the type; person account relationships end in __pr.
+    expect(formulaFields("Owner:User.Email", "Case", of, named).sort()).toEqual(["Case.OwnerId", "User.Email"]);
+    expect(formulaFields("Advisor__pr.Phone", "Account", of).sort()).toEqual(["Account.Advisor__pc"]);
+  });
+
+  it("leaves out numbers, and strips comments and strings in order", () => {
+    expect(formulaFields("Amount__c * 1.5e3", "Case", of)).toEqual(["Case.Amount__c"]);
+    expect(formulaFields('"a/*" & Amount__c & "*/" & Other__c', "Case", of).sort()).toEqual(["Case.Amount__c", "Case.Other__c"]);
+    expect(formulaCode('A /* "x" */ & "/* y" & B')).toBe("A   &   & B");
+  });
+
+  it("stays fast on unclosed comments and strings, and on huge formulas", () => {
+    const started = Date.now();
+    formulaFields("/* ".repeat(40_000), "Case", of);
+    formulaFields('"\\'.repeat(6_000), "Case", of);
+    expect(formulaFields("A__c & ".repeat(5_000), "Case", of)).toEqual([]);
+    expect(() => parseMetadataXml(`<a>${"<!--".repeat(200_000)}</a>`)).toThrow();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
 
   it("follows custom and standard relationships", () => {
-    expect(formulaFields("Contract__r.Owner.Name & Account.Name", "Case", of).sort()).toEqual(
+    expect(formulaFields("Contract__r.Owner.Name & Account.Name", "Case", of, named).sort()).toEqual(
       ["Account.Name", "Case.AccountId", "Case.Contract__c", "Contract__c.OwnerId", "User.Name"].sort(),
     );
   });
@@ -119,8 +153,8 @@ describe("MetadataIndex", () => {
     expect(index.search(snap.id, '"; DROP')).toEqual([]);
 
     expect(index.children(snap.id, "policy__c").map((c) => c.name)).toEqual([
-      "Policy__c.Holder_Industry__c",
       "Policy__c.Holder__c",
+      "Policy__c.Holder_Industry__c",
       "Policy__c.Premium__c",
       "Policy__c.Status__c",
       "Policy__c.Motor",
@@ -148,5 +182,76 @@ describe("MetadataIndex", () => {
     expect(index.snapshots().map((s) => s.id)).toEqual([second.id]);
     expect(index.search(second.id, "Claim").length).toBeGreaterThan(0);
     expect(index.search(first.id, "Claim")).toEqual([]);
+  });
+});
+
+describe("scanProject on awkward projects", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sf-agent-meta-"));
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+  const write = (rel: string, xml: string) => {
+    mkdirSync(join(tmp, rel, ".."), { recursive: true });
+    writeFileSync(join(tmp, rel), xml);
+  };
+
+  it("fails when the project folder or a package folder cannot be read", async () => {
+    await expect(scanProject(join(tmp, "nope"))).rejects.toThrow(/the project folder cannot be read/);
+    write("sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "force-app" }] }));
+    await expect(scanProject(tmp)).rejects.toThrow(/^force-app cannot be read: ENOENT/);
+    write("sfdx-project.json", "{ not json");
+    await expect(scanProject(tmp)).rejects.toThrow("sfdx-project.json is not valid JSON");
+  });
+
+  it("matches names without case, and links roll-ups and dependent picklists", async () => {
+    write("objects/Policy__c.object", `<CustomObject>
+      <fields><fullName>Holder__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></fields>
+      <fields><fullName>Region__c</fullName><type>Picklist</type></fields>
+      <fields><fullName>City__c</fullName><type>Picklist</type><valueSet><controllingField>region__c</controllingField></valueSet></fields>
+      <fields><fullName>Label__c</fullName><type>Text</type><formula>holder__r.Name &amp; HOLDER__C</formula></fields>
+      <fields><fullName>Claims_Total__c</fullName><type>Summary</type><summarizedField>Claim__c.Amount__c</summarizedField><summaryForeignKey>Claim__c.Policy__c</summaryForeignKey><summaryOperation>sum</summaryOperation></fields>
+    </CustomObject>`);
+    write("objects/claim__c.object", `<CustomObject><fields><fullName>Amount__c</fullName><type>Currency</type></fields></CustomObject>`);
+    const { components, edges } = await scanProject(tmp);
+    const names = components.map((c) => `${c.type}:${c.name}`);
+    // No placeholder next to the real field because of a different case.
+    expect(names.filter((n) => n.toLowerCase() === "customfield:policy__c.holder__c")).toEqual(["CustomField:Policy__c.Holder__c"]);
+    const reads = (from: string) => edges.filter((e) => e.from.name === from && e.kind === "reads").map((e) => e.to.name).sort();
+    expect(reads("Policy__c.Label__c")).toEqual(["Account.Name", "Policy__c.Holder__c"]);
+    expect(reads("Policy__c.City__c")).toEqual(["Policy__c.Region__c"]);
+    // The roll-up reads the declared claim__c spelling, and the placeholder for Policy__c on it.
+    expect(reads("Policy__c.Claims_Total__c")).toEqual(["claim__c.Amount__c", "claim__c.Policy__c"]);
+    expect(components.find((c) => c.name === "claim__c.Policy__c")).toMatchObject({ missing: true, parent: "claim__c" });
+  });
+
+  it("normalises package paths and refuses ones that leave the project", () => {
+    expect(packagePath(".")).toBe("");
+    expect(packagePath("./force-app/")).toBe("force-app");
+    expect(packagePath("force-app\\main")).toBe("force-app/main");
+    expect(packagePath("../other")).toBeUndefined();
+    expect(packagePath("/abs")).toBeUndefined();
+    expect(packagePath("C:/abs")).toBeUndefined();
+  });
+});
+
+describe("MetadataIndex runs of the same source", () => {
+  it("keeps the good snapshot when a scan fails, and lets one run at a time", async () => {
+    const index = fresh();
+    const good = await index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")));
+    await expect(index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "nope")))).rejects.toThrow(/cannot be read/);
+    expect(index.latest("s")?.id).toBe(good.id);
+
+    // A run under way holds the source; force goes ahead, and the one that finishes last wins.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = index.build({ source: "s", kind: "repo", revision: "slow" }, async () => {
+      await gate;
+      return scanProject(join(fixtures, "mdapi"));
+    });
+    await expect(index.build({ source: "s", kind: "repo" }, () => scanProject(join(fixtures, "mdapi")))).rejects.toThrow("s is already being indexed");
+    const quick = await index.build({ source: "s", kind: "repo", revision: "quick" }, () => scanProject(join(fixtures, "mdapi")), { force: true });
+    expect(index.latest("s")?.id).toBe(quick.id);
+    release();
+    const late = await slow;
+    expect(index.latest("s")).toMatchObject({ id: late.id, revision: "slow" });
+    expect(index.snapshots().map((s) => s.id)).toEqual([late.id]);
   });
 });

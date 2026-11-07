@@ -45,4 +45,6 @@ export interface ParsedMetadata {
   edges: ParsedEdge[];
   /** Files that could not be read, with the reason, relative to the root. */
   skipped: { file: string; reason: string }[];
+  /** How many were skipped in all, when there were more than `skipped` lists. */
+  skippedCount?: number;
 }
