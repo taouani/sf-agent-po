@@ -25,7 +25,7 @@ import {
 import { contextLanguage } from "../checks.js";
 import { maskDeep } from "../design/mask.js";
 import { requirementsToText } from "../requirements.js";
-import { confirmedOf, plural } from "./design-steps.js";
+import { confirmedOf, NO_UNSEEN_COMPONENTS, plural } from "./design-steps.js";
 import type { StepDefinition, StepOutcome, StepState } from "./engine.js";
 
 /** One practice of PO_PRACTICES, by its bold heading. */
@@ -179,6 +179,7 @@ export const storiesStep: StepDefinition<StoriesAnswer> = {
       requirementsBlock(confirmed, "each story"),
       ...earlierWork(s),
       `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
+      NO_UNSEEN_COMPONENTS,
     ].join("\n\n");
   },
   async submit(answer, s): Promise<StepOutcome> {
