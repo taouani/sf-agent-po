@@ -57,6 +57,19 @@ export { currentStep, MAX_ATTEMPTS, type StepDefinition, type StepOutcome, type 
 export { methodStep, requirementsStep, scopeStep, WORKFLOW_DEFINITIONS } from "./workflow/steps.js";
 export { registerWorkflowTools, submitStep, type WorkflowToolsKit } from "./workflow/tools.js";
 export { confirmScope, storedScope, type ScopeOutcome, type StoredScope } from "./scope-tools.js";
+export {
+  checkRules,
+  contextLanguage,
+  detectLanguage,
+  LANGUAGE_NAMES,
+  languageFinding,
+  loadCheckRules,
+  OUTPUT_LANGUAGES,
+  plainApostrophes,
+  wordsPattern,
+  type CheckRules,
+  type OutputLanguage,
+} from "./checks.js";
 export { registerAgentPrompts, WORKFLOWS } from "./prompts.js";
 export { EVIDENCE_RULES, PRIVACY_RULES, PUBLISH_RULES } from "./agents/common.js";
 export { INDUSTRIES, INDUSTRY_IDS, industryGuidance, resolveIndustry } from "./agents/industries.js";

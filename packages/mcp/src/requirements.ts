@@ -20,7 +20,8 @@ import {
 } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type RequirementItem, type RequirementsRequest } from "./approval/server.js";
-import { SENSITIVE, VAGUE, type Finding } from "./backlog.js";
+import type { Finding } from "./backlog.js";
+import { checkRules, contextLanguage, languageFinding, type OutputLanguage } from "./checks.js";
 import type { Reviewer } from "./inputs.js";
 
 /** Requirements one proposal can hold. */
@@ -64,7 +65,13 @@ const whereOf = (r: ProposedRequirement, i: number) => r.id ?? `new ${i + 1}`;
  * `existing` is every requirement of the context, dropped ones too, and `contextDocs` its
  * documents. An error stops the proposal before the user sees it.
  */
-export function checkRequirements(proposal: readonly ProposedRequirement[], existing: readonly Requirement[], contextDocs: readonly SourceDocument[]): Finding[] {
+export function checkRequirements(
+  proposal: readonly ProposedRequirement[],
+  existing: readonly Requirement[],
+  contextDocs: readonly SourceDocument[],
+  language: OutputLanguage = "en",
+): Finding[] {
+  const rules = checkRules(language);
   const findings: Finding[] = [];
   const add = (level: Finding["level"], where: string, message: string) => findings.push({ level, where, message });
   const known = new Map(existing.map((r) => [r.id, r]));
@@ -97,9 +104,11 @@ export function checkRequirements(proposal: readonly ProposedRequirement[], exis
       if (!doc) add("error", where, `Source ${id} is not a document in this context.`);
       else if (!isInputDocument(doc)) add("warning", where, `Source ${id} ("${doc.title}") is not an input but something the agents wrote or the org's metadata; cite the inputs it comes from.`);
     }
+    const joined = r.statement.match(rules.joining);
     if (sentences(r.statement) > 1) add("warning", where, "States more than one sentence; a requirement should state one thing, so split it if it holds several.");
+    else if (joined) add("warning", where, `"${joined[0]}" may join two needs; split the statement if it holds two.`);
     if (r.kind === "non-functional") {
-      const vague = r.statement.match(VAGUE);
+      const vague = r.statement.match(rules.vague);
       if (vague) add("warning", where, `"${vague[0]}" cannot be tested; state a measurable target.`);
     }
   });
@@ -110,10 +119,16 @@ export function checkRequirements(proposal: readonly ProposedRequirement[], exis
   const compliance = new Set(proposal.filter((r) => r.kind === "compliance" || r.kind === "non-functional" || r.kind === "constraint").flatMap((r) => r.sourceIds));
   for (const doc of contextDocs) {
     if (!isInputDocument(doc)) continue;
-    const sensitive = SENSITIVE.test(`${doc.title}\n${doc.content}`);
+    const sensitive = rules.sensitive.test(`${doc.title}\n${doc.content}`);
     if (!cited.has(doc.id)) add(sensitive ? "warning" : "info", doc.id, `"${doc.title}" is not cited by any requirement${sensitive ? ", and it mentions security or compliance" : ""}.`);
     else if (sensitive && !compliance.has(doc.id)) add("warning", doc.id, `"${doc.title}" mentions security or compliance, but no compliance, non-functional or constraint requirement cites it.`);
   }
+  const wrongLanguage = languageFinding(
+    proposal.map((r) => r.statement),
+    language,
+    "proposal",
+  );
+  if (wrongLanguage) findings.push(wrongLanguage);
   return findings;
 }
 
@@ -179,7 +194,7 @@ export async function proposeRequirements(kit: RequirementsKit, context: string,
     if (id) taken.add(id);
     return { ...r, statement, sourceIds: [...new Set(r.sourceIds)], ...(id ? { id } : {}) };
   });
-  const findings = checkRequirements(items, existing, docs);
+  const findings = checkRequirements(items, existing, docs, contextLanguage(contexts, context));
   const outcome = (status: RequirementsOutcome["status"], extra: Partial<RequirementsOutcome> = {}): RequirementsOutcome => ({
     status,
     findings,

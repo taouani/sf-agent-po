@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
  * Layout of a content folder:
  * - `industries/<id>.md`: front matter (id, name, aliases), then one `## ` section per topic
  * - `agents/<id>.md` and `templates/<id>.md`: plain Markdown, used as written
+ * - `checks/<language>.md`: the word lists the checks use in that language (CHECK_SECTIONS)
  */
 export const BUILTIN_CONTENT_DIR = fileURLToPath(new URL("../../content/", import.meta.url));
 
@@ -24,6 +25,29 @@ export const INDUSTRY_SECTIONS = {
 
 export type IndustrySection = keyof typeof INDUSTRY_SECTIONS;
 
+export const CHECK_SECTIONS = {
+  vague: "Vague words",
+  personas: "Generic personas",
+  articles: "Articles",
+  compliance: "Compliance terms",
+  joining: "Joining words",
+  common: "Common words",
+} as const;
+
+export type CheckSection = keyof typeof CHECK_SECTIONS;
+
+/**
+ * The word lists of one language, lowercase. An entry ending in "*" also matches the words it
+ * starts.
+ */
+export interface CheckWords extends Record<CheckSection, string[]> {
+  /** "en", "fr". */
+  language: string;
+  /** "English", "French". */
+  name: string;
+  file: string;
+}
+
 export interface IndustryTemplate extends Record<IndustrySection, string> {
   id: string;
   name: string;
@@ -36,6 +60,7 @@ export class ContentLibrary {
   private readonly industryById = new Map<string, IndustryTemplate>();
   private readonly aliasToId = new Map<string, string>();
   private readonly texts = new Map<string, string>();
+  private readonly checkWords = new Map<string, CheckWords>();
 
   /**
    * Reads the given content folders in order. A later folder replaces an
@@ -47,6 +72,10 @@ export class ContentLibrary {
       for (const file of markdownFiles(join(dir, "industries"))) {
         const t = parseIndustry(readFileSync(file, "utf8"), file);
         this.industryById.set(t.id, t);
+      }
+      for (const file of markdownFiles(join(dir, "checks"))) {
+        const c = parseChecks(readFileSync(file, "utf8"), file);
+        this.checkWords.set(c.language, c);
       }
       for (const kind of ["agents", "templates"]) {
         for (const file of markdownFiles(join(dir, kind))) {
@@ -98,6 +127,18 @@ export class ContentLibrary {
 - **Watch for:** ${t.watchFor}
 
 Product names and object names differ between releases and licences. Before relying on an industry object or feature, confirm it is licensed and present in the metadata or org documents; if it is not, say so and treat it as an option to evaluate.`;
+  }
+
+  /** The languages that have check word lists, e.g. ["en", "fr"]. */
+  checkLanguages(): string[] {
+    return [...this.checkWords.keys()].sort();
+  }
+
+  /** The check word lists of a language, e.g. "fr". */
+  checks(language: string): CheckWords {
+    const c = this.checkWords.get(language);
+    if (!c) throw new Error(`No check word lists for "${language}". Available: ${this.checkLanguages().join(", ") || "none"}.`);
+    return c;
   }
 
   /** An agent text, e.g. "sa-role". */
@@ -161,6 +202,38 @@ export function parseIndustry(markdown: string, file: string): IndustryTemplate 
     t[key] = text;
   }
   return t;
+}
+
+export function parseChecks(markdown: string, file: string): CheckWords {
+  const { data, body } = parseFrontMatter(normaliseText(markdown), file);
+  const language = data.language;
+  if (typeof language !== "string" || !/^[a-z]{2,3}$/.test(language)) throw new Error(`${file}: "language" must be a language code such as en or fr.`);
+  if (basename(file, ".md") !== language) throw new Error(`${file}: the file name must be ${language}.md.`);
+  if (typeof data.name !== "string" || !data.name) throw new Error(`${file}: "name" is missing.`);
+  const sections = new Map<string, string[]>();
+  const parts = body.split(/^## +(.+?)[ \t]*$/m);
+  if (parts[0]!.trim()) throw new Error(`${file}: text before the first "## " section.`);
+  for (let i = 1; i < parts.length; i += 2) {
+    const heading = parts[i]!;
+    if (sections.has(heading)) throw new Error(`${file}: the section "## ${heading}" appears twice.`);
+    // Lines starting with "- " are the entries; other lines explain the list.
+    const words = parts[i + 1]!
+      .split("\n")
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2).trim().toLowerCase());
+    for (const w of words) if (!w || /[*].|^[*]/.test(w)) throw new Error(`${file}: "${w}" in "## ${heading}" is not a word or phrase ("*" may only end it).`);
+    sections.set(heading, [...new Set(words)]);
+  }
+  const known = new Set<string>(Object.values(CHECK_SECTIONS));
+  const unknown = [...sections.keys()].filter((s) => !known.has(s));
+  if (unknown.length) throw new Error(`${file}: unknown section(s) ${unknown.map((s) => `"${s}"`).join(", ")}. Use: ${[...known].join(", ")}.`);
+  const c = { language, name: data.name, file } as CheckWords;
+  for (const [key, heading] of Object.entries(CHECK_SECTIONS) as [CheckSection, string][]) {
+    const words = sections.get(heading);
+    if (!words?.length) throw new Error(`${file}: the section "## ${heading}" is missing or has no "- " entries.`);
+    c[key] = words;
+  }
+  return c;
 }
 
 /**

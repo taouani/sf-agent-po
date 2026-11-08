@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { WorkflowRun } from "@sf-agent-po/core";
 import { z } from "zod";
 import { INDUSTRY_IDS, resolveIndustry } from "../agents/industries.js";
+import { contextLanguage, LANGUAGE_NAMES, OUTPUT_LANGUAGES, type OutputLanguage } from "../checks.js";
 import { KeyedLock } from "../artifacts.js";
 import type { Finding } from "../backlog.js";
 import type { CallContext } from "../review.js";
@@ -123,22 +124,34 @@ export function registerWorkflowTools(server: McpServer, kit: WorkflowToolsKit):
         focus: z.string().max(1_000).optional().describe("Optional focus or scope: an area, or the stories, epics or Jira keys in scope."),
         industry: z.string().optional().describe(`Optional industry template: ${INDUSTRY_IDS.join(", ")}.`),
         restart: z.boolean().optional().describe("Start over even if a run is open; the open run is closed."),
+        language: z.enum(OUTPUT_LANGUAGES).optional().describe("The language to write in: en (English, the default) or fr (French). Kept with the context for every later run."),
       },
       annotations: { readOnlyHint: false },
     },
-    guard(async ({ context, workflow, focus, industry, restart }: { context: string; workflow: WorkflowId; focus?: string; industry?: string; restart?: boolean }, call) =>
+    guard(
+      async (
+        { context, workflow, focus, industry, restart, language }: { context: string; workflow: WorkflowId; focus?: string; industry?: string; restart?: boolean; language?: OutputLanguage },
+        call,
+      ) =>
       lock.run(`${context}/${workflow}`, async () => {
+        const known = industry ? resolveIndustry(industry) : undefined;
+        if (industry && !known) throw new Error(`Unknown industry "${industry}". Use one of: ${INDUSTRY_IDS.join(", ")}.`);
+        // The language is the context's, for every run: changing it here applies from the next step on.
+        const before = contextLanguage(kit.contexts, context);
+        if (language) kit.contexts.updateSettings(context, { language });
+        const switched =
+          language && language !== before
+            ? ` The output language is now ${LANGUAGE_NAMES[language]} (it was ${LANGUAGE_NAMES[before]}): what earlier steps saved stays as it is, so tell the user and revise it if they want it in ${LANGUAGE_NAMES[language]}.`
+            : "";
         const open = runs.open(context, workflow);
         if (open && !restart) {
           const changed = focus !== undefined || industry !== undefined ? " It keeps the focus and industry it was started with; set restart to true to change them." : "";
-          return text(await briefText(stateOf(kit, open, call), `Resuming the open run, started ${open.createdAt}.${changed}`));
+          return text(await briefText(stateOf(kit, open, call), `Resuming the open run, started ${open.createdAt}.${changed}${switched}`));
         }
-        const known = industry ? resolveIndustry(industry) : undefined;
-        if (industry && !known) throw new Error(`Unknown industry "${industry}". Use one of: ${INDUSTRY_IDS.join(", ")}.`);
         const maskedFocus = focus?.trim() ? (await kit.masker.maskOutputs(context, [focus.trim()])).texts[0] : undefined;
         const def: WorkflowDefinition = WORKFLOW_DEFINITIONS[workflow];
         const run = runs.start(context, workflow, def.steps(kit).map((d) => d.id), { ...(maskedFocus ? { focus: maskedFocus } : {}), ...(known ? { industry: known } : {}) });
-        return text(await briefText(stateOf(kit, run, call), open ? `Started a new run; the open one (${open.id}) is closed.` : "Started a new run."));
+        return text(await briefText(stateOf(kit, run, call), `${open ? `Started a new run; the open one (${open.id}) is closed.` : "Started a new run."}${switched}`));
       }),
     ),
   );

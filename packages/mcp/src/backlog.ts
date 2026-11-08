@@ -5,6 +5,7 @@
 
 import type { Masker, SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
+import { checkRules, languageFinding, type OutputLanguage } from "./checks.js";
 
 const localId = z
   .string()
@@ -178,17 +179,16 @@ export interface Finding {
 }
 
 const SCALE = new Set([1, 2, 3, 5, 8, 13]);
-// "quick" is not listed because Quick Actions are a Salesforce feature.
-export const VAGUE = /\b(fast|user[- ]friendly|easy|easily|intuitive|appropriate(ly)?|etc\.?|and so on|as needed|seamless(ly)?|robust)\b/i;
-const GENERIC_PERSONA = /^(a |an |the )?(user|users|someone|customer|person)$/i;
-export const SENSITIVE = /\b(security|secure|encrypt\w*|gdpr|hipaa|pci|sox|mfa|sso|privacy|personal data|pii|compliance|audit\w*|retention|consent)\b/i;
 
 /**
  * Deterministic quality checks on a backlog: structure, INVEST signals, testable acceptance
  * criteria, and traceability back to the inputs, especially security and compliance ones.
  * `contextDocs` are the context's masked documents: what the findings quote is masked.
+ * `language` is the context's output language: the word lists are that language's
+ * (content/checks), and a backlog written in another one is flagged.
  */
-export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): Finding[] {
+export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], language: OutputLanguage = "en"): Finding[] {
+  const rules = checkRules(language);
   const findings: Finding[] = [];
   const add = (level: Finding["level"], where: string, message: string) => findings.push({ level, where, message });
 
@@ -224,12 +224,12 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
       const where = s.id;
       checkSources(where, s.sourceIds);
       if (!s.sourceIds?.length && !epic.sourceIds?.length) add("warning", where, "No source documents: the story cannot be traced to a requirement.");
-      if (GENERIC_PERSONA.test(s.persona.trim())) add("warning", where, `Persona "${s.persona}" is generic; name the role, e.g. "Renewals agent".`);
+      if (rules.genericPersona(s.persona)) add("warning", where, `Persona "${s.persona}" is generic; name the role, e.g. "Renewals agent".`);
       if (s.storyPoints !== undefined && !SCALE.has(s.storyPoints)) add("warning", where, `Story points ${s.storyPoints} is not on the 1, 2, 3, 5, 8, 13 scale.`);
       if (s.storyPoints !== undefined && s.storyPoints > 8) add("warning", where, `At ${s.storyPoints} points the story is likely too big for a sprint; consider splitting it.`);
       if (s.acceptanceCriteria.length > 8) add("warning", where, `${s.acceptanceCriteria.length} acceptance criteria suggest the story should be split.`);
       s.acceptanceCriteria.forEach((ac, i) => {
-        const vague = `${ac.given} ${ac.when} ${ac.then}`.match(VAGUE);
+        const vague = `${ac.given} ${ac.when} ${ac.then}`.match(rules.vague);
         if (vague) add("warning", `${where} AC${i + 1}`, `"${vague[0]}" is not testable; state a measurable outcome.`);
       });
       for (const dep of s.dependsOn ?? []) {
@@ -251,12 +251,16 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[]): F
   for (const doc of contextDocs) {
     const isInput = !(doc.metadata as { artifact?: boolean } | undefined)?.artifact && !["metadata", "org"].includes(doc.kind);
     if (!isInput || referenced.has(doc.id)) continue;
-    if (SENSITIVE.test(`${doc.title}\n${doc.content}`)) {
+    if (rules.sensitive.test(`${doc.title}\n${doc.content}`)) {
       add("warning", doc.id, `"${doc.title}" mentions security or compliance requirements but no epic or story cites it.`);
     } else {
       add("info", doc.id, `"${doc.title}" is not cited by any epic or story.`);
     }
   }
+
+  const written = allStories(backlog).flatMap(({ story: s }) => [s.summary, s.want, s.benefit, ...s.acceptanceCriteria.flatMap((ac) => [ac.given, ac.when, ac.then])]);
+  const wrongLanguage = languageFinding([backlog.title, ...backlog.epics.flatMap((e) => [e.summary, e.outcome]), ...written], language, "backlog");
+  if (wrongLanguage) findings.push(wrongLanguage);
 
   if (backlog.openQuestions?.length && !allStories(backlog).some(({ story }) => story.type === "spike")) {
     add("info", "open questions", "There are open questions but no spikes; consider a spike for any question that blocks estimation.");

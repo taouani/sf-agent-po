@@ -7,6 +7,7 @@
 import type { ContextRepository, Masker, MetadataIndex, RequirementRepository, StepFinding, WorkflowRepository, WorkflowRun, WorkflowStep } from "@sf-agent-po/core";
 import type { z } from "zod";
 import type { Finding } from "../backlog.js";
+import { contextLanguage, LANGUAGE_NAMES } from "../checks.js";
 import type { Reviewer } from "../inputs.js";
 import type { CallContext } from "../review.js";
 
@@ -98,7 +99,10 @@ export function progressText(run: WorkflowRun, titles: ReadonlyMap<string, strin
 export async function briefText(s: Omit<StepState, "run"> & { run: WorkflowRun }, lead = ""): Promise<string> {
   const steps = stepsOf(s.workflow, s.kit, s.run);
   const titles = new Map(steps.map((x) => [x.def.id, x.def.title]));
-  const header = `${lead}${lead ? "\n\n" : ""}Workflow: ${s.workflow.title} · context "${s.context}" · run ${s.run.id}${s.focus ? `\nFocus: ${s.focus}` : ""}`;
+  const language = LANGUAGE_NAMES[contextLanguage(s.kit.contexts, s.context)];
+  const header =
+    `${lead}${lead ? "\n\n" : ""}Workflow: ${s.workflow.title} · context "${s.context}" · run ${s.run.id}${s.focus ? `\nFocus: ${s.focus}` : ""}\n` +
+    `Output language: ${language}. Write every requirement, design section and story in ${language}, whatever the inputs' language; keep API names, ids and pseudonyms as they are.`;
   const i = currentStep(s.run);
   if (i < 0) {
     const failed = s.run.steps.filter((x) => x.status === "failed").length;

@@ -297,6 +297,22 @@ describe("workflow tools", () => {
     expect(twice.text).toContain('Step "requirements" passed');
   });
 
+  it("keeps the output language with the context and tells it in every brief", async () => {
+    const { call, contexts } = await connect();
+    expect((await call("workflow_start", wf)).text).toContain("Output language: English.");
+    const fr = await call("workflow_start", { ...wf, workflow: "po_backlog", language: "fr" });
+    expect(fr.text).toContain("Output language: French. Write every requirement, design section and story in French");
+    expect(contexts.get("renewals")?.settings.language).toBe("fr");
+    expect((await call("workflow_step", wf)).text).toContain("Output language: French.");
+    expect((await call("workflow_start", { ...wf, language: "de" })).isError).toBe(true);
+    // Changed while a run is open: said once. A call that fails leaves it as it was.
+    const back = await call("workflow_start", { ...wf, language: "en" });
+    expect(back.text).toContain("Resuming the open run");
+    expect(back.text).toContain("The output language is now English (it was French)");
+    expect((await call("workflow_start", { ...wf, restart: true, industry: "space mining", language: "fr" })).isError).toBe(true);
+    expect(contexts.get("renewals")?.settings.language).toBe("en");
+  });
+
   it("lets a story review end without saved stories", async () => {
     const { call } = await connect();
     const review = { context: "renewals", workflow: "po_review_stories" };
