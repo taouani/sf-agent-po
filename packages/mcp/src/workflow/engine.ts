@@ -146,6 +146,11 @@ export function lengthLimits(schema: z.ZodType, path = "", out = new Map<string,
     case "union":
       for (const o of def.options as z.ZodType[]) lengthLimits(o, path, out);
       break;
+    case "intersection":
+      lengthLimits(def.left, path, out);
+      lengthLimits(def.right, path, out);
+      break;
+    case "nonoptional":
     case "optional":
     case "default":
     case "prefault":
@@ -155,7 +160,9 @@ export function lengthLimits(schema: z.ZodType, path = "", out = new Map<string,
       lengthLimits(def.innerType, path, out);
       break;
     case "pipe":
+      // Either side may hold the limit: the input, or what follows a preprocess or a transform.
       lengthLimits(def.in, path, out);
+      lengthLimits(def.out, path, out);
       break;
     case "string":
       if (typeof t.maxLength === "number" && t.maxLength < LONG_TEXT && path) out.set(path, Math.min(out.get(path) ?? Infinity, t.maxLength));
@@ -164,11 +171,17 @@ export function lengthLimits(schema: z.ZodType, path = "", out = new Map<string,
   return out;
 }
 
-/** The limits as the brief shows them, so that an answer is not sent back for a long field. */
-function limitsText(schema: z.ZodType): string {
-  const limits = [...lengthLimits(schema)];
-  if (!limits.length) return "";
-  return `Length limits (characters; keep names and types short, and put the detail in the longer fields): ${limits.map(([k, n]) => `${k} ${n}`).join(", ")}.\n\n`;
+/** The limits as the brief shows them, grouped by what holds them, so that an answer is not sent back for a long field. */
+export function limitsText(schema: z.ZodType): string {
+  const groups = new Map<string, string[]>();
+  for (const [path, n] of lengthLimits(schema)) {
+    const cut = path.lastIndexOf(".");
+    const [parent, field] = cut < 0 ? ["", path] : [path.slice(0, cut), path.slice(cut + 1)];
+    groups.set(parent, [...(groups.get(parent) ?? []), `${field} ${n}`]);
+  }
+  if (!groups.size) return "";
+  const list = [...groups].map(([parent, fields]) => (parent ? `${parent}: ${fields.join(", ")}` : fields.join(", "))).join("; ");
+  return `Length limits, in characters for each text (each item of a list on its own); keep names and types short, and put the detail in the longer fields: ${list}.\n\n`;
 }
 
 type Issue = { code: string; path: PropertyKey[]; message: string; errors?: Issue[][] };

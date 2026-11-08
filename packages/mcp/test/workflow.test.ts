@@ -354,7 +354,7 @@ describe("workflow tools", () => {
     expect(storiesBrief.text).toContain("Step 3 of 4: Stories and acceptance criteria");
     expect(storiesBrief.text).toMatch(/Write the stories of epic E1, "Renewal letters for \[PERSON_\d+\]"/);
     expect(storiesBrief.text).toContain("reasons and technical notes included: do not state that an org component");
-    expect(storiesBrief.text).toMatch(/Length limits \(characters[^)]*\): [^\n]*stories\[\]\.summary \d+/);
+    expect(storiesBrief.text).toMatch(/Length limits, in characters[^\n]*stories\[\]: summary \d+/);
     expect(storiesBrief.text).toContain("Epics after this one: E2.");
 
     const story = (id: string, more: Record<string, unknown> = {}) => ({
@@ -481,7 +481,9 @@ describe("workflow tools", () => {
     const solution = await submit("current-state", { summary: "Policies live in Policy__c.", components: [{ type: "CustomObject", name: "Policy__c" }] });
     expect(solution.text).toContain("Step 5 of 12: Solution overview");
     // The length limits, so that an answer is not sent back for a long field.
-    expect(solution.text).toContain("Length limits (characters; keep names and types short, and put the detail in the longer fields): orgStrategy 1000, components[].name 200, components[].type 80,");
+    expect(solution.text).toContain(
+      "Length limits, in characters for each text (each item of a list on its own); keep names and types short, and put the detail in the longer fields: orgStrategy 1000; components[]: name 200, type 80, purpose 1000;",
+    );
     expect(solution.text).toContain("do not state that an org component, process or catalogue exists");
     expect(solution.text).toContain("Must requirement(s) no section addresses yet: R1, R2, R4.".replace("requirement(s)", "requirements"));
     expect(solution.text).toContain('The currentState section, as saved:\n{"summary":"Policies live in Policy__c."');
@@ -682,6 +684,15 @@ describe("length limits in the briefs", () => {
     expect([...lengthLimits(schema)]).toEqual([
       ["a", 60],
       ["list[].b", 200],
+    ]);
+    // After a preprocess or a transform, and in an intersection.
+    const after = z.object({ p: z.preprocess((v) => String(v), z.string().max(5)), t: z.string().transform((v) => v.trim()).pipe(z.string().max(7)) });
+    const both = z.intersection(z.object({ l: z.string().max(9) }), z.object({ r: z.string().max(11) }));
+    expect([...lengthLimits(after), ...lengthLimits(both)]).toEqual([
+      ["p", 5],
+      ["t", 7],
+      ["l", 9],
+      ["r", 11],
     ]);
   });
 });
