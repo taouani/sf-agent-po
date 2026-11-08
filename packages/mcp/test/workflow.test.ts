@@ -19,7 +19,7 @@ import {
   type Span,
 } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, requestDigest, submitStep, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
+import { ApprovalServer, createServer, impactKey, requestDigest, submitStep, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -399,7 +399,9 @@ describe("workflow tools", () => {
     const unchecked = await submit("impact", { changes });
     expect(unchecked.text).toContain("ERROR [CustomObject Policy__c] Run metadata_impact on CustomObject Policy__c (modify) first");
     expect((await call("metadata_impact", { context: "renewals", changes: [{ type: "CustomObject", name: "Policy__c", change: "modify" }] })).isError).toBeFalsy();
-    expect(Object.keys(contexts.get("renewals")!.settings.impactChecked as object)).toEqual(["customobject:policy__c"]);
+    // Kept as a hash of the type and real name: the same whether written masked, in clear, or as "Custom Object".
+    expect(Object.keys(contexts.get("renewals")!.settings.impactChecked as object)).toEqual([impactKey("Custom Object", "policy__c")]);
+    expect(JSON.stringify(contexts.get("renewals")!.settings.impactChecked)).not.toContain("olicy");
     const decisions = await submit("impact", { changes, delivery: "One release." });
     expect(decisions.text).toContain("WARNING [changes] The design changes Send_Renewal_Letter, not listed here.");
 
@@ -428,5 +430,14 @@ describe("workflow tools", () => {
     expect(doc.content).toContain("Policy__c ||--|{ Letter__c");
     expect(JSON.stringify(doc)).not.toContain("Karim");
     expect((doc.metadata.design as { solution: { components: unknown[] } }).solution.components).toHaveLength(1);
+  });
+
+  it("lets a design run started before the section steps end the old way", async () => {
+    const { call, runs } = await connect();
+    runs.start("renewals", "sa_high_level_design", ["requirements", "design"]);
+    const resumed = await call("workflow_start", { context: "renewals", workflow: "sa_high_level_design" });
+    expect(resumed.isError).toBeFalsy();
+    expect(resumed.text).toContain("Step 1 of 2: Requirements");
+    expect((await call("workflow_status", { context: "renewals" })).text).toContain("2. Draft the high-level design (design): to do");
   });
 });

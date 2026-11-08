@@ -5,10 +5,12 @@
 
 import type { IndexedComponent, Requirement } from "@sf-agent-po/core";
 import type { Finding } from "../backlog.js";
+import { hash } from "../artifacts.js";
 import { languageFinding, type CheckRules } from "../checks.js";
 import { stringsOf } from "./mask.js";
 import {
   FIELD_TYPES,
+  FIXED_WORDS,
   tracedItems,
   type AutomationSection,
   type ContextSection,
@@ -34,8 +36,30 @@ export interface DesignCheckEnv {
   impactChecked?: (type: string, name: string) => boolean;
 }
 
-/** How metadata_impact records a component it looked at: by type and the masked name. */
-export const impactKey = (type: string, name: string) => `${type.trim()}:${name.trim()}`.toLowerCase();
+/** Metadata types the index holds, which existing components are checked against. */
+export const INDEXED_TYPES = [
+  "CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow", "ApexClass", "ApexTrigger", "PermissionSet", "Profile", "PermissionSetGroup", "Layout",
+  "LightningComponentBundle", "AuraDefinitionBundle", "FlexiPage", "CustomApplication", "CustomTab", "WorkflowRule", "NamedCredential", "ExternalCredential",
+  "ConnectedApp", "CustomMetadata", "PlatformEventChannel", "QuickAction", "ApexPage",
+] as const;
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+const TYPE_ALIASES: Record<string, string> = {
+  ...Object.fromEntries(INDEXED_TYPES.map((t) => [squash(t), t])),
+  object: "CustomObject", standardobject: "CustomObject", field: "CustomField", customfields: "CustomField", recordtypes: "RecordType", validation: "ValidationRule",
+  flows: "Flow", processbuilder: "Flow", process: "Flow", apex: "ApexClass", class: "ApexClass", trigger: "ApexTrigger", lwc: "LightningComponentBundle",
+  lightningwebcomponent: "LightningComponentBundle", aura: "AuraDefinitionBundle", auracomponent: "AuraDefinitionBundle", lightningpage: "FlexiPage",
+  lightningrecordpage: "FlexiPage", pagelayout: "Layout", workflow: "WorkflowRule", app: "CustomApplication", lightningapp: "CustomApplication",
+  visualforcepage: "ApexPage", visualforce: "ApexPage", permissionsets: "PermissionSet",
+};
+
+/** The Metadata API type the index uses for what the agent wrote ("Custom Object", "LWC"), or undefined for a type it does not hold. */
+export const indexedType = (type: string): string | undefined => TYPE_ALIASES[squash(type)];
+
+/**
+ * How metadata_impact records a component it looked at: a hash of its type and real API name,
+ * so nothing is stored in clear and a masked or clear spelling of the same name matches.
+ */
+export const impactKey = (type: string, realName: string) => hash(`${indexedType(type) ?? squash(type)}:${realName.trim().toLowerCase()}`).slice(0, 32);
 
 const error = (where: string, message: string): Finding => ({ level: "error", where, message });
 const warning = (where: string, message: string): Finding => ({ level: "warning", where, message });
@@ -61,9 +85,10 @@ function repeatedIds(items: readonly { id: string }[], what: string): Finding[] 
   return [...twice].map((id) => error(id, `Two ${what} have the id ${id}: give each its own.`));
 }
 
-/** The language warning for a section. */
+/** The language warning for a section, on the text the agent wrote: not the fixed words, ids or API names. */
 const language = (env: DesignCheckEnv, section: unknown, where: string): Finding[] => {
-  const f = languageFinding(stringsOf(section), env.rules.language, where);
+  const texts = stringsOf(section).filter((t) => !FIXED_WORDS.has(t) && !/^[\w.-]+$/.test(t));
+  const f = languageFinding(texts, env.rules.language, where);
   return f ? [f] : [];
 };
 
@@ -79,12 +104,19 @@ function existence(env: DesignCheckEnv, where: string, type: string, name: strin
     : [info(where, `${type} ${name} is not in the index, as standard components often are not: check it exists in the org.`)];
 }
 
-/** Metadata types the index holds, which the solution's existing components can be checked against. */
-const INDEXED_TYPES = new Set([
-  "CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow", "ApexClass", "ApexTrigger", "PermissionSet", "Profile", "PermissionSetGroup", "Layout",
-  "LightningComponentBundle", "AuraDefinitionBundle", "FlexiPage", "CustomApplication", "CustomTab", "WorkflowRule", "NamedCredential", "ExternalCredential",
-  "ConnectedApp", "CustomMetadata", "PlatformEventChannel", "QuickAction", "ApexPage",
-]);
+/** Errors as warnings: for a check that cannot be fixed at this step (an earlier section failed). */
+const soften = (findings: Finding[]): Finding[] => findings.map((f) => (f.level === "error" ? { ...f, level: "warning" } : f));
+
+/** A field type as the Metadata API names it, from what the agent wrote ("Text Area", "Lookup Relationship", "Number(18,0)"). */
+const FIELD_TYPE_ALIASES: Record<string, string> = {
+  ...Object.fromEntries(FIELD_TYPES.map((t) => [squash(t), t])),
+  rollupsummary: "Summary", masterdetailrelationship: "MasterDetail", lookuprelationship: "Lookup", picklistmultiselect: "MultiselectPicklist",
+  richtextarea: "Html", textarearich: "Html", textarealong: "LongTextArea", textencrypted: "EncryptedText",
+};
+export const fieldType = (type: string): string | undefined => FIELD_TYPE_ALIASES[squash(type.replace(/\(.*\)/, ""))];
+
+/** A field's API name without its object ("Policy__c.Status__c" written in Policy__c's fields). */
+const fieldName = (object: string, field: string) => (field.toLowerCase().startsWith(`${object.toLowerCase()}.`) ? field.slice(object.length + 1) : field);
 
 /** Whether a name looks custom for its type: objects and fields by their suffix, everything else is the org's own. */
 const customName = (type: string, name: string) =>
@@ -103,12 +135,19 @@ const LEGACY = (c: IndexedComponent | undefined) => c && ((c.type === "Flow" && 
 export function checkCurrentState(s: CurrentStateSection, env: DesignCheckEnv): Finding[] {
   const findings: Finding[] = [];
   if (!env.lookup) findings.push(info("components", "Nothing is indexed, so the current state cannot be checked: say it is unknown where no org document shows it."));
+  const unchecked = new Set<string>();
   for (const c of s.components) {
-    findings.push(...existence(env, c.name, c.type, c.name, customName(c.type, c.name)));
-    const found = env.lookup?.(c.type, c.name);
+    const type = indexedType(c.type);
+    if (!type) {
+      unchecked.add(c.type);
+      continue;
+    }
+    findings.push(...existence(env, c.name, type, c.name, customName(type, c.name)));
+    const found = env.lookup?.(type, c.name);
     if (LEGACY(found) && !s.debt.some((d) => same(d.component, c.name)))
-      findings.push(warning(c.name, `${c.name} is a ${c.type === "Flow" ? "Process Builder process" : "Workflow Rule"}, which reached end of support: list it under debt, to migrate to Flow.`));
+      findings.push(warning(c.name, `${c.name} is a ${found!.type === "Flow" ? "Process Builder process" : "Workflow Rule"}, which reached end of support: list it under debt, to migrate to Flow.`));
   }
+  if (env.lookup && unchecked.size) findings.push(info("components", `Not checked against the index, which holds no such type: ${[...unchecked].join(", ")}.`));
   findings.push(...language(env, s, "current-state"));
   return findings;
 }
@@ -117,7 +156,8 @@ export function checkSolution(s: SolutionSection, env: DesignCheckEnv): Finding[
   const findings: Finding[] = [...repeatedIds(s.components, "components")];
   for (const c of s.components) {
     findings.push(...requirementFindings(env, c.id, c.requirementIds));
-    if (c.status !== "new" && INDEXED_TYPES.has(c.type)) findings.push(...existence(env, c.id, c.type, c.name, customName(c.type, c.name)));
+    const type = indexedType(c.type);
+    if (c.status !== "new" && type) findings.push(...existence(env, c.id, type, c.name, customName(type, c.name)));
   }
   if (s.diagram) {
     const nodes = new Set(s.diagram.nodes.map((n) => n.id));
@@ -140,10 +180,11 @@ export function checkDataModel(s: DataModelSection, env: DesignCheckEnv): Findin
       else if (!o.whyNotStandard) findings.push(warning(o.name, `New custom object ${o.name}: say in whyNotStandard why no standard object fits.`));
     } else findings.push(...existence(env, o.name, "CustomObject", o.name, CUSTOM_OBJECT.test(o.name)));
     for (const f of o.fields) {
-      const where = `${o.name}.${f.name}`;
-      if (!(FIELD_TYPES as readonly string[]).includes(f.type)) findings.push(error(where, `"${f.type}" is not a field type: use one of ${FIELD_TYPES.join(", ")}.`));
-      if (f.status === "new" && !CUSTOM_FIELD.test(f.name)) findings.push(error(where, `A new field is custom: its API name ends in __c.`));
-      if (f.status !== "new" && o.status !== "new") findings.push(...existence(env, where, "CustomField", where, CUSTOM_FIELD.test(f.name)));
+      const name = fieldName(o.name, f.name);
+      const where = `${o.name}.${name}`;
+      if (!fieldType(f.type)) findings.push(error(where, `"${f.type}" is not a field type: use one of ${FIELD_TYPES.join(", ")}.`));
+      if (f.status === "new" && !CUSTOM_FIELD.test(name)) findings.push(error(where, `A new field is custom: its API name ends in __c.`));
+      if (f.status !== "new" && o.status !== "new") findings.push(...existence(env, where, "CustomField", where, CUSTOM_FIELD.test(name)));
     }
     for (const r of o.relationships) {
       const target = r.to.trim();
@@ -169,12 +210,20 @@ const RECORD_TRIGGERED = new Set(["record-triggered flow", "apex trigger"]);
 
 export function checkAutomation(s: AutomationSection, env: DesignCheckEnv): Finding[] {
   const findings: Finding[] = [...repeatedIds(s.automations, "automations")];
-  const modelled = env.design.dataModel?.objects ?? [];
+  // Objects the design adds: in the data model, or as a new component of the solution.
+  const modelled = [
+    ...(env.design.dataModel?.objects ?? []).map((o) => o.name),
+    ...(env.design.solution?.components ?? []).filter((c) => c.status === "new" && indexedType(c.type) === "CustomObject").map((c) => c.name),
+  ];
   const groups = new Map<string, AutomationSection["automations"]>();
   for (const a of s.automations) {
     findings.push(...requirementFindings(env, a.id, a.requirementIds));
     if (RECORD_TRIGGERED.has(a.type) && (!a.object || !a.event)) findings.push(error(a.id, `${/^[aeiou]/.test(a.type) ? "An" : "A"} ${a.type} runs on an object and an event: give both.`));
-    if (a.object && !modelled.some((o) => same(o.name, a.object!))) findings.push(...existence(env, a.id, "CustomObject", a.object, CUSTOM_OBJECT.test(a.object)));
+    if (a.object && !modelled.some((o) => same(o, a.object!))) {
+      const found = existence(env, a.id, "CustomObject", a.object, CUSTOM_OBJECT.test(a.object));
+      // Without a data model (its step failed), a new object cannot be told from a wrong name.
+      findings.push(...(env.design.dataModel ? found : soften(found)));
+    }
     const type = AUTOMATION_METADATA[a.type];
     if (a.status !== "new" && type) findings.push(...existence(env, a.id, type, a.name, true));
     if (a.status !== "existing" && a.status !== "retired" && !a.why) findings.push(warning(a.id, `Say why ${a.type.includes("flow") ? "Flow" : a.type === "other" ? "this mechanism" : "Apex"} for ${a.name}.`));
@@ -206,8 +255,10 @@ export function checkSecurity(s: SecuritySection, env: DesignCheckEnv): Finding[
   for (const m of s.measures) findings.push(...requirementFindings(env, m.id, m.requirementIds));
   for (const n of s.nonFunctional) findings.push(...requirementFindings(env, n.topic, n.requirementIds));
   const measured = new Set(s.measures.flatMap((m) => m.requirementIds));
-  for (const r of env.requirements.filter((r) => r.kind === "compliance" && !measured.has(r.id)))
-    findings.push(error(r.id, `Compliance requirement ${r.id} has no security measure: add the measure that meets it, citing ${r.id}.`));
+  for (const r of env.requirements.filter((r) => r.kind === "compliance" && r.priority !== "wont" && !measured.has(r.id))) {
+    const message = `Compliance requirement ${r.id} has no security measure: add the measure that meets it, citing ${r.id}.`;
+    findings.push(r.priority === "could" ? warning(r.id, message) : error(r.id, message));
+  }
   const targeted = new Set(s.nonFunctional.flatMap((n) => n.requirementIds));
   for (const r of env.requirements.filter((r) => r.kind === "non-functional" && !targeted.has(r.id)))
     findings.push(warning(r.id, `Non-functional requirement ${r.id} has no target here: add it under nonFunctional, citing ${r.id}.`));
@@ -228,7 +279,7 @@ export function checkImpact(s: ImpactSection, env: DesignCheckEnv): Finding[] {
   const touched = [
     ...(env.design.dataModel?.objects ?? []).flatMap((o) => [
       ...(o.status !== "existing" ? [o.name] : []),
-      ...o.fields.filter((f) => f.status !== "existing" && o.status === "existing").map((f) => `${o.name}.${f.name}`),
+      ...o.fields.filter((f) => f.status !== "existing" && o.status !== "new").map((f) => `${o.name}.${fieldName(o.name, f.name)}`),
     ]),
     ...(env.design.automation?.automations ?? []).filter((a) => a.status !== "existing").map((a) => a.name),
   ];

@@ -134,11 +134,13 @@ export class ContextRepository {
     this.db.prepare("INSERT OR IGNORE INTO context (name, created_at, updated_at) VALUES (?, ?, ?)").run(name, at, at);
   }
 
-  updateSettings(name: string, patch: Record<string, unknown>): Record<string, unknown> {
+  /** Merges a patch into the settings; a function gets the current settings, in the same transaction. */
+  updateSettings(name: string, patch: Record<string, unknown> | ((current: Record<string, unknown>) => Record<string, unknown>)): Record<string, unknown> {
     return this.database.write(() => {
       this.ensure(name);
       const row = this.db.prepare("SELECT settings FROM context WHERE name = ?").get(name) as { settings: string };
-      const settings = { ...(JSON.parse(row.settings) as Record<string, unknown>), ...patch };
+      const current = JSON.parse(row.settings) as Record<string, unknown>;
+      const settings = { ...current, ...(typeof patch === "function" ? patch(current) : patch) };
       this.db.prepare("UPDATE context SET settings = ?, updated_at = ? WHERE name = ?").run(JSON.stringify(settings), new Date().toISOString(), name);
       return settings;
     });

@@ -20,28 +20,35 @@ const bullets = (items: readonly string[]) => items.map((i) => `- ${i}`).join("\
 const ids = (list: readonly string[]) => (list.length ? list.join(", ") : "");
 const NOT_DONE = "_Not written: this step failed its checks or was left out._";
 
-/** A Mermaid label, quoted: quotes and brackets would end it. */
-const label = (s: string) => `"${s.replace(/"/g, "#quot;").replace(/[[\]{}<>]/g, " ").replace(/\s+/g, " ").trim()}"`;
-/** A Mermaid entity name: letters, digits and underscores. */
-const entity = (s: string) => s.replace(/\W+/g, "_").replace(/^_+|_+$/g, "") || "Object";
+/**
+ * A Mermaid label, quoted: a quote or a pipe would end it. Brackets stay, inside the quotes, so
+ * pseudonyms such as [ORG_1] are still found and replaced by their values when it is published.
+ */
+const label = (s: string) => `"${s.replace(/"/g, "#quot;").replace(/\|/g, "#124;").replace(/\s+/g, " ").trim()}"`;
 
 const SHAPE = { salesforce: ["[", "]"], external: ["[[", "]]"], user: ["([", "])"], data: ["[(", ")]"] } as const;
 
 function diagram(d: NonNullable<NonNullable<HighLevelDesign["solution"]>["diagram"]>): string {
+  // The agent's ids are only references: Mermaid gets its own (n1, n2...), which no reserved word or masking can break.
+  const ids = new Map(d.nodes.map((n, i) => [n.id, `n${i + 1}`]));
   const lines = ["flowchart LR"];
   for (const n of d.nodes) {
     const [open, close] = SHAPE[n.kind];
-    lines.push(`  ${n.id}${open}${label(n.label)}${close}`);
+    lines.push(`  ${ids.get(n.id)}${open}${label(n.label)}${close}`);
   }
-  for (const e of d.edges) lines.push(`  ${e.from} -->${e.label ? `|${label(e.label)}|` : ""} ${e.to}`);
+  for (const e of d.edges) {
+    const [from, to] = [ids.get(e.from), ids.get(e.to)];
+    if (from && to) lines.push(`  ${from} -->${e.label ? `|${label(e.label)}|` : ""} ${to}`);
+  }
   return `\`\`\`mermaid\n${lines.join("\n")}\n\`\`\``;
 }
 
+/** An ER diagram of the relationships, when every object name is an identifier Mermaid takes as it is. */
 function erDiagram(objects: NonNullable<HighLevelDesign["dataModel"]>["objects"]): string | undefined {
-  const lines = objects.flatMap((o) =>
-    o.relationships.map((r) => `  ${entity(r.to)} ${r.kind === "master-detail" ? "||--|{" : "|o--o{"} ${entity(o.name)} : ${label(r.field)}`),
-  );
-  if (!lines.length) return undefined;
+  const pairs = objects.flatMap((o) => o.relationships.map((r) => ({ from: r.to.trim(), to: o.name.trim(), r })));
+  // A name with a pseudonym in it would lose its brackets, and its value on publishing: no diagram then.
+  if (!pairs.length || pairs.some((p) => !/^[A-Za-z]\w*$/.test(p.from) || !/^[A-Za-z]\w*$/.test(p.to))) return undefined;
+  const lines = pairs.map((p) => `  ${p.from} ${p.r.kind === "master-detail" ? "||--|{" : "|o--o{"} ${p.to} : ${label(p.r.field)}`);
   return `\`\`\`mermaid\nerDiagram\n${lines.join("\n")}\n\`\`\``;
 }
 

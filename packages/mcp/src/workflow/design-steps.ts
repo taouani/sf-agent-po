@@ -20,6 +20,7 @@ import {
   checkSecurity,
   checkSolution,
   impactKey,
+  INDEXED_TYPES,
   unaddressed,
   type DesignCheckEnv,
 } from "../design/checks.js";
@@ -31,6 +32,7 @@ import {
   currentStateSection,
   dataModelSection,
   decisionsSection,
+  FIELD_TYPES,
   impactSection,
   integrationsSection,
   securitySection,
@@ -114,7 +116,7 @@ function checkEnv(s: StepState): DesignCheckEnv {
     const snap = readySources(index).find((x) => x.source === stored?.source) ?? pick(index, undefined);
     env.lookup = (type, name) => index.component(snap.id, type, kit.masker.unmask(context, name).text);
     const checked = (kit.contexts.get(context)?.settings.impactChecked ?? {}) as Record<string, string>;
-    env.impactChecked = (type, name) => (checked[impactKey(type, name)] ?? "") >= run.createdAt;
+    env.impactChecked = (type, name) => (checked[impactKey(type, kit.masker.unmask(context, name).text)] ?? "") >= run.createdAt;
   }
   return env;
 }
@@ -146,7 +148,8 @@ const SECTIONS: SectionSpec<any>[] = [
       ' "debt": [{"component": "Policy_Renewal", "issue": "Process Builder process: migrate to a record-triggered flow"}]}',
     guidance:
       "what exists that the work touches: the objects, automation, code and integrations relevant to it, each with its Metadata API type and its API name exactly as the index has it, and the technical debt. " +
-      "Read the scope with scope_show, and each component with metadata_component. Every component you list is checked against the index. " +
+      "Read the scope with scope_show, and each component with metadata_component. " +
+      `Components of a type the index holds (${INDEXED_TYPES.join(", ")}) are checked against it; list others (an integration, a managed package) too, with a plain type. ` +
       "If nothing is indexed and no org document shows the org, say the current state is unknown and list nothing.",
     check: checkCurrentState,
     summary: (s) => `${plural(s.components.length, "component")}, ${plural(s.debt.length, "debt item")}.`,
@@ -189,7 +192,8 @@ const SECTIONS: SectionSpec<any>[] = [
       'or, when the work adds or changes no object: {"objects": []}',
     guidance:
       "the objects the work adds or changes, standard ones first, with their new and changed fields (API name and Metadata API type), record types, relationships and expected volumes. " +
-      "Keep it at the level of a high-level design: the fields that matter to the solution, not every field. Existing objects and fields are checked against the index.",
+      "Keep it at the level of a high-level design: the fields that matter to the solution, not every field. Existing objects and fields are checked against the index. " +
+      `Field types: ${FIELD_TYPES.join(", ")}. Give a field's name without its object (Renewal_Date__c, not Policy__c.Renewal_Date__c).`,
     check: checkDataModel,
     summary: (s) => {
       const fields = s.objects.flatMap((o: { fields: { status: string }[] }) => o.fields).filter((f: { status: string }) => f.status !== "existing").length;
@@ -291,7 +295,7 @@ const SECTIONS: SectionSpec<any>[] = [
 /** A section as the brief shows it: its JSON, cut when it is very long. */
 function sectionJson(value: unknown): string {
   const json = JSON.stringify(value);
-  return json.length > 20_000 ? `${json.slice(0, 20_000)}... (cut: read the rest with workflow_status)` : json;
+  return json.length > 20_000 ? `${json.slice(0, 20_000)}... (cut here: the section is long)` : json;
 }
 
 function sectionStep<T>(spec: SectionSpec<T>): StepDefinition<T> {
@@ -363,11 +367,11 @@ export const assembleStep: StepDefinition<AssembleAnswer> = {
     const known = new Set(confirmed.map((r) => r.id));
     const gaps = new Map(masked.gaps.map((g) => [g.requirementId, g.reason]));
     for (const id of gaps.keys()) if (!known.has(id)) findings.push({ level: "error", where: id, message: `${id} is not a confirmed requirement.` });
-    for (const r of unaddressed(design, confirmed).filter((r) => !gaps.has(r.id)))
+    for (const r of unaddressed(design, confirmed).filter((r) => r.priority !== "wont" && !gaps.has(r.id)))
       findings.push(
         r.priority === "must"
           ? { level: "error", where: r.id, message: `Must requirement ${r.id} is addressed by no section: give the reason in gaps, or tell the user the design misses it.` }
-          : { level: "warning", where: r.id, message: `${r.priority === "should" ? "Should" : r.priority === "could" ? "Could" : "Won't"} requirement ${r.id} is addressed by no section.` },
+          : { level: "warning", where: r.id, message: `${r.priority === "should" ? "Should" : "Could"} requirement ${r.id} is addressed by no section.` },
       );
     const failed = run.steps.filter((x) => x.status === "failed" && HLD_SECTION_STEPS[x.step]);
     for (const f of failed) findings.push({ level: "warning", where: f.step, message: `The ${f.step} section failed its checks and is left out of the design.` });

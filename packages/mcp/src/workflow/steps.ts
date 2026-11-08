@@ -208,7 +208,8 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     title: WORKFLOWS.sa_high_level_design.title,
     next: "Show the user the design, and offer to publish it to Confluence with confluence_publish.",
     steps: (kit) => [requirementsStep, ...withScope(kit), ...hldSectionSteps, assembleStep] as StepDefinition[],
-    optional: [scopeStep as StepDefinition],
+    // A run started before the design had its section steps ends the old way, with a saved design.
+    optional: [scopeStep as StepDefinition, methodStep("sa_high_level_design", { kind: "design", type: "high-level" }) as StepDefinition],
   },
   sa_detailed_design: {
     id: "sa_detailed_design",

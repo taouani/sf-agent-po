@@ -2,6 +2,10 @@ import type { IndexedComponent, Requirement } from "@sf-agent-po/core";
 import { describe, expect, it } from "vitest";
 import {
   automationSection,
+  checkDataModel,
+  checkSecurity,
+  dataModelSection,
+  impactKey,
   checkAutomation,
   checkCurrentState,
   checkImpact,
@@ -87,7 +91,7 @@ describe("design section checks", () => {
     const s = automationSection.parse({ automations: [flow("A1"), flow("A2", { order: 2 }), flow("A3", { object: "Claim__c", why: undefined }), { id: "A4", name: "Nightly", type: "apex trigger", status: "new", what: "x", why: "y" }] });
     const found = lines(checkAutomation(s, env([component("CustomObject", "Policy__c")])));
     expect(found).toContain("warning A1, A2: 2 automations run on Policy__c after-save: give each its order, or merge them.");
-    expect(found).toContain("error A3: CustomObject Claim__c is not in the metadata index: check its API name with metadata_search, or mark it new.");
+    expect(found).toContain("warning A3: CustomObject Claim__c is not in the metadata index: check its API name with metadata_search, or mark it new.");
     expect(found).toContain("warning A3: Say why Flow for Flow_A3.");
     expect(found).toContain("error A4: An apex trigger runs on an object and an event: give both.");
     // An object the data model adds is known.
@@ -131,11 +135,93 @@ describe("high-level design rendering", () => {
     for (let n = 1; n <= 16; n++) expect(md).toMatch(new RegExp(`^## ${n}\\. `, "m"));
     expect(md).toContain("## 1. Context and scope\n\n_Not written: this step failed its checks or was left out._");
     expect(md).toContain("| C1 | Renewal page | LWC | new | Shows renewals | R1 |");
-    expect(md).toContain('  sf["The #quot;core#quot; org"]');
-    expect(md).toContain('  erp[["ERP"]]');
-    expect(md).toContain('  sf -->|"sends"| erp');
+    expect(md).toContain('  n1["The #quot;core#quot; [org]"]');
+    expect(md).toContain('  n2[["ERP"]]');
+    expect(md).toContain('  n1 -->|"sends"| n2');
     expect(md).toContain("## 7. User experience\n\nNothing stated.");
     expect(md).toContain("| R1 | must | Statement R1 | doc-000000000a | Solution: C1 Renewal page |");
     expect(md).toContain("| R2 | must | Statement R2 | doc-000000000a | Not addressed: Waiting on legal. |");
   });
 });
+
+describe("design checks review fixes", () => {
+  it("read metadata types and field types as people write them, and leave other types unchecked", () => {
+    const index = [component("CustomObject", "Policy__c"), component("CustomField", "Policy__c.Status__c")];
+    const state = currentStateSection.parse({
+      summary: "x",
+      components: [{ type: "Custom Object", name: "Account" }, { type: "customobject", name: "Policy__c" }, { type: "Integration", name: "SAP ERP" }],
+    });
+    expect(lines(checkCurrentState(state, env(index)))).toEqual([
+      "info Account: CustomObject Account is not in the index, as standard components often are not: check it exists in the org.",
+      "info components: Not checked against the index, which holds no such type: Integration.",
+    ]);
+    const model = dataModelSection.parse({
+      objects: [
+        {
+          name: "Policy__c",
+          status: "changed",
+          fields: [
+            { name: "Policy__c.Status__c", type: "Text Area", status: "existing" },
+            { name: "Account__c", type: "Lookup Relationship", status: "new" },
+            { name: "Amount__c", type: "Number(18,0)", status: "new" },
+            { name: "Size__c", type: "Huge", status: "new" },
+          ],
+        },
+      ],
+    });
+    expect(lines(checkDataModel(model, env(index))).filter((l) => l.startsWith("error")).map((l) => l.split(":")[0])).toEqual(["error Policy__c.Size__c"]);
+    expect(lines(checkImpact({ changes: [] }, env(index, { design: { title: "", dataModel: model } })))[0]).toBe(
+      "warning changes: The design changes Policy__c, Policy__c.Account__c, Policy__c.Amount__c, Policy__c.Size__c, not listed here.",
+    );
+  });
+
+  it("refuse unknown keys in nested items instead of dropping them", () => {
+    const r = contextSection.safeParse({ goals: ["g"], inScope: ["s"], personas: [{ name: "Agent", internal: true, does: "x", license: "Sales Cloud" }] });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error!.issues)).toContain("license");
+  });
+
+  it("only warn about an automation's object when the data model step failed, and know objects the solution adds", () => {
+    const flow = { id: "A1", name: "F", type: "record-triggered flow", status: "new", object: "Letter__c", event: "after-save", what: "x", why: "y" };
+    const s = automationSection.parse({ automations: [flow] });
+    expect(lines(checkAutomation(s, env()))).toEqual(["warning A1: CustomObject Letter__c is not in the metadata index: check its API name with metadata_search, or mark it new."]);
+    const withModel = env([], { design: { title: "", dataModel: { objects: [] } } });
+    expect(lines(checkAutomation(s, withModel))[0]).toMatch(/^error A1/);
+    const solution = solutionSection.parse({ overview: "o", orgStrategy: "s", components: [{ id: "C1", name: "Letter__c", type: "Custom Object", status: "new", purpose: "p" }] });
+    expect(checkAutomation(s, env([], { design: { title: "", dataModel: { objects: [] }, solution } }))).toEqual([]);
+  });
+
+  it("ask a measure of Must and Should compliance requirements, warn for a Could, and leave a Won't", () => {
+    const reqs = [requirement("R1", "compliance", "must"), requirement("R2", "compliance", "could"), requirement("R3", "compliance", "wont")];
+    expect(lines(checkSecurity({ sharing: [], measures: [], nonFunctional: [] }, env([], { requirements: reqs })))).toEqual([
+      "error R1: Compliance requirement R1 has no security measure: add the measure that meets it, citing R1.",
+      "warning R2: Compliance requirement R2 has no security measure: add the measure that meets it, citing R2.",
+    ]);
+  });
+
+  it("key what metadata_impact looked at on the type and real name, never in clear", () => {
+    expect(impactKey("CustomObject", "Policy__c")).toBe(impactKey("Custom Object", " policy__c "));
+    expect(impactKey("CustomObject", "Policy__c")).not.toContain("olicy");
+    expect(impactKey("CustomField", "Policy__c")).not.toBe(impactKey("CustomObject", "Policy__c"));
+  });
+
+  it("keep pseudonyms in diagrams, and leave out an ER diagram whose names hold one", () => {
+    const md = renderHighLevelDesign(
+      {
+        title: "T",
+        solution: solutionSection.parse({
+          overview: "o",
+          orgStrategy: "s",
+          components: [{ id: "C1", name: "n", type: "t", status: "new", purpose: "p" }],
+          diagram: { nodes: [{ id: "end", label: "[ORG_1] portal" }, { id: "b", label: "B" }], edges: [{ from: "end", to: "b", label: "read | write" }] },
+        }),
+        dataModel: dataModelSection.parse({ objects: [{ name: "[ORG_1]__c", status: "new", relationships: [{ field: "Account__c", to: "Account", kind: "lookup" }] }] }),
+      },
+      [],
+    );
+    expect(md).toContain('  n1["[ORG_1] portal"]');
+    expect(md).toContain('  n1 -->|"read #124; write"| n2');
+    expect(md).not.toContain("erDiagram");
+  });
+});
+

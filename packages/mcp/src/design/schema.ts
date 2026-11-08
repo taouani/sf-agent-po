@@ -10,6 +10,7 @@ const list = <T extends z.ZodTypeAny>(item: T, max = 60) => z.array(item).max(ma
 const requirementIds = z.array(z.string().regex(/^R[1-9]\d{0,5}$/, "use requirement ids such as R1")).max(40).default([]);
 const localId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[1-9]\\d{0,3}$`), `use an id such as ${prefix}1`);
 const STATUS = ["existing", "new", "changed", "retired"] as const;
+const SHARING = ["private", "public read only", "public read/write", "controlled by parent"] as const;
 
 export const contextSection = z
   .object({
@@ -18,7 +19,7 @@ export const contextSection = z
     outOfScope: list(text(500), 40).default([]),
     assumptions: list(text(500), 40).default([]),
     personas: list(
-      z.object({
+      z.strictObject({
         name: text(120).describe('A role, e.g. "Renewals agent", not "user".'),
         internal: z.boolean().describe("true for employees, false for customers, partners or the public."),
         does: text(500),
@@ -27,30 +28,28 @@ export const contextSection = z
       }),
       30,
     ).min(1),
-  })
-  .strict();
+  });
 
 export const currentStateSection = z
   .object({
     summary: text(),
     components: list(
-      z.object({
+      z.strictObject({
         type: text(80).describe('Metadata type, e.g. "CustomObject", "Flow", "ApexTrigger".'),
         name: text(200).describe("The API name, exactly as the index has it."),
         notes: text(500).optional(),
       }),
       100,
     ).default([]),
-    debt: list(z.object({ component: text(200), issue: text(500) }), 60).default([]),
-  })
-  .strict();
+    debt: list(z.strictObject({ component: text(200), issue: text(500) }), 60).default([]),
+  });
 
 export const solutionSection = z
   .object({
     overview: text(),
     orgStrategy: text(1_000).describe("Existing org, new org or several, and why."),
     components: list(
-      z.object({
+      z.strictObject({
         id: localId("C"),
         name: text(200).describe("The product, feature or component; for an existing or changed one, its API name as the index has it."),
         type: text(80).describe('e.g. "Sales Cloud", "Experience Cloud site", "CustomObject", "Flow", "LWC", "ApexClass".'),
@@ -64,25 +63,25 @@ export const solutionSection = z
     reporting: text().optional(),
     diagram: z
       .object({
-        nodes: list(z.object({ id: z.string().regex(/^[A-Za-z][\w-]{0,40}$/), label: text(120), kind: z.enum(["salesforce", "external", "user", "data"]).default("salesforce") }), 40).min(1),
-        edges: list(z.object({ from: z.string(), to: z.string(), label: text(120).optional() }), 80).default([]),
+        nodes: list(z.strictObject({ id: z.string().regex(/^[A-Za-z]\w{0,40}$/, "use letters, digits and underscores, such as sf or erp"), label: text(120), kind: z.enum(["salesforce", "external", "user", "data"]).default("salesforce") }), 40).min(1),
+        edges: list(z.strictObject({ from: z.string(), to: z.string(), label: text(120).optional() }), 80).default([]),
       })
-      .strict()
       .optional(),
-  })
-  .strict();
+  });
 
 /** Salesforce field types, as the Metadata API names them. */
 export const FIELD_TYPES = [
   "AutoNumber", "Checkbox", "Currency", "Date", "DateTime", "Email", "EncryptedText", "ExternalLookup", "Formula", "Geolocation", "Html", "IndirectLookup",
   "Location", "LongTextArea", "Lookup", "MasterDetail", "MetadataRelationship", "MultiselectPicklist", "Number", "Percent", "Phone", "Picklist", "Summary",
   "Text", "TextArea", "Time", "Url", "Hierarchy",
+  // Standard fields only.
+  "Address", "Id", "Name",
 ] as const;
 
 export const dataModelSection = z
   .object({
     objects: list(
-      z.object({
+      z.strictObject({
         name: text(120).describe('API name: "Account" for a standard object, "Policy__c" for a custom one.'),
         label: text(120).optional(),
         status: z.enum(STATUS),
@@ -90,7 +89,7 @@ export const dataModelSection = z
         volume: text(200).optional().describe('Expected records, e.g. "200,000, +5,000 a month".'),
         recordTypes: list(text(120), 20).default([]),
         fields: list(
-          z.object({
+          z.strictObject({
             name: text(120).describe('API name, e.g. "Renewal_Date__c".'),
             type: z.string().describe(`One of: ${FIELD_TYPES.join(", ")}.`),
             status: z.enum(STATUS),
@@ -99,7 +98,7 @@ export const dataModelSection = z
           80,
         ).default([]),
         relationships: list(
-          z.object({
+          z.strictObject({
             field: text(120),
             to: text(120).describe("The object it points to."),
             kind: z.enum(["lookup", "master-detail"]),
@@ -110,15 +109,14 @@ export const dataModelSection = z
       }),
       40,
     ),
-  })
-  .strict();
+  });
 
 export const AUTOMATION_TYPES = ["record-triggered flow", "screen flow", "scheduled flow", "autolaunched flow", "apex trigger", "apex class", "batch apex", "platform event", "other"] as const;
 
 export const automationSection = z
   .object({
     automations: list(
-      z.object({
+      z.strictObject({
         id: localId("A"),
         name: text(200),
         type: z.enum(AUTOMATION_TYPES),
@@ -132,8 +130,7 @@ export const automationSection = z
       }),
       60,
     ),
-  })
-  .strict();
+  });
 
 /** The integration patterns of the SA principles. */
 export const INTEGRATION_PATTERNS = ["request and reply", "fire and forget", "batch data sync", "remote call-in", "ui update from data changes", "data virtualisation"] as const;
@@ -141,7 +138,7 @@ export const INTEGRATION_PATTERNS = ["request and reply", "fire and forget", "ba
 export const integrationsSection = z
   .object({
     integrations: list(
-      z.object({
+      z.strictObject({
         id: localId("I"),
         system: text(200),
         direction: z.enum(["inbound", "outbound", "both"]),
@@ -154,30 +151,28 @@ export const integrationsSection = z
       }),
       40,
     ),
-  })
-  .strict();
+  });
 
 export const securitySection = z
   .object({
     sharing: list(
-      z.object({
+      z.strictObject({
         object: text(120),
-        internal: z.enum(["private", "public read only", "public read/write", "controlled by parent"]),
-        external: z.enum(["private", "public read only", "public read/write", "controlled by parent"]).optional(),
+        internal: z.enum(SHARING),
+        external: z.enum(SHARING).optional(),
         notes: text(500).optional(),
       }),
       40,
     ).default([]),
     accessByPersona: text().optional(),
-    measures: list(z.object({ id: localId("S"), measure: text(1_000), requirementIds }), 40).default([]),
-    nonFunctional: list(z.object({ requirementIds, topic: text(120), target: text(500) }), 40).default([]),
-  })
-  .strict();
+    measures: list(z.strictObject({ id: localId("S"), measure: text(1_000), requirementIds }), 40).default([]),
+    nonFunctional: list(z.strictObject({ requirementIds, topic: text(120), target: text(500) }), 40).default([]),
+  });
 
 export const impactSection = z
   .object({
     changes: list(
-      z.object({
+      z.strictObject({
         type: text(80),
         name: text(200),
         change: z.enum(["add", "modify", "delete"]),
@@ -187,13 +182,12 @@ export const impactSection = z
       100,
     ),
     delivery: text().optional().describe("Environments, DevOps, data migration, release sequencing, phases or MVP."),
-  })
-  .strict();
+  });
 
 export const decisionsSection = z
   .object({
     decisions: list(
-      z.object({
+      z.strictObject({
         id: localId("D"),
         title: text(300),
         options: list(text(500), 6).min(2, "list at least two options considered"),
@@ -203,10 +197,9 @@ export const decisionsSection = z
       }),
       40,
     ),
-    risks: list(z.object({ risk: text(500), mitigation: text(500).optional() }), 40).default([]),
-    openQuestions: list(z.object({ question: text(500), owner: text(120).optional() }), 40).default([]),
-  })
-  .strict();
+    risks: list(z.strictObject({ risk: text(500), mitigation: text(500).optional() }), 40).default([]),
+    openQuestions: list(z.strictObject({ question: text(500), owner: text(120).optional() }), 40).default([]),
+  });
 
 export type ContextSection = z.infer<typeof contextSection>;
 export type CurrentStateSection = z.infer<typeof currentStateSection>;
@@ -217,6 +210,13 @@ export type IntegrationsSection = z.infer<typeof integrationsSection>;
 export type SecuritySection = z.infer<typeof securitySection>;
 export type ImpactSection = z.infer<typeof impactSection>;
 export type DecisionsSection = z.infer<typeof decisionsSection>;
+
+/** The schema's fixed words (statuses, patterns, kinds...): not text the agent wrote, so not language to check. */
+export const FIXED_WORDS: ReadonlySet<string> = new Set<string>([
+  ...STATUS, ...SHARING, ...AUTOMATION_TYPES, ...INTEGRATION_PATTERNS, ...FIELD_TYPES,
+  "salesforce", "external", "user", "data", "lookup", "master-detail", "before-save", "after-save", "delete", "schedule", "event",
+  "inbound", "outbound", "both", "add", "modify", "low", "medium", "high",
+]);
 
 /** A whole high-level design, as the last step puts it together. */
 export interface HighLevelDesign {
