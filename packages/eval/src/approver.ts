@@ -10,9 +10,11 @@ import { fileURLToPath } from "node:url";
 
 /** One page the runner answered. */
 export interface ApprovalRecord {
-  /** The label of the button it pressed, e.g. "Confirm the requirements", or the page's title when it failed. */
+  /** The label of the button it pressed, e.g. "Confirm the requirements", or "approval page" when it failed. */
   page: string;
   ok: boolean;
+  /** Still being answered. */
+  pending?: boolean;
   error?: string;
 }
 
@@ -21,11 +23,23 @@ const PAGE_LINK = /^http:\/\/(127\.0\.0\.1|localhost):\d+\/a\/[\w-]{32}\?k=[\w-]
 
 /** The approval decision each kind of page offers. */
 const APPROVE = "approved";
+const REJECT = "rejected";
+
+/**
+ * The pages a user answers during a task, by their approve button (approval/page.ts): the input
+ * review (text, image), the requirements and the scope. Anything else, such as a publish, is
+ * rejected: the evaluation writes nowhere.
+ */
+export const ANSWERED_PAGES = ["Looks right", "Use the image", "Confirm the requirements", "Confirm the scope"];
+
+/** The largest address the opener may send. */
+const MAX_HOOK_BODY = 4096;
 
 export class Approver {
   readonly records: ApprovalRecord[] = [];
   private readonly pending = new Set<Promise<void>>();
   private hook?: Server;
+  private readonly failed = new Set<(error: string) => void>();
 
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
@@ -34,12 +48,15 @@ export class Approver {
     if (!PAGE_LINK.test(url)) return false;
     // Recorded when the page opens, and completed when it is answered: the server may return to
     // the agent before this side hears back from the form.
-    const record: ApprovalRecord = { page: "approval page", ok: false };
+    const record: ApprovalRecord = { page: "approval page", ok: false, pending: true };
     this.records.push(record);
     const p = approvePage(url, this.fetchImpl).then(
-      (page) => Object.assign(record, { page, ok: true }),
-      (err: unknown) => Object.assign(record, { error: err instanceof Error ? err.message : String(err) }),
-    ).then(() => undefined);
+      (page) => void Object.assign(record, { page, ok: true }),
+      (err: unknown) => {
+        record.error = err instanceof Error ? err.message : String(err);
+        for (const f of this.failed) f(record.error);
+      },
+    ).finally(() => delete record.pending);
     this.pending.add(p);
     void p.finally(() => this.pending.delete(p));
     return true;
@@ -54,8 +71,14 @@ export class Approver {
     const server = createServer((req, res) => {
       if (req.method !== "POST" || req.url !== `/${token}`) return void res.writeHead(404).end();
       const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer) => chunks.push(c));
+      let size = 0;
+      req.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_HOOK_BODY) return void res.writeHead(413).end(() => req.destroy());
+        chunks.push(c);
+      });
       req.on("end", () => {
+        if (size > MAX_HOOK_BODY) return;
         const opened = this.open(Buffer.concat(chunks).toString("utf8").trim());
         res.writeHead(opened ? 204 : 400).end();
       });
@@ -64,6 +87,20 @@ export class Approver {
     this.hook = server;
     const { port } = server.address() as { port: number };
     return { SF_AGENT_PO_BROWSER: JSON.stringify([process.execPath, opener]), SF_AGENT_EVAL_APPROVER: `http://127.0.0.1:${port}/${token}` };
+  }
+
+  /**
+   * Calls `f` when a page cannot be answered: the call that opened it would otherwise wait for
+   * a user who never comes. Returns the function that stops it.
+   */
+  onFailure(f: (error: string) => void): () => void {
+    this.failed.add(f);
+    return () => this.failed.delete(f);
+  }
+
+  /** Waits for the pages being answered. */
+  async settled(): Promise<void> {
+    await Promise.allSettled([...this.pending]);
   }
 
   /** Waits for the pages being answered, then stops listening. */
@@ -93,8 +130,11 @@ export async function approvePage(url: string, fetchImpl: typeof fetch = fetch):
   const page = await fetchImpl(pageUrl, { headers: { cookie } });
   if (page.status !== 200) throw new Error(`The approval page answered ${page.status}.`);
   const form = parseForm(await page.text());
-  const button = form.buttons.find((b) => b.value === APPROVE);
-  if (!button) throw new Error(`The approval page has no "${APPROVE}" button.`);
+  const approve = form.buttons.find((b) => b.value === APPROVE);
+  if (!approve) throw new Error(`The approval page has no "${APPROVE}" button.`);
+  const allowed = ANSWERED_PAGES.includes(approve.label);
+  const button = allowed ? approve : form.buttons.find((b) => b.value === REJECT);
+  if (!button) throw new Error(`The page "${approve.label}" is not one a task needs, and it has no "${REJECT}" button.`);
   const body = new URLSearchParams([...form.fields, [button.name, button.value]]);
   const sent = await fetchImpl(new URL(form.action, pageUrl), {
     method: "POST",
@@ -103,6 +143,7 @@ export async function approvePage(url: string, fetchImpl: typeof fetch = fetch):
     body,
   });
   if (sent.status !== 303) throw new Error(`Approving the page answered ${sent.status}: ${(await sent.text()).slice(0, 200)}`);
+  if (!allowed) throw new Error(`Rejected the page "${approve.label}": the evaluation only answers the input review, requirements and scope pages.`);
   return button.label;
 }
 

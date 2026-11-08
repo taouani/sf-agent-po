@@ -125,6 +125,8 @@ export interface StepTries {
   sentBack: number;
   /** Whether an answer was accepted (passed, or saved part of the step). */
   accepted: boolean;
+  /** The step failed its checks after the last attempt allowed, and the run went on without it. */
+  failed?: boolean;
 }
 
 /** The share of steps whose first counted answer was accepted, or undefined with no steps. */
@@ -146,11 +148,12 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
   const result: ScenarioResult = { scenario: scenario.id, model: model.id, judge: judge.id, startedAt: new Date(started).toISOString(), durationMs: 0, sections: [], score: 0 };
   const workspace = await mkdtemp(join(tmpdir(), "sf-agent-eval-"));
   const approvalsAtStart = opts.approver?.records.length ?? 0;
+  let loaded = false;
   let client: Client | undefined;
   try {
     client = await connect(workspace);
     // The runner's own calls may load inputs; the model's calls go through allowedTool.
-    const raw = toolCaller(client);
+    const raw = toolCaller(client, opts.approver);
     const { tools } = await client.listTools();
     const offered = new Set(tools.map((t) => t.name));
     await mustCall(raw, "context_add_file", { context: CONTEXT, path: scenario.inputsDir });
@@ -161,6 +164,7 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
     }
     const inputs = (await mustCall(raw, "context_read", { context: CONTEXT })).text;
     if (opts.approver) result.approvals = opts.approver.records.slice(approvalsAtStart);
+    loaded = true;
 
     const specs: ToolSpec[] = tools
       .filter((t) => allowedTool(t.name))
@@ -175,6 +179,11 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
     result.score = round(result.sections.reduce((s, x) => s + x.score, 0) / (result.sections.length || 1));
   } catch (err) {
     result.error = message(err);
+    // A page that could not be answered while loading says why the load failed.
+    if (!loaded && opts.approver) {
+      await opts.approver.settled();
+      result.approvals = opts.approver.records.slice(approvalsAtStart);
+    }
   } finally {
     await client?.close().catch(() => undefined);
     try {
@@ -215,14 +224,15 @@ async function runSection(
     if (!allowedTool(name)) return { text: `The tool ${name} is not available in this evaluation.`, isError: true };
     const r = await raw(name, args);
     if (r.isError) return r;
-    if (name === saveTool) {
+    if (name === saveTool && args.context === CONTEXT) {
       const id = r.text.match(/ as (\S+), version /)?.[1];
       if (id) saved = { id, tool: saveTool, result: r.text };
-    } else if (name === "workflow_submit" && args.workflow === section.task && typeof args.step === "string") {
+    } else if (name === "workflow_submit" && args.context === CONTEXT && args.workflow === section.task && typeof args.step === "string") {
       const step = steps.get(args.step) ?? { step: args.step, sentBack: 0, accepted: false };
       steps.set(args.step, step);
       const outcome = submitOutcome(args.step, r.text);
       if (outcome === "sent back") step.sentBack++;
+      else if (outcome === "failed") (step.sentBack++, (step.failed = true));
       else if (outcome !== "not counted") step.accepted = true;
       const id = outcome === "passed" ? workflowSave(args.step, r.text) : undefined;
       if (id) saved = { id, tool: "workflow_submit", result: r.text };
@@ -232,14 +242,15 @@ async function runSection(
   try {
     const prompt = await client.getPrompt({ name: section.task, arguments: { context: CONTEXT, ...(scenario.industry ? { industry: scenario.industry } : {}) } });
     const text = prompt.messages.map((m) => (m.content.type === "text" ? m.content.text : "")).join("\n\n");
-    out.agent = await model.runAgent(`${withLanguage(text, scenario.language)}\n\n${UNATTENDED}`, specs, call, opts);
+    out.agent = await model.runAgent(`${withLanguage(text, scenario.language)}\n\n${UNATTENDED}${guided ? ` ${UNATTENDED_PAGES}` : ""}`, specs, call, opts);
     if (guided) out.steps = [...steps.values()];
     if (saved) {
       const doc = await mustRead(raw, "context_read", { context: CONTEXT, ids: [saved.id] });
       // The structured form shows fields the Markdown leaves out (for example Jira keys), and the
       // save's answer carries the server's own quality check, which some criteria refer to.
       const structured = getTool ? `\n\n<structured tool="${getTool}">\n${(await mustRead(raw, getTool, { context: CONTEXT, artifactId: saved.id })).text}\n</structured>` : "";
-      const status = guided ? `\n\n<workflow_status>\n${(await mustRead(raw, "workflow_status", { context: CONTEXT, workflow: section.task })).text}\n</workflow_status>` : "";
+      // The newest run only: a run closed by a restart is not what was saved.
+      const status = guided ? `\n\n<workflow_status>\n${newestRun((await mustRead(raw, "workflow_status", { context: CONTEXT, workflow: section.task })).text)}\n</workflow_status>` : "";
       out.artifact = `${doc.text}${structured}\n\n<last_save_result tool="${saved.tool}">\n${saved.result}\n</last_save_result>${status}`;
     }
     out.verdicts = await judgeSection(judge, scenario, section, out.artifact, inputs);
@@ -249,7 +260,16 @@ async function runSection(
     out.verdicts = section.criteria.map((criterion) => ({ criterion, pass: false, reason: "The task or its judging failed." }));
     out.score = 0;
   }
-  if (opts.approver) out.approvals = opts.approver.records.slice(approvalsBefore);
+  if (opts.approver) {
+    await opts.approver.settled();
+    out.approvals = opts.approver.records.slice(approvalsBefore);
+    // A page the runner could not answer is the runner's fault, not the model's: the task counts as failed, not scored.
+    const failed = out.approvals.filter((a) => !a.ok);
+    if (failed.length && !out.error) {
+      out.error = `The runner could not answer ${failed.length} approval page(s): ${failed.map((a) => a.error ?? a.page).join("; ")}`;
+      out.score = 0;
+    }
+  }
   return out;
 }
 
@@ -259,7 +279,7 @@ export function submitOutcome(step: string, reply: string): "passed" | "progress
   if (reply.startsWith(`${head}passed`)) return "passed";
   if (reply.startsWith(`${head}was sent back`)) return "sent back";
   if (reply.startsWith(`${head}failed its checks`)) return "failed";
-  if (reply.startsWith(`${head}is still open`)) return "not counted";
+  if (reply.startsWith(`${head}is still open`) || reply.startsWith("Every step of run")) return "not counted";
   return "progress";
 }
 
@@ -267,6 +287,11 @@ export function submitOutcome(step: string, reply: string): "passed" | "progress
 export function workflowSave(step: string, reply: string): string | undefined {
   const first = reply.split("\n", 1)[0]!;
   return first.startsWith(`Step "${step}" passed`) ? first.match(/Saved as (doc-[0-9a-f]+), version \d+/)?.[1] : undefined;
+}
+
+/** The first run workflow_status lists, the newest. */
+export function newestRun(status: string): string {
+  return status.split(/\n\n(?=Run run-)/)[0]!;
 }
 
 /** Indexes a scenario's metadata folder with v1's metadata_index, and waits for it to finish. */
@@ -288,8 +313,10 @@ async function indexMetadata(call: CallTool, dir: string, timeoutMs = 10 * 60_00
  * and save nothing, which would measure the missing user rather than the output.
  */
 export const UNATTENDED =
-  "No one is available to answer questions during this task. Where you would ask the user, make the most reasonable assumption, state it, list it as an open question, and finish the task, including saving the result. " +
-  "A page that opens in the browser for the user to confirm is confirmed as it is proposed.";
+  "No one is available to answer questions during this task. Where you would ask the user, make the most reasonable assumption, state it, list it as an open question, and finish the task, including saving the result.";
+
+/** Added with the v1 server, whose steps open pages for the user to confirm. */
+export const UNATTENDED_PAGES = "A page that opens in the browser for the user to confirm is confirmed as it is proposed.";
 
 /**
  * For a scenario in another language the runner says which language to write in, the way a
@@ -311,14 +338,24 @@ function languageName(language: string): string {
   return LANGUAGE_NAMES[language] ?? new Intl.DisplayNames(["en"], { type: "language" }).of(language) ?? language;
 }
 
+const CALL_TIMEOUTS = { timeout: 120_000, resetTimeoutOnProgress: true, onprogress: () => undefined, maxTotalTimeout: 30 * 60_000 };
+
 /** Calls any tool. Only the runner uses it directly; the model's calls are filtered first. */
-function toolCaller(client: Client): CallTool {
+function toolCaller(client: Client, approver?: Approver): CallTool {
   return async (name, args) => {
+    // A page the approver could not answer would keep the call waiting: it is given up, and the
+    // server withdraws the page.
+    const abort = new AbortController();
+    const off = approver?.onFailure((error) => abort.abort(new Error(`an approval page could not be answered (${error})`)));
     try {
-      const r = (await client.callTool({ name, arguments: args })) as { content?: { type: string; text?: string }[]; isError?: boolean };
+      // A call may wait minutes: the first one loads the detection model (a download on a fresh
+      // cache), and a page waits for the approver. The server reports progress meanwhile.
+      const r = (await client.callTool({ name, arguments: args }, undefined, { ...CALL_TIMEOUTS, signal: abort.signal })) as { content?: { type: string; text?: string }[]; isError?: boolean };
       return { text: (r.content ?? []).map((c) => c.text ?? "").join("\n"), isError: Boolean(r.isError) };
     } catch (err) {
       return { text: `Tool call failed: ${(err as Error).message}`, isError: true };
+    } finally {
+      off?.();
     }
   };
 }

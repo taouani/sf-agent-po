@@ -59,13 +59,13 @@ async function main(): Promise<number> {
   }
   const wanted = values.scenarios?.split(",").map((s) => s.trim()).filter(Boolean);
   const scenarios = wanted ? wanted.map((id) => all.find((s) => s.id === id) ?? fail(`Unknown scenario "${id}". Known: ${all.map((s) => s.id).join(", ")}`)) : all;
+  if (values.server && values.baseline) fail("Give --server or --baseline, not both.");
   const specs = values.models.split(",").map((m) => m.trim());
   const models = specs.map((m) => createModel(m));
   const judge = values.judge ? createModel(values.judge) : models[0]!;
   // After the cheap checks (the spec, the key): this one asks OpenRouter.
   await checkOpenRouterModels([...specs, ...(values.judge ? [values.judge] : [])]);
 
-  if (values.server && values.baseline) fail("Give --server or --baseline, not both.");
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   const [command, ...args] = values.server
     ? serverCommand(values.server)

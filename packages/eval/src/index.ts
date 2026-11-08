@@ -1,6 +1,6 @@
 export { AnthropicModel, OpenAICompatibleModel, PROVIDERS, checkOpenRouterModels, createModel, type AgentRun, type CallTool, type Model, type Provider, type ToolSpec } from "./models.js";
 export { TARGET_SCORE, reportMarkdown } from "./report.js";
-export { Approver, approvePage, openerPath, parseForm, type ApprovalRecord, type ParsedForm } from "./approver.js";
+export { ANSWERED_PAGES, Approver, approvePage, openerPath, parseForm, type ApprovalRecord, type ParsedForm } from "./approver.js";
 export {
   allowedTool,
   firstTryShare,
@@ -11,7 +11,9 @@ export {
   parseVerdicts,
   runScenario,
   stdioServer,
+  newestRun,
   UNATTENDED,
+  UNATTENDED_PAGES,
   withLanguage,
   type Connect,
   type RunOptions,

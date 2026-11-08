@@ -19,6 +19,7 @@ import {
   parseForm,
   reportMarkdown,
   runScenario,
+  newestRun,
   submitOutcome,
   workflowSave,
   type CallTool,
@@ -81,6 +82,24 @@ describe("the approver", () => {
     expect((await pending.decision).status).toBe("approved");
   });
 
+  it("rejects a page a task does not need, such as a publish, and takes addresses only with its token", async () => {
+    const pages = new ApprovalServer();
+    const approver = new Approver();
+    closers.push(() => pages.close(), () => approver.close());
+    const publish = await pages.request({ kind: "publish", target: "Confluence page", title: "Design", body: "Owner: Karim" });
+    approver.open(publish.url);
+    expect((await publish.decision).status).toBe("rejected");
+    await approver.close();
+    expect(approver.records[0]).toMatchObject({ ok: false, error: expect.stringContaining('Rejected the page "Approve and write"') });
+
+    const env = await approver.listen();
+    const hook = new URL(env.SF_AGENT_EVAL_APPROVER!);
+    expect((await fetch(new URL("/0123456789abcdef0123456789abcdef", hook), { method: "POST", body: "x" })).status).toBe(404);
+    expect((await fetch(hook)).status).toBe(404);
+    expect((await fetch(hook, { method: "POST", body: "https://example.com/" })).status).toBe(400);
+    expect((await fetch(hook, { method: "POST", body: "x".repeat(10_000) }).catch(() => ({ status: 413 }))).status).toBe(413);
+  });
+
   it("reads a form as a browser sends it", () => {
     const form = parseForm(
       `<form method="post" action="/a/x"><input type="hidden" name="csrf" value="t&#38;k"><input type="checkbox" name="item" value="a" checked><input type="checkbox" name="item" value="b">` +
@@ -109,6 +128,10 @@ describe("reading the workflow's answers", () => {
     const done = 'Step "assemble" passed. Saved as doc-0123456789, version 2: Renewals.\n\nEvery step is done:\n9. Assemble (assemble): passed. Saved as doc-aaaaaaaaaa, version 1';
     expect(workflowSave("assemble", done)).toBe("doc-0123456789");
     expect(workflowSave("assemble", 'Step "assemble" was sent back. Saved as doc-0123456789, version 2')).toBeUndefined();
+    expect(submitOutcome("x", "Every step of run run-0123456789ab is done. Start a new run.")).toBe("not counted");
+    expect(newestRun("Run run-aaaaaaaaaaaa: HLD, open\n1. Requirements (requirements): passed\n\nRun run-bbbbbbbbbbbb: HLD, closed\nFindings on scope:\n- ERROR x")).toBe(
+      "Run run-aaaaaaaaaaaa: HLD, open\n1. Requirements (requirements): passed",
+    );
     expect(firstTryShare([])).toBeUndefined();
     expect(
       firstTryShare([
@@ -230,5 +253,22 @@ describe("runScenario with the v1 server", () => {
     expect(md).toContain("| fake:guided | 10 | 50% |");
     expect(md).toContain("Workflow steps: 1, 0% passed on the first try; sent back: requirements 1×.");
     expect(md).toContain("Approval pages answered: Confirm the requirements.");
+    expect(model.prompts[0]).toContain("A page that opens in the browser for the user to confirm is confirmed as it is proposed.");
+
+    // A step that failed its checks is reported as such, and a page the runner could not answer fails the task.
+    const failed = structuredClone(r);
+    failed.sections[0]!.steps = [{ step: "scope", sentBack: 3, accepted: false, failed: true }];
+    expect(reportMarkdown([failed], { server: "v1", judge: "j", date: "d" })).toContain("sent back: scope 3×; failed its checks: scope.");
+  }, 60_000);
+
+  it("fails the task, not the model, when a page cannot be answered", async () => {
+    const approver = new Approver(async () => new Response("", { status: 500 }));
+    closers.push(() => approver.close());
+    const luxury = listScenarios().find((s) => s.id === "luxury-clienteling")!;
+    const r = await runScenario({ ...luxury, sections: luxury.sections.slice(0, 1) }, new GuidedModel(), new PassingJudge(), v1(approver), { approver });
+    // The input review page could not be answered, so loading failed, and the report says why.
+    expect(r.error).toMatch(/context_add_file/);
+    expect(r.approvals?.[0]).toMatchObject({ ok: false, error: "The approval link answered 500." });
+    expect(reportMarkdown([r], { server: "v1", judge: "j", date: "d" })).toContain("(failed: The approval link answered 500.)");
   }, 60_000);
 });

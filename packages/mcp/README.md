@@ -44,6 +44,7 @@ The name detection model (about 140 MB) is downloaded on first use, pinned and c
 Approval pages open in your default browser. To use another one, set `SF_AGENT_PO_BROWSER` in
 the server's environment to a JSON array: the browser's absolute path, then any arguments, for
 example `["/Applications/Firefox.app/Contents/MacOS/firefox", "--new-window"]`. The page's
-address is added last.
+address is added last. Whoever opens the page decides, so treat this setting like the server
+command itself: the server names the program on its error output when it starts.
 
 Source, documentation and issues: https://github.com/taouani/sf-agent-po

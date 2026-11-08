@@ -1,6 +1,6 @@
 # Service après-vente maroquinerie : grille d'évaluation
 
-Cette grille sert à juger le travail des agents pour ce scénario, à la main ou avec un modèle juge. Chaque ligne vaut un point. Le scénario n'a ni métadonnées ni documents d'org, utilise le modèle sectoriel `luxury`, et est en français. Il contient deux pièges : l'email de la direction des boutiques réduit le périmètre de l'atelier de cadrage, et les exigences juridiques (CITES, données de santé) demandent des contrôles dans l'outil, pas des consignes.
+Cette grille sert à juger le travail des agents pour ce scénario, à la main ou avec un modèle juge. Chaque ligne vaut un point. Le scénario n'a ni métadonnées ni documents d'org, utilise le secteur `luxury` (le modèle commerce et biens de consommation en v1), et est en français. Il contient deux pièges : l'email de la direction des boutiques réduit le périmètre de l'atelier de cadrage, et les exigences juridiques (CITES, données de santé) demandent des contrôles dans l'outil, pas des consignes.
 
 ## Conception générale (sa_high_level_design)
 

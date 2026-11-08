@@ -40,16 +40,16 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
       return `| ${m} | ${avg === undefined ? "n/a" : `${avg}${notes.length ? ` (${notes.join("; ")})` : ""}`} | ${firstTry(m)} | ${scenarios.map((s) => cell(m, s)).join(" | ")} |`;
     }),
   ];
+  const pages = (list: { page: string; ok: boolean; error?: string }[] | undefined) =>
+    list?.length ? `Approval pages answered: ${list.map((p) => (p.ok ? p.page : `${p.page} (failed: ${p.error})`)).join("; ")}.` : undefined;
   for (const r of results) {
     lines.push(``, `## ${r.scenario} with ${r.model}`, ``);
+    const loading = pages(r.approvals);
+    if (loading) lines.push(`While loading the inputs. ${loading}`, ``);
     if (r.error) {
       lines.push(`The run failed: ${r.error}`);
       continue;
     }
-    const pages = (list: { page: string; ok: boolean; error?: string }[] | undefined) =>
-      list?.length ? `Approval pages answered: ${list.map((p) => (p.ok ? p.page : `${p.page} (failed: ${p.error})`)).join("; ")}.` : undefined;
-    const loading = pages(r.approvals);
-    if (loading) lines.push(`While loading the inputs. ${loading}`, ``);
     for (const s of r.sections) {
       const a = s.agent;
       lines.push(`### ${s.title}: ${s.score}/10`, ``);
@@ -64,7 +64,9 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
         const back = s.steps.filter((x) => x.sentBack);
         lines.push(
           `Workflow steps: ${s.steps.length}, ${share === undefined ? "none answered" : `${Math.round(share * 100)}% passed on the first try`}` +
-            `${back.length ? `; sent back: ${back.map((x) => `${x.step} ${x.sentBack}×`).join(", ")}` : ""}${s.steps.some((x) => !x.accepted) ? `; never accepted: ${s.steps.filter((x) => !x.accepted).map((x) => x.step).join(", ")}` : ""}.`,
+            `${back.length ? `; sent back: ${back.map((x) => `${x.step} ${x.sentBack}×`).join(", ")}` : ""}` +
+            `${s.steps.some((x) => x.failed) ? `; failed its checks: ${s.steps.filter((x) => x.failed).map((x) => x.step).join(", ")}` : ""}` +
+            `${s.steps.some((x) => !x.accepted && !x.failed) ? `; never accepted: ${s.steps.filter((x) => !x.accepted && !x.failed).map((x) => x.step).join(", ")}` : ""}.`,
           ``,
         );
       }

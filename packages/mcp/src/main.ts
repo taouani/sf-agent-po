@@ -33,6 +33,12 @@ async function main(): Promise<void> {
   const masker = new Masker({ vault, model: detector });
   const recognizer = lazyRecognizer();
   const approval = new ApprovalServer();
+  // Whoever chose this program answers the approval pages: say which one it is, never a page's address.
+  const { BROWSER_ENV, browserCommand } = await import("./approval/browser.js");
+  if (process.env[BROWSER_ENV]) {
+    const own = browserCommand();
+    console.error(own ? `Approval pages open with ${path.basename(own.file)} (${BROWSER_ENV}).` : `${BROWSER_ENV} is not a JSON array starting with an absolute path, so approval pages cannot open.`);
+  }
   const atlassian = () => {
     const config = atlassianConfigFromEnv();
     if (!config) throw new Error("Jira and Confluence need ATLASSIAN_SITE_URL, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN in the server environment.");
