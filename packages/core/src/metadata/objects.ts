@@ -37,7 +37,24 @@ export function readObject(name: string, root: Record<string, unknown>, file: st
   for (const f of list(root.fields)) out.push(readField(name, obj(f), file));
   for (const r of list(root.recordTypes)) out.push(readRecordType(name, obj(r), file));
   for (const v of list(root.validationRules)) out.push(readValidationRule(name, obj(v), file));
+  for (const f of list(root.fieldSets)) out.push(readFieldSet(name, obj(f), file));
   return out;
+}
+
+/** A field set: the fields it lists, shown wherever a page, component or code uses it. */
+export function readFieldSet(object: string, f: Record<string, unknown>, file: string): ParsedComponent {
+  const set = str(f.fullName) ?? "";
+  const fields = [...list(f.displayedFields), ...list(f.availableFields)].map((x) => str(obj(x).field)).filter((x): x is string => !!x);
+  return {
+    type: "FieldSet",
+    name: `${object}.${set}`,
+    parent: object,
+    label: str(f.label),
+    file,
+    attrs: prune({ fields: list(f.displayedFields).length || undefined }),
+    refs: [...new Set(fields)].map((path) => ({ kind: "shows" as const, object, path })),
+    text: joinText(str(f.description)),
+  };
 }
 
 export function readField(object: string, f: Record<string, unknown>, file: string): ParsedComponent {
@@ -260,6 +277,8 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     if (componentKey(to.type, to.name) !== componentKey(from.type, from.name)) edges.push({ from, to, kind });
   };
 
+  /** Fields named without their object, linked once every other link is known. */
+  const byName: { from: ParsedEdge["from"]; field: string; kind: EdgeKind }[] = [];
   for (const c of components) {
     const from = { type: c.type, name: c.name };
     if (c.parent) edges.push({ from, to: need(c.parentType ?? "CustomObject", c.parent), kind: "part_of" });
@@ -271,7 +290,8 @@ export function linkObjects(components: readonly ParsedComponent[]): {
       if (typeof c.attrs.controllingField === "string" && c.parent) readsField(from, `${c.parent}.${c.attrs.controllingField}`);
     }
     for (const ref of c.refs ?? []) {
-      if ("type" in ref) {
+      if ("field" in ref) byName.push({ from, field: ref.field, kind: ref.kind });
+      else if ("type" in ref) {
         const types = typeof ref.type === "string" ? [ref.type] : ref.type;
         const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? (ref.known ? undefined : types[0]);
         if (type) edges.push({ from, to: need(type, ref.name), kind: ref.kind });
@@ -290,6 +310,29 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     if (typeof formula === "string" && c.parent) {
       for (const field of formulaFields(formula, c.parent, fieldsOf, objectNamed)) readsField(from, field);
     }
+  }
+  if (byName.length) {
+    // Which objects have a custom field of each name, and which field names each component
+    // already reaches: a field the code or page names in full is not guessed again.
+    const owners = new Map<string, string[]>();
+    for (const m of fields.values()) for (const [field, f] of m) owners.set(field, [...(owners.get(field) ?? []), f.parent!]);
+    const reached = new Set(edges.filter((e) => e.to.type === "CustomField").map((e) => `${componentKey(e.from.type, e.from.name)}>${e.to.name.slice(e.to.name.lastIndexOf(".") + 1).toLowerCase()}`));
+    for (const { from, field, kind } of byName) {
+      const lower = field.toLowerCase();
+      if (reached.has(`${componentKey(from.type, from.name)}>${lower}`)) continue;
+      // An object of that name (Policy__c.SObjectType) is not a field.
+      if (objectNamed(field)) continue;
+      const on = /__pc$/i.test(field) ? ["Account"] : owners.get(lower);
+      if (on?.length !== 1) continue;
+      readsField(from, `${on[0]}.${field}`, kind);
+      reached.add(`${componentKey(from.type, from.name)}>${lower}`);
+    }
+  }
+  // A person account field (Account.Foo__pc) is its contact field (Contact.Foo__c) seen from the account.
+  for (const e of [...edges]) {
+    if (e.to.type !== "CustomField" || !/^account\.\w+__pc$/i.test(e.to.name)) continue;
+    const contact = `Contact.${e.to.name.slice("Account.".length, -"__pc".length)}__c`;
+    if (byKey.has(componentKey("CustomField", contact))) edges.push({ from: e.to, to: { type: "CustomField", name: byKey.get(componentKey("CustomField", contact))!.name }, kind: "references" });
   }
   for (const m of [...missing.values()]) {
     if (m.type === "CustomField" && m.parent) edges.push({ from: { type: m.type, name: m.name }, to: need("CustomObject", m.parent), kind: "part_of" });

@@ -8,22 +8,22 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
 
 /**
  * What is retrieved by default: what the index reads in detail, and what flows, Apex and
- * layouts point at. Left out: types whose content is records or people's text (email
- * templates, documents, reports, custom metadata records) and large binaries (static
- * resources).
+ * layouts point at. Email templates are retrieved for their merge fields; the index keeps
+ * none of their text. Left out: types whose content is records or people's text
+ * (documents, reports, custom metadata records) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink",
   "BusinessProcess", "Flow", "ApexClass", "ApexTrigger", "ApexPage", "ApexComponent", "PermissionSet",
   "PermissionSetGroup", "Profile", "Layout", "LightningComponentBundle", "AuraDefinitionBundle", "QuickAction",
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
-  "ExternalServiceRegistration", "GlobalValueSet",
+  "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate",
 ] as const;
 
 /** Child types of an object: retrieved with their object, in its file. */
 const OBJECT_CHILDREN = new Set(["CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink", "BusinessProcess", "SharingReason", "Index"]);
 /** Types made of a source file and its metadata file, or of a folder of files. */
-const FILES_PER_MEMBER: Record<string, number> = { ApexClass: 2, ApexTrigger: 2, ApexPage: 2, ApexComponent: 2, LightningComponentBundle: 8, AuraDefinitionBundle: 10 };
+const FILES_PER_MEMBER: Record<string, number> = { ApexClass: 2, ApexTrigger: 2, ApexPage: 2, ApexComponent: 2, EmailTemplate: 2, LightningComponentBundle: 8, AuraDefinitionBundle: 10 };
 /** One retrieve may return 10,000 files; a little room is kept. */
 export const MAX_FILES_PER_RETRIEVE = 9_000;
 /** Elements a profile lists per component: what a retrieve in several parts must merge. */

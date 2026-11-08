@@ -390,7 +390,7 @@ describe("Apex, permissions and layouts", () => {
     expect(apexCode("a = 'it\\'s // not'; // x\n/* y */b")).toBe("a = '            '; // x\n/* y */b".replace("// x", "    ").replace("/* y */", "       "));
     const c = readApex("ApexClass", "C", "public class C { void m(User u, Foo f) { return u; } void update(List<X> l) {} String s = 'insert acc;'; }", "classes/C.cls");
     // Only classes the project might have are named, and only linked if it has them.
-    expect(c.refs!.every((r) => r.kind === "calls" && r.known)).toBe(true);
+    expect(c.refs!.every((r) => r.kind === "calls" && "known" in r && r.known)).toBe(true);
     expect(linkObjects([c]).edges).toEqual([]);
     const huge = readApex("ApexClass", "Big", "x".repeat(MAX_APEX_LENGTH + 1), "classes/Big.cls");
     expect(huge).toMatchObject({ attrs: { tooLarge: true } });
@@ -634,6 +634,67 @@ describe("scanProject on awkward projects", () => {
     // The roll-up reads the declared claim__c spelling, and the placeholder for Policy__c on it.
     expect(reads("Policy__c.Claims_Total__c")).toEqual(["claim__c.Amount__c", "claim__c.Policy__c"]);
     expect(components.find((c) => c.name === "claim__c.Policy__c")).toMatchObject({ missing: true, parent: "claim__c" });
+  });
+
+  it("reads pages, components, email templates and field sets, and fields code reaches without a type", async () => {
+    const field = (name: string) => `<CustomField><fullName>${name}</fullName><type>Text</type></CustomField>`;
+    write("objects/Contact/fields/LifetimeSpent__c.field-meta.xml", field("LifetimeSpent__c"));
+    for (const o of ["Policy__c", "Claim__c"]) write(`objects/${o}/fields/Status__c.field-meta.xml`, field("Status__c"));
+    write("objects/Claim__c/fields/Policy__c.field-meta.xml", field("Policy__c"));
+    write("objects/Account/fieldSets/Card.fieldSet-meta.xml", `<FieldSet><fullName>Card</fullName><label>Card</label>
+      <displayedFields><field>LifetimeSpent__pc</field></displayedFields><availableFields><field>Owner.Email</field></availableFields></FieldSet>`);
+    write("classes/Untyped.cls", `public class Untyped {
+      public static Object spent(Map<Id, Account> byId, Id id, SObject rec) {
+        // rec.get('Commented__c') is a comment
+        Object a = byId.get(id).LifetimeSpent__pc;
+        Object b = rec.get('LifetimeSpent__pc');
+        List<SObject> rows = Database.query('SELECT Id, Status__c FROM Policy__c');
+        Object c = Policy__c.SObjectType;
+        return SObjectType.Account.FieldSets.Card.getFields();
+      }
+    }`);
+    write("classes/Untyped.cls-meta.xml", "<ApexClass/>");
+    write("pages/ClientCard.page", `<apex:page standardController="Account" extensions="Untyped">
+      <!-- {!Account.Hidden__c} -->
+      <apex:outputField value="{!Account.LifetimeSpent__pc}"/> {!wrapper.row.Status__c}
+      <apex:repeat value="{!$ObjectType.Account.FieldSets.Card}" var="f"/> <c:Badge/> {!$Label.Spent_Title}
+    </apex:page>`);
+    write("pages/ClientCard.page-meta.xml", "<ApexPage><label>Card</label></ApexPage>");
+    write("components/Badge.component", `<apex:component controller="Untyped">{!vm.client.LifetimeSpent__pc}</apex:component>`);
+    write("email/Clients/Thanks.email", "Dear Sarah Connor, you spent {!Contact.LifetimeSpent__c}. {{{Recipient.LifetimeSpent__c}}}");
+    write("email/Clients/Thanks.email-meta.xml", "<EmailTemplate><name>Thanks Sarah</name></EmailTemplate>");
+    write("email/Clients/Summary.email", `<messaging:emailTemplate relatedToType="Account" recipientType="Contact" subject="x">{!relatedTo.LifetimeSpent__pc} {!recipient.Owner.Email}</messaging:emailTemplate>`);
+    const { components, edges } = await scanProject(tmp);
+    const from = (type: string, name: string) =>
+      edges.filter((e) => e.from.type === type && e.from.name === name && e.kind !== "part_of").map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
+
+    expect(from("FieldSet", "Account.Card")).toEqual(["reads CustomField:Account.OwnerId", "shows CustomField:Account.LifetimeSpent__pc", "shows CustomField:User.Email"]);
+    // Policy__c after FROM and Policy__c.SObjectType are the object, not Claim__c's lookup; Status__c is on two objects.
+    expect(from("ApexClass", "Untyped")).toEqual(["reads CustomField:Account.LifetimeSpent__pc", "reads CustomObject:Policy__c", "reads FieldSet:Account.Card"]);
+    expect(from("ApexPage", "ClientCard")).toEqual([
+      "calls ApexClass:Untyped",
+      "calls ApexComponent:Badge",
+      "reads CustomField:Account.LifetimeSpent__pc",
+      "reads CustomLabel:Spent_Title",
+      "reads CustomObject:Account",
+      "reads FieldSet:Account.Card",
+    ]);
+    expect(from("ApexComponent", "Badge")).toEqual(["calls ApexClass:Untyped", "reads CustomField:Account.LifetimeSpent__pc"]);
+    expect(from("EmailTemplate", "Clients/Thanks")).toEqual(["reads CustomField:Contact.LifetimeSpent__c"]);
+    expect(from("EmailTemplate", "Clients/Summary")).toEqual([
+      "reads CustomField:Account.LifetimeSpent__pc",
+      "reads CustomField:Contact.OwnerId",
+      "reads CustomField:User.Email",
+      "reads CustomObject:Account",
+      "reads CustomObject:Contact",
+    ]);
+    // The person account field is the contact field.
+    expect(edges).toContainEqual({ from: { type: "CustomField", name: "Account.LifetimeSpent__pc" }, to: { type: "CustomField", name: "Contact.LifetimeSpent__c" }, kind: "references" });
+    // No text of a template or page is kept, and their -meta.xml files are the same component.
+    const thanks = components.filter((c) => c.type === "EmailTemplate" && c.name === "Clients/Thanks");
+    expect(thanks).toMatchObject([{ file: "email/Clients/Thanks.email", text: "" }]);
+    expect(JSON.stringify(components)).not.toContain("Sarah");
+    expect(components.filter((c) => c.type === "ApexPage")).toHaveLength(1);
   });
 
   it("normalises package paths and refuses ones that leave the project", () => {

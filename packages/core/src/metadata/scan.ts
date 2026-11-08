@@ -4,7 +4,8 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { COMPONENT_TYPES, type ParsedComponent, type ParsedMetadata } from "./model.js";
-import { componentKey, isCustomName, linkObjects, readField, readObject, readRecordType, readValidationRule } from "./objects.js";
+import { componentKey, isCustomName, linkObjects, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
+import { MARKUP_SUFFIX, readMarkup } from "./markup.js";
 import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
 import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
@@ -27,7 +28,7 @@ export const MAX_SKIPPED_LISTED = 200;
 
 type Kind =
   | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
-  | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout";
+  | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -48,11 +49,15 @@ const TOP_LEVEL = new Map<string, [string, Kind, boolean]>([
 const DETAILED = new Set<string>(COMPONENT_TYPES);
 
 /** What a file is, from its name and the folders around it, or undefined. */
-export function classify(rel: string): { kind: Kind; object: string; child?: string } | undefined {
+export function classify(rel: string): { kind: Kind; object: string; child?: string; type?: string } | undefined {
   // A file in a folder another type owns (an expanded static resource's classes/Foo.cls) is
   // that type's.
-  const owner = classifyFile(rel)?.type;
+  const match = classifyFile(rel);
+  const owner = match?.type;
   if (owner && !DETAILED.has(owner)) return undefined;
+  // pages/Foo.page, components/Foo.component, email/Folder/Foo.email: read from the markup;
+  // their -meta.xml files are the same component.
+  if (match && Object.hasOwn(MARKUP_SUFFIX, match.type)) return rel.endsWith(MARKUP_SUFFIX[match.type]!) ? { kind: "markup", object: match.name, type: match.type } : undefined;
   const parts = rel.split("/");
   const base = parts.at(-1)!;
   const dir = parts.at(-2);
@@ -76,6 +81,7 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
       fields: [".field-meta.xml", "field"],
       recordTypes: [".recordType-meta.xml", "recordType"],
       validationRules: [".validationRule-meta.xml", "validationRule"],
+      fieldSets: [".fieldSet-meta.xml", "fieldSet"],
     };
     const known = dir && Object.hasOwn(children, dir) ? children[dir] : undefined;
     if (known && base.endsWith(known[0]) && base.length > known[0].length) return { kind: known[1], object: up, child: base.slice(0, -known[0].length) };
@@ -228,6 +234,11 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       const size = (await stat(path.join(root, file))).size;
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
       const content = await readFile(path.join(root, file), "utf8");
+      if (what.kind === "markup") {
+        add(readMarkup(what.type!, what.object, content, file), file);
+        knownHome(file);
+        continue;
+      }
       if (what.kind === "apexClass" || what.kind === "apexTrigger") {
         add(readApex(what.kind === "apexClass" ? "ApexClass" : "ApexTrigger", what.object, content, file), file);
         knownHome(file);
@@ -255,6 +266,9 @@ export async function scanProject(root: string, options: { exclude?: readonly st
         case "validationRule":
           add(readValidationRule(what.object, named(obj(doc.ValidationRule)), file), file);
           break;
+        case "fieldSet":
+          add(readFieldSet(what.object, named(obj(doc.FieldSet)), file), file);
+          break;
         case "flow":
           add(readFlow(what.object, obj(doc.Flow), file), file);
           break;
@@ -274,7 +288,7 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       knownHome(file);
       // A source-format object folder may hold only fields (a standard object the project
       // extends): the object is still part of the project.
-      if (what.kind === "field" || what.kind === "recordType" || what.kind === "validationRule") standIn(what.object, file.split("/").slice(0, -2).join("/"));
+      if (what.kind === "field" || what.kind === "recordType" || what.kind === "validationRule" || what.kind === "fieldSet") standIn(what.object, file.split("/").slice(0, -2).join("/"));
     } catch (err) {
       skip(file, reason(err));
     }

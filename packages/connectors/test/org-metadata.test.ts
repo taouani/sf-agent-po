@@ -99,10 +99,12 @@ const index = () => {
 
 describe("org manifests", () => {
   it("keeps the types the index uses, and writes them back", () => {
-    const { entries, version } = readManifest(manifest({ ApexClass: ["B", "A"], EmailTemplate: ["Letters/Hello"], CustomObject: ["Account"] }));
+    const { entries, version } = readManifest(manifest({ ApexClass: ["B", "A"], Document: ["Files/Contract"], EmailTemplate: ["Letters/Hello"], CustomObject: ["Account"] }));
     expect(version).toBe("62.0");
+    // Documents are left out; email templates come for their merge fields.
     expect(entries).toEqual([
       { type: "ApexClass", members: ["A", "B"] },
+      { type: "EmailTemplate", members: ["Letters/Hello"] },
       { type: "CustomObject", members: ["Account"] },
     ]);
     expect(readManifest(writeManifest(entries, version)).entries).toEqual(entries);
