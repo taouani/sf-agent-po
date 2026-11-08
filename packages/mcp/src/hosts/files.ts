@@ -1,5 +1,5 @@
-import { EVIDENCE_RULES, PRIVACY_RULES, PUBLISH_RULES } from "../agents/common.js";
-import { type GuidedWorkflow, guidedHowTo, guidedPrompt } from "../agents/guided.js";
+import { EVIDENCE_RULES, PRIVACY_RULES } from "../agents/common.js";
+import { type GuidedWorkflow, guidedHowTo, guidedPrompt, guidedPublishRules } from "../agents/guided.js";
 import { INDUSTRY_IDS } from "../agents/industries.js";
 import { PO_PRACTICES, PO_ROLE } from "../agents/product-owner.js";
 import { SA_PRINCIPLES, SA_ROLE } from "../agents/solution-architect.js";
@@ -58,7 +58,7 @@ ${PRIVACY_RULES}
 
 ${SA_PRINCIPLES}
 
-${PUBLISH_RULES}
+${guidedPublishRules()}
 
 ${INDUSTRY_NOTE}`,
 };
@@ -72,7 +72,7 @@ const PO_AGENT: AgentDef = {
 
 You work through the sf-agent-po MCP server. Inputs live in a named requirement context, masked (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools). The existing org is in the metadata index (\`metadata_summary\`, \`metadata_search\`, \`metadata_component\`), the scope the user confirmed for the work is in \`scope_show\` (\`scope_propose\` to set it), and \`metadata_impact\` lists what depends on the components you change. When the Solution Architect has saved a design in the context, it is one of your inputs.
 
-The server guides your work with the workflows \`po_backlog\` (the requirements, then the epics, then the stories one epic at a time, then the whole backlog, which it saves) and \`po_review_stories\`. \`backlog_get\` returns a saved backlog, and \`backlog_save\` saves a revision the user asks for outside a workflow, with the same quality check. \`trace_show\` shows which confirmed requirements the stories deliver. You publish with \`jira_publish\` (with the sub-tasks of the detailed design) and \`confluence_publish\`, which wait for the user's approval in their browser.
+The server guides your work with the workflows \`po_backlog\` (the requirements, then the epics, then the stories one epic at a time, then the whole backlog, which it saves) and \`po_review_stories\`. \`backlog_get\` returns a saved backlog. \`backlog_save\` saves the stories of a review, and a revision the user asks for after a run, with the same quality check. \`trace_show\` shows which confirmed requirements the stories deliver. You publish with \`jira_publish\` (with the sub-tasks of the detailed design) and \`confluence_publish\`, which wait for the user's approval in their browser.
 
 ${guidedHowTo(undefined)}
 
@@ -82,7 +82,7 @@ ${PRIVACY_RULES}
 
 ${PO_PRACTICES}
 
-${PUBLISH_RULES}
+${guidedPublishRules()}
 
 ${INDUSTRY_NOTE}`,
 };

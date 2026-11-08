@@ -99,10 +99,12 @@ describe("host files", () => {
       const unknown = [...named].filter((n) => !tools.has(n) && !prompts.has(n) && !n.startsWith("context_add_"));
       expect(unknown).toEqual([]);
       expect(named.has("workflow_start") && named.has("workflow_submit")).toBe(true);
-      expect(named.has("agent_workflow") || named.has("design_save")).toBe(false);
+      expect(named.has("agent_workflow")).toBe(false);
       for (const f of HOSTS.flatMap((h) => hostFiles(h))) {
         expect(f.content, f.path).not.toMatch(/preview|approval token/i);
         expect(f.content, f.path).toContain("[PERSON_1]");
+        // The workflows save the documents: the rule for a tool the agent saves with itself is replaced.
+        expect(f.content, f.path).not.toContain("Save your work with the save tool");
       }
     } finally {
       await s.close();

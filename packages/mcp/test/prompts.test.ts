@@ -1,4 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackgroundIndexer } from "@sf-agent-po/connectors";
@@ -71,16 +73,55 @@ describe("the agents' prompts", () => {
   it("sends the agent to workflow_start when the server guides the workflows, and gives the full method otherwise", async () => {
     const guided = await promptText(await connect(), "po_backlog", { context: "renewals", scope: "Release 1", industry: "Insurance" });
     expect(guided).toBe(guidedPrompt("po_backlog", { context: "renewals", focus: "Release 1", industry: "Insurance" }));
-    expect(guided).toContain('Call `workflow_start` with `workflow: "po_backlog"`, the context, `focus: "Release 1"` and `industry: "insurance"`.');
+    expect(guided).toContain('Call `workflow_start` with `workflow: "po_backlog"`, the context, the focus above as `focus` and `industry: "insurance"`.');
     expect(guided).toContain("`workflow_submit`");
     expect(guided).toContain("Focus: Release 1");
-    expect(guided).not.toContain("backlog_save");
-    expect(guided).toContain("The workflow saves your work as its steps pass");
+    expect(guided).toContain("Save a revision the user asks for after the run with `backlog_save`");
+    expect(guided).not.toContain("design_save");
+    expect(guided).toContain("The workflow saves the document when its last step passes");
+    expect(guided).toContain("open a page in the user's browser, to confirm the requirements. ");
+    expect(guidedPrompt("sa_detailed_design", { context: "renewals" })).toContain("to confirm the requirements and the scope.");
     expect(guided).not.toContain("Save your work with the save tool");
 
     const full = await promptText(await connect({ guided: false }), "po_backlog", { context: "renewals", scope: "Release 1" });
     expect(full).toBe(poBacklogPrompt({ context: "renewals", scope: "Release 1" }));
     expect(full).not.toContain("workflow_start");
+  });
+
+  it("names parameters workflow_start takes", async () => {
+    const client = await connect();
+    const t = guidedPrompt("sa_high_level_design", { context: "renewals", focus: 'Renewals "phase 1" with `Policy__c`\nand letters', industry: "Banking" });
+    expect(t).toContain('`industry: "financial-services"`');
+    expect(t).toContain("When the user names the output language, add `language` (`en` or `fr`)");
+    const r = (await client.callTool({
+      name: "workflow_start",
+      arguments: { context: "renewals", workflow: "sa_high_level_design", focus: 'Renewals "phase 1" with `Policy__c`\nand letters', industry: "financial-services", language: "en" },
+    })) as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+  });
+
+  it("does not pass an industry the server does not know", () => {
+    const t = guidedPrompt("po_backlog", { context: "renewals", industry: "retail `banking`" });
+    expect(t).not.toContain("`industry: ");
+    expect(t).toContain('"retail banking" is not one of the industry templates');
+  });
+
+  it("tells the stories review to save with backlog_save, with no requirements or scope to confirm", () => {
+    const t = guidedPrompt("po_review_stories", { context: "renewals" });
+    expect(t).toContain("The review step tells you when to save the improved stories with `backlog_save`");
+    expect(t).not.toMatch(/confirm the requirements|The workflow saves|settle the requirements/);
+  });
+
+  it("names only tools the server has in the step briefs", async () => {
+    const tools = new Set((await (await connect()).listTools()).tools.map((t) => t.name));
+    const dir = path.join(import.meta.dirname, "../src/workflow");
+    const named = new Set<string>();
+    for (const f of readdirSync(dir)) {
+      const src = readFileSync(path.join(dir, f), "utf8");
+      for (const m of src.matchAll(/\b((?:context|metadata|scope|design|backlog|workflow|jira|confluence|trace|industry)_[a-z_]+)\b/g)) named.add(m[1]!);
+    }
+    // "the context_add tools" names a family of tools.
+    expect([...named].filter((n) => !tools.has(n) && ![...tools].some((t) => t.startsWith(`${n}_`)))).toEqual([]);
   });
 
   it("has no agent_workflow tool any more", async () => {
