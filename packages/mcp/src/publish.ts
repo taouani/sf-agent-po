@@ -97,7 +97,8 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
     guard(async ({ context, title, designType, content, sourceIds }: { context: string; title: string; designType: "high-level" | "detailed"; content: string; sourceIds?: string[] }) => {
       const maskedTitle = await masker.maskOutput(context, title);
       const masked = await masker.maskOutput(context, content);
-      const doc = saveArtifact(contexts, context, { kind: "design", title: maskedTitle.text, content: masked.text, artifactType: designType, sourceIds });
+      // A design written here has no section JSON: one saved by the workflow before would be stale.
+      const doc = saveArtifact(contexts, context, { kind: "design", title: maskedTitle.text, content: masked.text, artifactType: designType, sourceIds, extra: { design: undefined } });
       const meta = doc.metadata;
       const hidden = Object.values(masked.report.counts).reduce((a, b) => a + b, 0) + Object.values(maskedTitle.report.counts).reduce((a, b) => a + b, 0);
       const note = hidden ? ` ${hidden} value(s) written in clear were masked; use the pseudonyms in later versions.` : "";

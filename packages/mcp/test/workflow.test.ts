@@ -19,7 +19,7 @@ import {
   type Span,
 } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, requestDigest, submitStep, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
+import { ApprovalServer, createServer, impactKey, requestDigest, submitStep, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -109,7 +109,7 @@ async function connect({ metadata = false, shared }: { metadata?: boolean; share
   return { call, seen, runs, requirements, contexts, notes, setDecide: (d: Decide) => (decide = d), client, store: st };
 }
 
-const wf = { context: "renewals", workflow: "sa_high_level_design" };
+const wf = { context: "renewals", workflow: "sa_detailed_design" };
 const proposal = (sourceId: string) => ({ requirements: [{ kind: "functional", statement: "Send the renewal letter 30 days before the end date.", priority: "must", sourceIds: [sourceId] }] });
 
 describe("workflow tools", () => {
@@ -133,7 +133,7 @@ describe("workflow tools", () => {
     // A JSON string is taken too; the page shows the real name, the run moves on.
     const ok = await call("workflow_submit", { ...wf, step: "requirements", answer: JSON.stringify(proposal(notes.id)) });
     expect(ok.text).toContain('Step "requirements" passed. 1 requirement(s) confirmed.');
-    expect(ok.text).toContain("Step 2 of 2: Draft the high-level design");
+    expect(ok.text).toContain("Step 2 of 2: Draft the detailed design");
     expect(ok.text).toContain("- R1 [functional, must] Send the renewal letter 30 days before the end date.");
     expect(ok.text).toContain("Solution Architect");
     expect(seen).toHaveLength(1);
@@ -145,8 +145,8 @@ describe("workflow tools", () => {
     expect(resumed.text).toContain("1. Requirements (requirements): done. 1 requirement(s) confirmed.");
 
     // An input is not a design; a design saved in the run is.
-    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: notes.id } })).text).toContain("is not a high-level design");
-    const saved = await call("design_save", { context: "renewals", title: "Renewals: high-level design", designType: "high-level", content: "# Design\nR1: a flow sends the letter for Karim Haddad." });
+    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: notes.id } })).text).toContain("is not a detailed design");
+    const saved = await call("design_save", { context: "renewals", title: "Renewals: detailed design", designType: "detailed", content: "# Design\nR1: a flow sends the letter for Karim Haddad." });
     const id = /as (doc-[0-9a-f]{10})/.exec(saved.text)![1]!;
     const done = await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: id } });
     expect(done.text).toContain("Every step is done");
@@ -159,8 +159,8 @@ describe("workflow tools", () => {
     expect(JSON.stringify(runs.list("renewals"))).not.toContain("Karim");
 
     const status = await call("workflow_status", { context: "renewals" });
-    expect(status.text).toContain("Solution Architect: high-level design, done");
-    expect((await call("workflow_step", wf)).text).toContain("No sa_high_level_design run is open");
+    expect(status.text).toContain("Solution Architect: detailed design, done");
+    expect((await call("workflow_step", wf)).text).toContain("No sa_detailed_design run is open");
   });
 
   it("saves a step as failed after three attempts and goes on", async () => {
@@ -189,14 +189,14 @@ describe("workflow tools", () => {
     const rejected = await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
     expect(rejected.text).toContain("attempt 1 of 3");
     expect(rejected.text).toMatch(/The user's comment: \[PERSON_\d+\] said 45 days/);
-    expect(runs.open("renewals", "sa_high_level_design")!.steps[0]).toMatchObject({ status: "pending", attempts: 1 });
+    expect(runs.open("renewals", "sa_detailed_design")!.steps[0]).toMatchObject({ status: "pending", attempts: 1 });
   });
 
   it("restarts a run, and keeps confirmed requirements without asking again", async () => {
     const { call, seen, runs, notes } = await connect();
     await call("workflow_start", wf);
     await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
-    const first = runs.open("renewals", "sa_high_level_design")!.id;
+    const first = runs.open("renewals", "sa_detailed_design")!.id;
     const restarted = await call("workflow_start", { ...wf, restart: true, industry: "insurance", focus: "Letters for Karim Haddad" });
     expect(restarted.text).toContain(`the open one (${first}) is closed`);
     expect(restarted.text).toMatch(/Focus: Letters for \[PERSON_\d+\]/);
@@ -205,7 +205,7 @@ describe("workflow tools", () => {
     const kept = await call("workflow_submit", { ...wf, step: "requirements", answer: { keep: true } });
     expect(kept.text).toContain("1 requirement(s) kept: R1.");
     expect(seen).toHaveLength(1);
-    expect(runs.open("renewals", "sa_high_level_design")!.options).toMatchObject({ industry: "insurance" });
+    expect(runs.open("renewals", "sa_detailed_design")!.options).toMatchObject({ industry: "insurance" });
     expect((await call("workflow_start", { ...wf, restart: true, industry: "space mining" })).isError).toBe(true);
   });
 
@@ -220,7 +220,7 @@ describe("workflow tools", () => {
     expect((await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Account"] } })).text).toContain("Nothing is indexed, so no scope can be confirmed");
     const skipped = await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "The user has no org access yet." } });
     expect(skipped.text).toContain('Step "scope" passed with warnings');
-    expect(skipped.text).toContain("Step 3 of 3: Draft the high-level design");
+    expect(skipped.text).toContain("Step 3 of 3: Draft the detailed design");
     // The backlog has no scope step.
     expect((await call("workflow_start", { ...wf, workflow: "po_backlog" })).text).toContain("Step 1 of 2: Requirements");
   });
@@ -248,33 +248,33 @@ describe("workflow tools", () => {
     expect((await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No time." } })).text).toContain("propose the objects instead of skipping");
     const ok = await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Policy__c"], reason: "Renewals change policies." } });
     expect(ok.text).toContain('Step "scope" passed. Scope confirmed: Policy__c.');
-    expect(ok.text).toContain("Step 3 of 3: Draft the high-level design");
+    expect(ok.text).toContain("Step 3 of 3: Draft the detailed design");
   });
 
   it("refuses a record built on a step that moved meanwhile", async () => {
     const { call, runs, notes, store: st } = await connect();
     await call("workflow_start", wf);
-    const before = runs.open("renewals", "sa_high_level_design")!;
+    const before = runs.open("renewals", "sa_detailed_design")!;
     await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
     const kit = { contexts: st.contexts, masker: st.masker, requirements: st.requirements, runs, reviewerFor: () => ({ review: async () => ({ status: "expired" as const, missed: [], digest: "" }) }) };
     await expect(submitStep(kit, {} as never, before, "requirements", { keep: true })).rejects.toThrow(WorkflowRunChangedError);
-    expect(runs.open("renewals", "sa_high_level_design")!.steps[0]).toMatchObject({ status: "passed", attempts: 0 });
+    expect(runs.open("renewals", "sa_detailed_design")!.steps[0]).toMatchObject({ status: "passed", attempts: 0 });
   });
 
   it("takes only a design of the right type written in the run, and a backlog whose check has no error", async () => {
     const { call, notes } = await connect();
     const save = (designType: string, content: string) => call("design_save", { context: "renewals", title: `Renewals ${designType}`, designType, content });
     const idOf = (t: string) => /as (doc-[0-9a-f]{10})/.exec(t)![1]!;
-    const old = idOf((await save("high-level", "# Old design")).text);
+    const old = idOf((await save("detailed", "# Old design")).text);
     await new Promise((r) => setTimeout(r, 5));
     await call("workflow_start", wf);
     await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
     // Saved again unchanged: still the old version.
-    await save("high-level", "# Old design");
+    await save("detailed", "# Old design");
     expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: old } })).text).toContain("was written before this run started");
-    const detailed = idOf((await save("detailed", "# Detailed")).text);
-    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: detailed } })).text).toContain("is not a high-level design");
-    await save("high-level", "# New design, R1");
+    const detailed = idOf((await save("high-level", "# Detailed")).text);
+    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: detailed } })).text).toContain("is not a detailed design");
+    await save("detailed", "# New design, R1");
     expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: old } })).text).toContain("Every step is done");
 
     const pb = { context: "renewals", workflow: "po_backlog" };
@@ -320,5 +320,124 @@ describe("workflow tools", () => {
     const done = await call("workflow_submit", { ...review, step: "review", answer: { none: "The user only wanted comments." } });
     expect(done.text).toContain("No stories saved");
     expect(done.text).toContain("Every step is done");
+  });
+
+  it("writes a high-level design section by section, checked against the index, and saves it with its traceability", async () => {
+    const { call, notes, contexts, runs, store: st } = await connect({ metadata: true });
+    await indexProject(st.index, project());
+    const hld = { context: "renewals", workflow: "sa_high_level_design" };
+    const submit = (step: string, answer: unknown) => call("workflow_submit", { ...hld, step, answer });
+    const started = await call("workflow_start", hld);
+    expect(started.text).toContain("Step 1 of 12: Requirements");
+    const req = (kind: string, statement: string, priority: string) => ({ kind, statement, priority, sourceIds: [notes.id] });
+    await submit("requirements", {
+      requirements: [
+        req("functional", "Send the renewal letter 30 days before the end date.", "must"),
+        req("compliance", "Keep each renewal letter for 10 years for the audit.", "must"),
+        req("non-functional", "The renewal page opens in under 2 seconds.", "should"),
+        req("functional", "Send a renewal reminder by text message.", "must"),
+      ],
+    });
+    const context = await submit("scope", { objects: ["Policy__c"], reason: "Renewals change policies." });
+    expect(context.text).toContain("Step 3 of 12: Context and scope");
+
+    const solutionBrief = await submit("context", { goals: ["Clients renew on time"], inScope: ["Renewal letters"], personas: [{ name: "The user", internal: true, does: "sends letters" }] });
+    expect(solutionBrief.text).toContain('Step "context" passed with warnings');
+    expect(solutionBrief.text).toContain('Persona "The user" is generic');
+    expect(solutionBrief.text).toContain("Step 4 of 12: Current state");
+
+    const ghost = await submit("current-state", { summary: "Policies live in Policy__c.", components: [{ type: "CustomObject", name: "Policy__c" }, { type: "Flow", name: "Ghost_Flow" }] });
+    expect(ghost.text).toContain("ERROR [Ghost_Flow] Flow Ghost_Flow is not in the metadata index");
+    const solution = await submit("current-state", { summary: "Policies live in Policy__c.", components: [{ type: "CustomObject", name: "Policy__c" }] });
+    expect(solution.text).toContain("Step 5 of 12: Solution overview");
+    expect(solution.text).toContain("Must requirement(s) no section addresses yet: R1, R2, R4.".replace("requirement(s)", "requirements"));
+    expect(solution.text).toContain('The currentState section, as saved:\n{"summary":"Policies live in Policy__c."');
+
+    const component = { id: "C1", name: "Renewal letters", type: "Flow", status: "new", purpose: "Sends the letters Karim Haddad asked for", requirementIds: ["R1", "R9"] };
+    const unknownReq = await submit("solution", { overview: "A flow sends the letters.", orgStrategy: "The existing org.", components: [component] });
+    expect(unknownReq.text).toContain("ERROR [C1] R9 is not confirmed requirement(s)");
+    const dataModel = await submit("solution", {
+      overview: "A flow sends the letters.",
+      orgStrategy: "The existing org.",
+      components: [{ ...component, requirementIds: ["R1"] }],
+      diagram: { nodes: [{ id: "agent", label: "Renewals agent", kind: "user" }, { id: "sf", label: "Salesforce" }], edges: [{ from: "agent", to: "sf", label: "works renewals" }] },
+    });
+    expect(dataModel.text).toContain('Step "solution" passed. 1 component (1 new, 0 changed). Addresses R1.');
+    expect(JSON.stringify(runs.open("renewals", "sa_high_level_design"))).not.toContain("Karim");
+
+    const objects = [
+      { name: "Policy__c", status: "changed", fields: [{ name: "Renewal_Date__c", type: "Date", status: "new" }, { name: "Status__c", type: "Text", status: "existing" }, { name: "Legacy__c", type: "Txt", status: "existing" }] },
+      { name: "Letter", status: "new" },
+    ];
+    const badModel = await submit("data-model", { objects });
+    expect(badModel.text).toContain("ERROR [Policy__c.Legacy__c] CustomField Policy__c.Legacy__c is not in the metadata index");
+    expect(badModel.text).toContain('ERROR [Policy__c.Legacy__c] "Txt" is not a field type');
+    expect(badModel.text).toContain("ERROR [Letter] A new object is custom");
+    const letter = { name: "Letter__c", status: "new", relationships: [{ field: "Policy__c", to: "Policy__c", kind: "master-detail" }] };
+    const automation = await submit("data-model", { objects: [{ ...objects[0]!, fields: objects[0]!.fields!.slice(0, 2) }, letter] });
+    expect(automation.text).toContain("WARNING [Letter__c] New custom object Letter__c: say in whyNotStandard");
+    expect(automation.text).toContain("WARNING [Letter__c.Policy__c] Say why master-detail to Policy__c");
+
+    const flow = { id: "A1", name: "Send_Renewal_Letter", type: "record-triggered flow", status: "new", object: "Policy__c", event: "after-save", what: "Creates the letter.", why: "Simple same-record logic.", requirementIds: ["R1"] };
+    await submit("automation", { automations: [flow] });
+    await submit("integrations", { integrations: [] });
+
+    const noMeasure = await submit("security", { sharing: [{ object: "Letter__c", internal: "controlled by parent" }] });
+    expect(noMeasure.text).toContain("ERROR [R2] Compliance requirement R2 has no security measure");
+    const impact = await submit("security", {
+      sharing: [{ object: "Letter__c", internal: "controlled by parent" }],
+      measures: [{ id: "S1", measure: "Letters are kept 10 years, then deleted by a scheduled job.", requirementIds: ["R2"] }],
+      nonFunctional: [{ topic: "Performance", target: "The page opens in under 2 seconds.", requirementIds: ["R3"] }],
+    });
+    expect(impact.text).toContain("Step 10 of 12: Impact on the existing org and delivery");
+
+    const changes = [
+      { type: "CustomObject", name: "Policy__c", change: "modify", risk: "medium" },
+      { type: "CustomField", name: "Policy__c.Renewal_Date__c", change: "add", risk: "low" },
+      { type: "CustomObject", name: "Letter__c", change: "add", risk: "low" },
+    ];
+    const unchecked = await submit("impact", { changes });
+    expect(unchecked.text).toContain("ERROR [CustomObject Policy__c] Run metadata_impact on CustomObject Policy__c (modify) first");
+    expect((await call("metadata_impact", { context: "renewals", changes: [{ type: "CustomObject", name: "Policy__c", change: "modify" }] })).isError).toBeFalsy();
+    // Kept as a hash of the type and real name: the same whether written masked, in clear, or as "Custom Object".
+    expect(Object.keys(contexts.get("renewals")!.settings.impactChecked as object)).toEqual([impactKey("Custom Object", "policy__c")]);
+    expect(JSON.stringify(contexts.get("renewals")!.settings.impactChecked)).not.toContain("olicy");
+    const decisions = await submit("impact", { changes, delivery: "One release." });
+    expect(decisions.text).toContain("WARNING [changes] The design changes Send_Renewal_Letter, not listed here.");
+
+    const assemble = await submit("decisions", {
+      decisions: [{ id: "D1", title: "Flow or Apex for the letter", options: ["Flow", "Apex"], choice: "Flow", reason: "Simple logic.", requirementIds: ["R1"] }],
+      openQuestions: [{ question: "Which letter template?" }],
+    });
+    expect(assemble.text).toContain("WARNING [openQuestions.0] Name who should answer");
+    expect(assemble.text).toContain("Step 12 of 12: Assemble and save the design");
+    expect(assemble.text).toContain("- R4 [functional, must] Send a renewal reminder by text message.");
+
+    const missing = await submit("assemble", { title: "Renewals: high-level design" });
+    expect(missing.text).toContain("ERROR [R4] Must requirement R4 is addressed by no section");
+    const done = await submit("assemble", { title: "Renewals for Karim Haddad", gaps: [{ requirementId: "R4", reason: "Text messages wait for the SMS provider." }] });
+    expect(done.text).toContain('Step "assemble" passed. Saved as doc-');
+    expect(done.text).toContain("Every step is done");
+    const id = /Saved as (doc-[0-9a-f]{10})/.exec(done.text)![1]!;
+    const doc = contexts.getDocument("renewals", id)!;
+    expect(doc).toMatchObject({ kind: "design", masked: true, metadata: { artifact: true, artifactType: "high-level", version: 1, sourceIds: [notes.id] } });
+    expect(doc.title).toMatch(/^Renewals for \[PERSON_\d+\]$/);
+    expect(doc.content).toContain("## 16. Traceability");
+    expect(doc.content).toContain("| R1 | must | Send the renewal letter 30 days before the end date. |");
+    expect(doc.content).toContain("Solution: C1 Renewal letters; Automation: A1 Send_Renewal_Letter; Decisions: D1 Flow or Apex for the letter");
+    expect(doc.content).toContain("Not addressed: Text messages wait for the SMS provider.");
+    expect(doc.content).toContain("```mermaid\nflowchart LR");
+    expect(doc.content).toContain("Policy__c ||--|{ Letter__c");
+    expect(JSON.stringify(doc)).not.toContain("Karim");
+    expect((doc.metadata.design as { solution: { components: unknown[] } }).solution.components).toHaveLength(1);
+  });
+
+  it("lets a design run started before the section steps end the old way", async () => {
+    const { call, runs } = await connect();
+    runs.start("renewals", "sa_high_level_design", ["requirements", "design"]);
+    const resumed = await call("workflow_start", { context: "renewals", workflow: "sa_high_level_design" });
+    expect(resumed.isError).toBeFalsy();
+    expect(resumed.text).toContain("Step 1 of 2: Requirements");
+    expect((await call("workflow_status", { context: "renewals" })).text).toContain("2. Draft the high-level design (design): to do");
   });
 });

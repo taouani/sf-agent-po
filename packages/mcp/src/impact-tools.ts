@@ -10,6 +10,7 @@ import { z } from "zod";
 import { line, pick, Pieces, readySources, sourceArg } from "./metadata-tools.js";
 import type { CallContext } from "./review.js";
 import { storedScope } from "./scope-tools.js";
+import { impactKey } from "./design/checks.js";
 
 type Text = { content: { type: "text"; text: string }[] };
 const text = (t: string): Text => ({ content: [{ type: "text", text: t }] });
@@ -216,10 +217,31 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         if (flags.length) out.push(`Weak links:\n${flags.map((f) => `- ${f}`).join("\n")}`);
         sections.push(out.join("\n\n"));
       }
+      await recordChecked(kit, context, changes);
       sections.push("The index does not see dynamic Apex, SOQL built from strings, long formula chains, reports and list views on fields, or anything outside Salesforce (integrations, ETL): say so where a conclusion depends on them.");
       return text(sections.join("\n\n"));
     }),
   );
+}
+
+/** Components metadata_impact remembers having looked at, per context: the newest ones. */
+const MAX_CHECKED = 500;
+
+/**
+ * Remembers which components were looked at, and when, by a hash of type and real name: the design's
+ * impact step sends back a change nobody ran metadata_impact on during the run.
+ */
+async function recordChecked(kit: ImpactKit, context: string, changes: readonly { type: string; name: string }[]): Promise<void> {
+  const now = new Date().toISOString();
+  const keys = changes.map((c) => impactKey(c.type, kit.masker.unmask(context, c.name).text));
+  // Read and written in one transaction: another server on the same workspace may record too.
+  kit.contexts.updateSettings(context, (current) => {
+    const merged = { ...((current.impactChecked ?? {}) as Record<string, string>), ...Object.fromEntries(keys.map((k) => [k, now])) };
+    const kept = Object.entries(merged)
+      .sort((a, b) => (a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0))
+      .slice(0, MAX_CHECKED);
+    return { impactChecked: Object.fromEntries(kept) };
+  });
 }
 
 function blindWhy(c: IndexedComponent): string {

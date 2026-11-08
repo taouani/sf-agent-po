@@ -1,6 +1,7 @@
-// The steps every workflow shares, and the four workflows. The design and backlog sections
-// become steps of their own in later PRs; until then a workflow ends with one step that
-// follows the agent's full method and points to the saved design or backlog.
+// The steps every workflow shares, and the four workflows. The high-level design is written
+// section by section (design-steps.ts); the detailed design and the backlog become steps of
+// their own in later PRs, and until then end with one step that follows the agent's full
+// method and points to the saved design or backlog.
 
 import type { SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
@@ -10,6 +11,7 @@ import { confirmScope, SourceGoneError, storedScope } from "../scope-tools.js";
 import { readySources } from "../metadata-tools.js";
 import { backlogSchema, checkBacklog, type Finding } from "../backlog.js";
 import { contextLanguage } from "../checks.js";
+import { assembleStep, hldSectionSteps } from "./design-steps.js";
 import type { StepDefinition, StepOutcome, StepState, WorkflowDefinition, WorkflowKit } from "./engine.js";
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
@@ -205,8 +207,9 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     id: "sa_high_level_design",
     title: WORKFLOWS.sa_high_level_design.title,
     next: "Show the user the design, and offer to publish it to Confluence with confluence_publish.",
-    steps: (kit) => [requirementsStep, ...withScope(kit), methodStep("sa_high_level_design", { kind: "design", type: "high-level" })] as StepDefinition[],
-    optional: [scopeStep as StepDefinition],
+    steps: (kit) => [requirementsStep, ...withScope(kit), ...hldSectionSteps, assembleStep] as StepDefinition[],
+    // A run started before the design had its section steps ends the old way, with a saved design.
+    optional: [scopeStep as StepDefinition, methodStep("sa_high_level_design", { kind: "design", type: "high-level" }) as StepDefinition],
   },
   sa_detailed_design: {
     id: "sa_detailed_design",

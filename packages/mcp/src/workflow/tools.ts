@@ -203,7 +203,7 @@ export function registerWorkflowTools(server: McpServer, kit: WorkflowToolsKit):
         list
           .map((r) => {
             const def = WORKFLOW_DEFINITIONS[r.workflow as WorkflowId];
-            const titles = new Map((def ? def.steps(kit) : []).map((d) => [d.id, d.title]));
+            const titles = new Map((def ? [...(def.optional ?? []), ...def.steps(kit)] : []).map((d) => [d.id, d.title]));
             const open = r.steps.filter((s) => s.findings.length && s.status !== "passed");
             const findings = open.map((s) => `Findings on ${s.step}:\n${findingsText(s.findings)}`).join("\n");
             return `Run ${r.id}: ${def?.title ?? r.workflow}, ${r.status}, started ${r.createdAt}, updated ${r.updatedAt}\n${progressText(r, titles)}${findings ? `\n${findings}` : ""}`;

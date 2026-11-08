@@ -56,6 +56,24 @@ export {
 export { currentStep, MAX_ATTEMPTS, type StepDefinition, type StepOutcome, type StepState, type WorkflowDefinition, type WorkflowKit } from "./workflow/engine.js";
 export { methodStep, requirementsStep, scopeStep, WORKFLOW_DEFINITIONS } from "./workflow/steps.js";
 export { registerWorkflowTools, submitStep, type WorkflowToolsKit } from "./workflow/tools.js";
+export { assembleStep, designSoFar, HLD_SECTION_STEPS, hldSectionSteps } from "./workflow/design-steps.js";
+export * from "./design/schema.js";
+export {
+  checkAutomation,
+  checkContext,
+  checkCurrentState,
+  checkDataModel,
+  checkDecisions,
+  checkImpact,
+  checkIntegrations,
+  checkSecurity,
+  checkSolution,
+  impactKey,
+  unaddressed,
+  type DesignCheckEnv,
+} from "./design/checks.js";
+export { renderHighLevelDesign, type RequirementGap } from "./design/render.js";
+export { maskDeep } from "./design/mask.js";
 export { confirmScope, storedScope, type ScopeOutcome, type StoredScope } from "./scope-tools.js";
 export {
   checkRules,
