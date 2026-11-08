@@ -69,7 +69,7 @@ describe("Anthropic agent loop", () => {
     ];
     const fakeFetch = (async () => answers.shift()!) as unknown as typeof fetch;
     const run = await createModel("anthropic:claude-opus-5-5", { ANTHROPIC_API_KEY: "k" }, fakeFetch).runAgent("Draft.", tools, callTool);
-    expect(run).toMatchObject({ inputTokens: 2070, cachedInputTokens: 1000 });
+    expect(run).toMatchObject({ inputTokens: 2070, cachedInputTokens: 1000, cacheWriteTokens: 1050 });
   });
 
   it("stops at the turn limit", async () => {
@@ -161,10 +161,11 @@ describe("OpenAI-compatible agent loop", () => {
     expect(urls[0]).toMatch(/^https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
     expect(bodies[0]).toMatchObject({ model: "anthropic/claude-opus-5.5", max_tokens: 32_000, stream: true, stream_options: { include_usage: true } });
     expect(bodies[0].max_completion_tokens).toBeUndefined();
-    // Anthropic's models cache only where they are told: the last message carries the marker.
-    expect(bodies[0].messages).toEqual([{ role: "user", content: [{ type: "text", text: "Draft.", cache_control: { type: "ephemeral" } }] }]);
-    expect(bodies[1].messages[0]).toEqual({ role: "user", content: "Draft." });
-    expect(bodies[1].messages.at(-1)).toEqual({ role: "tool", tool_call_id: "c1", content: [{ type: "text", text: "design_save saved HLD", cache_control: { type: "ephemeral" } }] });
+    // Anthropic's models cache only when asked: OpenRouter's top-level marker, the messages as they are.
+    expect(bodies[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(bodies[0].messages).toEqual([{ role: "user", content: "Draft." }]);
+    expect(bodies[1].messages.at(-1)).toEqual({ role: "tool", tool_call_id: "c1", content: "design_save saved HLD" });
+    expect(createModel("openrouter:~anthropic/claude-opus-latest", { OPENROUTER_API_KEY: "k" }, fakeFetch)).toBeDefined();
     // The assistant turn goes back as the API knows it.
     const assistant = bodies[1].messages.find((m: any) => m.role === "assistant");
     expect(assistant.tool_calls[0]).toMatchObject({ id: "c1", function: { name: "design_save", arguments: '{"title":"HLD"}' } });
@@ -180,13 +181,14 @@ describe("OpenAI-compatible agent loop", () => {
       const body =
         chunk([{ index: 0, delta: { role: "assistant", content: "Done." }, finish_reason: null }]) +
         chunk([{ index: 0, delta: {}, finish_reason: "stop" }]) +
-        chunk([], { usage: { prompt_tokens: 900, completion_tokens: 3, total_tokens: 903, prompt_tokens_details: { cached_tokens: 800 } } }) +
+        chunk([], { usage: { prompt_tokens: 900, completion_tokens: 3, total_tokens: 903, prompt_tokens_details: { cached_tokens: 800, cache_write_tokens: 60 } } }) +
         "data: [DONE]\n\n";
       return new Response(body, { headers: { "content-type": "text/event-stream" } });
     }) as typeof fetch;
     const run = await createModel("openrouter:x-ai/grok-7.1", { OPENROUTER_API_KEY: "k" }, fakeFetch).runAgent("Draft.", tools, callTool);
     expect(bodies[0].messages).toEqual([{ role: "user", content: "Draft." }]);
-    expect(run).toMatchObject({ inputTokens: 900, cachedInputTokens: 800 });
+    expect(bodies[0].cache_control).toBeUndefined();
+    expect(run).toMatchObject({ inputTokens: 900, cachedInputTokens: 800, cacheWriteTokens: 60 });
   });
 });
 

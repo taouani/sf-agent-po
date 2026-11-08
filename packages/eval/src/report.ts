@@ -1,4 +1,11 @@
+import type { AgentRun } from "./models.js";
 import { firstTryShare, type ScenarioResult, type StepTries } from "./run.js";
+
+/** What the input owed to the prompt cache: read (cheap) and written (dearer). */
+const cacheNote = (a: Pick<AgentRun, "cachedInputTokens" | "cacheWriteTokens">) => {
+  const parts = [a.cachedInputTokens ? `${a.cachedInputTokens} read from the cache` : "", a.cacheWriteTokens ? `${a.cacheWriteTokens} written to it` : ""].filter(Boolean);
+  return parts.length ? ` (${parts.join(", ")})` : "";
+};
 
 /** The target from the confirmed goal: a rubric score of at least 7/10 per model. */
 export const TARGET_SCORE = 7;
@@ -55,7 +62,7 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
       lines.push(`### ${s.title}: ${s.score}/10`, ``);
       if (a) {
         lines.push(
-          `${a.turns} turns, ${a.toolCalls.length} tool calls (${a.toolCalls.filter((c) => c.isError).length} failed), ${a.inputTokens} input${a.cachedInputTokens ? ` (${a.cachedInputTokens} read from the cache)` : ""} and ${a.outputTokens} output tokens, ended: ${a.stop}.`,
+          `${a.turns} turns, ${a.toolCalls.length} tool calls (${a.toolCalls.filter((c) => c.isError).length} failed), ${a.inputTokens} input${cacheNote(a)} and ${a.outputTokens} output tokens, ended: ${a.stop}.`,
           ``,
         );
       }
