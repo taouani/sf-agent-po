@@ -17,6 +17,8 @@ const fakeModel =
 function fakeConfluence() {
   const pages = new Map<string, { title: string; storage: string; version: number; spaceId: string }>();
   const writes: { title: string; storage: string }[] = [];
+  const files = new Map<string, Map<string, { content: string; mediaType: string; version: number }>>();
+  const attachments = { fail: false };
   let next = 100;
   const url = (id: string, title: string) => `https://acme.atlassian.net/wiki/spaces/ENG/pages/${id}/${encodeURIComponent(title)}`;
   const client = {
@@ -39,8 +41,16 @@ function fakeConfluence() {
       writes.push(input);
       return { pageId: input.pageId, url: url(input.pageId, input.title), version: p.version };
     },
+    attachFile: async (input: { pageId: string; name: string; mediaType: string; content: string }) => {
+      if (attachments.fail) throw new AtlassianError("Attachment refused for Karim Benali", 403);
+      const page = files.get(input.pageId) ?? new Map();
+      files.set(input.pageId, page);
+      const version = (page.get(input.name)?.version ?? 0) + 1;
+      page.set(input.name, { content: input.content, mediaType: input.mediaType, version });
+      return { version };
+    },
   };
-  return { client: client as unknown as AtlassianClient, pages, writes };
+  return { client: client as unknown as AtlassianClient, pages, writes, files, attachments };
 }
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -303,5 +313,95 @@ describe("traceability matrix", () => {
     await call("confluence_publish", { context: "acme", artifactId: /as (doc-\w+)/.exec(byHand.text)![1]!, spaceKey: "ENG" });
     expect(confluence.writes.at(-1)!.title).toBe("Hand design");
     expect(confluence.pages.size).toBe(3);
+  });
+});
+
+describe("draw.io diagrams", () => {
+  const hld = {
+    title: "VIP flag",
+    solution: {
+      overview: "",
+      orgStrategy: "",
+      components: [{ id: "C1", name: "VIP flag field", type: "Field", status: "new", purpose: "", requirementIds: [] }],
+      diagram: {
+        nodes: [
+          { id: "am", label: "Account manager [PERSON_1]", kind: "user" },
+          { id: "sf", label: "Sales Cloud <core>", kind: "salesforce" },
+          { id: "erp", label: "ERP", kind: "external" },
+        ],
+        edges: [
+          { from: "am", to: "sf", label: "flags VIP" },
+          { from: "sf", to: "erp" },
+        ],
+      },
+    },
+    dataModel: { objects: [{ name: "VIP_Flag__c", status: "new", recordTypes: [], fields: [], relationships: [{ field: "Account__c", to: "Account", kind: "master-detail", reason: "" }] }] },
+  };
+  const content = [
+    "# VIP flag for [PERSON_1]",
+    "```mermaid diagram=solution\nflowchart LR\n  n1([\"Account manager [PERSON_1]\"])\n```",
+    "```mermaid diagram=data-model\nerDiagram\n  Account ||--|{ VIP_Flag__c : \"Account__c\"\n```",
+  ].join("\n\n");
+
+  it("attaches each diagram of a workflow design as a draw.io file with the real values, and shows it with the draw.io macro", async () => {
+    const { call, contexts, seen, confluence } = await connect();
+    const doc = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag for [PERSON_1]", content, artifactType: "high-level", extra: { design: hld } });
+
+    const first = await call("confluence_publish", { context: "acme", artifactId: doc.id, spaceKey: "ENG" });
+    expect(first.text).toContain("Its 2 diagram(s) are attached as draw.io files.");
+    expect(first.text).not.toContain("Karim");
+    const req = seen.at(-1)!;
+    expect(req.kind === "publish" && req.target).toContain("with 2 draw.io diagram(s) attached to the page (shown below as Mermaid)");
+    const page = confluence.writes[0]!.storage;
+    expect(page).toContain('<ac:parameter ac:name="diagramName">solution.drawio</ac:parameter><ac:parameter ac:name="diagramDisplayName">solution.drawio</ac:parameter><ac:parameter ac:name="revision">1</ac:parameter>');
+    expect(page).toContain('<ac:parameter ac:name="diagramName">data-model.drawio</ac:parameter>');
+    expect(page).not.toContain("flowchart LR");
+    const attached = confluence.files.get("100")!;
+    expect([...attached.keys()]).toEqual(["solution.drawio", "data-model.drawio"]);
+    const solution = attached.get("solution.drawio")!;
+    expect(solution.mediaType).toBe("application/vnd.jgraph.mxfile");
+    // The real name, escaped as draw.io reads an HTML label in an XML attribute.
+    expect(solution.content).toContain('value="Account manager Karim Benali"');
+    expect(solution.content).toContain('value="Sales Cloud &amp;lt;core&amp;gt;"');
+    expect(solution.content).not.toContain("[PERSON_1]");
+    expect(attached.get("data-model.drawio")!.content).toContain('value="Account__c (master-detail)"');
+
+    // Published again: new versions of the files, which the macros name.
+    await call("confluence_publish", { context: "acme", artifactId: doc.id });
+    expect(confluence.writes.at(-1)!.storage).toContain('<ac:parameter ac:name="diagramName">solution.drawio</ac:parameter><ac:parameter ac:name="diagramDisplayName">solution.drawio</ac:parameter><ac:parameter ac:name="revision">2</ac:parameter>');
+    expect(attached.get("solution.drawio")!.version).toBe(2);
+  });
+
+  it("keeps the Mermaid source for a site without the draw.io app, and remembers it for the context", async () => {
+    const { call, contexts, confluence } = await connect();
+    const doc = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag", content, artifactType: "high-level", extra: { design: hld } });
+    const r = await call("confluence_publish", { context: "acme", artifactId: doc.id, spaceKey: "ENG", diagrams: "mermaid" });
+    expect(r.text).not.toContain("draw.io");
+    expect(confluence.writes[0]!.storage).toContain("flowchart LR");
+    expect(confluence.writes[0]!.storage).toContain("Account manager Karim Benali");
+    expect(confluence.files.size).toBe(0);
+    expect(contexts.get("acme")!.settings.confluenceDiagrams).toBe("mermaid");
+    await call("confluence_publish", { context: "acme", artifactId: doc.id });
+    expect(confluence.files.size).toBe(0);
+    // A design saved by hand has no diagram data: its Mermaid blocks stay code.
+    await call("confluence_publish", { context: "acme", artifactId: doc.id, diagrams: "drawio" });
+    expect(confluence.files.size).toBe(1);
+    const byHand = saveArtifact(contexts, "acme", { kind: "design", title: "Hand", content, artifactType: "high-level", extra: { design: undefined } });
+    await call("confluence_publish", { context: "acme", artifactId: byHand.id, spaceKey: "ENG" });
+    expect(confluence.writes.at(-1)!.storage).toContain("flowchart LR");
+  });
+
+  it("does not update the page when a diagram cannot be attached, and says so for a new page", async () => {
+    const { call, contexts, confluence } = await connect();
+    const doc = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag", content, artifactType: "high-level", extra: { design: hld } });
+    confluence.attachments.fail = true;
+    const created = await call("confluence_publish", { context: "acme", artifactId: doc.id, spaceKey: "ENG" });
+    expect(created.text).toContain("Created the Confluence page");
+    expect(created.text).toContain("Its diagrams were not attached: Confluence refused to attach the diagram solution.drawio (HTTP 403). Publish again to attach them.");
+    expect(created.text).not.toContain("Karim");
+    const updated = await call("confluence_publish", { context: "acme", artifactId: doc.id });
+    expect(updated.isError).toBe(true);
+    expect(updated.text).toContain("Confluence refused to attach the diagram solution.drawio (HTTP 403). The page was not updated.");
+    expect(confluence.writes).toHaveLength(1);
   });
 });
