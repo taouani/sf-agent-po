@@ -27,6 +27,9 @@ export interface PlacedEdge {
   label?: string;
   /** The bends, in order from `from` to `to`. */
   points: { x: number; y: number }[];
+  /** Where the line leaves and enters its boxes, as a share of their height: lines that share a side are spread along it. */
+  exitY: number;
+  entryY: number;
 }
 
 export interface DiagramLayout {
@@ -38,7 +41,9 @@ export interface DiagramLayout {
 
 const MARGIN = 40;
 const NODE_WIDTH = 160;
-const COLUMN_GAP = 100;
+/** The gap between columns, widened for long line labels (about 6.5 pixels a character at 11 pixels). */
+const MIN_COLUMN_GAP = 100;
+const MAX_COLUMN_GAP = 280;
 const ROW_GAP = 40;
 /** The height a line that passes through a column takes in it. */
 const PASS_HEIGHT = 20;
@@ -147,13 +152,15 @@ export function layoutDiagram(graph: DiagramGraph): DiagramLayout {
   }
 
   // Coordinates: each column centred on the tallest.
+  const longest = Math.max(0, ...edges.map((e) => e.label?.length ?? 0));
+  const gap = Math.round(Math.min(MAX_COLUMN_GAP, Math.max(MIN_COLUMN_GAP, 40 + longest * 6.5)));
   const heightOf = (column: Slot[]) => column.reduce((h, s) => h + s.height, 0) + ROW_GAP * Math.max(0, column.length - 1);
   const tallest = Math.max(0, ...columns.map(heightOf));
   columns.forEach((column, c) => {
     let y = MARGIN + (tallest - heightOf(column)) / 2;
     for (const s of column) {
       s.y = y;
-      if (s.node) Object.assign(s.node, { x: MARGIN + c * (NODE_WIDTH + COLUMN_GAP), y });
+      if (s.node) Object.assign(s.node, { x: MARGIN + c * (NODE_WIDTH + gap), y });
       y += s.height + ROW_GAP;
     }
   });
@@ -163,7 +170,7 @@ export function layoutDiagram(graph: DiagramGraph): DiagramLayout {
     // Through each skipped column on a straight line, at the height of its slot.
     const points = slots.flatMap((s) => {
       const c = columns.findIndex((col) => col.includes(s));
-      const left = MARGIN + c * (NODE_WIDTH + COLUMN_GAP);
+      const left = MARGIN + c * (NODE_WIDTH + gap);
       const y = s.y + PASS_HEIGHT / 2;
       return [
         { x: left, y },
@@ -171,12 +178,33 @@ export function layoutDiagram(graph: DiagramGraph): DiagramLayout {
       ];
     });
     if (reversed.has(i)) points.reverse();
-    return { from: nodes[e.from]!.id, to: nodes[e.to]!.id, ...(e.label ? { label: e.label } : {}), points };
+    return { from: nodes[e.from]!.id, to: nodes[e.to]!.id, ...(e.label ? { label: e.label } : {}), points, exitY: 0.5, entryY: 0.5 };
   });
+
+  // Ports: the lines on one side of a box are spread along it, in the order of where they go, so
+  // that two lines between the same boxes (two lookups, or one each way) are drawn apart.
+  const sides = new Map<string, { edge: PlacedEdge; end: "exit" | "entry"; toward: number }[]>();
+  placed.forEach((e, i) => {
+    const { from, to } = edges[i]!;
+    if (from === to) return;
+    const back = rank[to]! < rank[from]!;
+    const [a, b] = [nodes[from]!, nodes[to]!];
+    const centre = (n: PlacedNode) => n.y + n.height / 2;
+    const add = (node: number, right: boolean, end: "exit" | "entry", toward: number) => {
+      const key = `${node}:${right ? "r" : "l"}`;
+      sides.set(key, [...(sides.get(key) ?? []), { edge: e, end, toward }]);
+    };
+    add(from, !back, "exit", e.points[0]?.y ?? centre(b));
+    add(to, back, "entry", e.points.at(-1)?.y ?? centre(a));
+  });
+  for (const ports of sides.values()) {
+    ports.sort((p, q) => p.toward - q.toward);
+    ports.forEach((p, k) => (p.edge[p.end === "exit" ? "exitY" : "entryY"] = Number(((k + 1) / (ports.length + 1)).toFixed(3))));
+  }
   return {
     nodes,
     edges: placed,
-    width: MARGIN * 2 + columns.length * NODE_WIDTH + Math.max(0, columns.length - 1) * COLUMN_GAP,
+    width: MARGIN * 2 + columns.length * NODE_WIDTH + Math.max(0, columns.length - 1) * gap,
     height: MARGIN * 2 + tallest,
   };
 }
@@ -190,8 +218,8 @@ const STYLE: Record<DiagramKind, string> = {
 };
 
 /** A line leaves a box on its right and enters the next on its left, so it stays between the columns. */
-const FORWARD = "exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;";
-const BACKWARD = "exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;";
+const ports = (e: PlacedEdge, back: boolean) =>
+  `exitX=${back ? 0 : 1};exitY=${e.exitY};exitDx=0;exitDy=0;entryX=${back ? 1 : 0};entryY=${e.entryY};entryDx=0;entryDy=0;`;
 const EDGE = "edgeStyle=none;rounded=0;html=1;endArrow=block;endFill=1;fontSize=11;labelBackgroundColor=#ffffff;";
 
 /**
@@ -214,7 +242,7 @@ export function drawioXml(graph: DiagramGraph, name = "Page-1"): string {
   layout.edges.forEach((e, i) => {
     const loop = e.from === e.to;
     const back = columnOf.get(e.to)! < columnOf.get(e.from)!;
-    const style = loop ? "html=1;endArrow=block;endFill=1;fontSize=11;" : `${EDGE}${back ? BACKWARD : FORWARD}`;
+    const style = loop ? "html=1;endArrow=block;endFill=1;fontSize=11;" : `${EDGE}${ports(e, back)}`;
     const points = e.points.length ? `<Array as="points">${e.points.map((p) => `<mxPoint x="${p.x}" y="${p.y}"/>`).join("")}</Array>` : "";
     cells.push(
       `<mxCell id="e${i + 1}" value="${e.label ? drawioText(e.label) : ""}" style="${style}" edge="1" parent="1" source="${ids.get(e.from)}" target="${ids.get(e.to)}">` +

@@ -198,8 +198,11 @@ export class AtlassianClient {
       headers: { "X-Atlassian-Token": "no-check" },
       body: form,
     });
-    const file = (r?.results ?? []).find((f: any) => f?.title === input.name) ?? r?.results?.[0];
-    return { version: Number(file?.version?.number) || 1 };
+    const file = (r?.results ?? []).find((f: any) => f?.title === input.name);
+    const version = Number(file?.version?.number);
+    // A macro naming a wrong version would show an old diagram without a word.
+    if (!Number.isInteger(version) || version < 1) throw new Error(`Confluence did not return the version of the attached file ${input.name}.`);
+    return { version };
   }
 
   private pageUrl(page: any, id: string): string {

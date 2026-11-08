@@ -351,7 +351,7 @@ describe("draw.io diagrams", () => {
     expect(first.text).toContain("Its 2 diagram(s) are attached as draw.io files.");
     expect(first.text).not.toContain("Karim");
     const req = seen.at(-1)!;
-    expect(req.kind === "publish" && req.target).toContain("with 2 draw.io diagram(s) attached to the page (shown below as Mermaid)");
+    expect(req.kind === "publish" && req.target).toContain("with 2 draw.io diagram(s) attached to the page as solution.drawio, data-model.drawio (shown below as Mermaid; a file of the same name already on the page gets a new version)");
     const page = confluence.writes[0]!.storage;
     expect(page).toContain('<ac:parameter ac:name="diagramName">solution.drawio</ac:parameter><ac:parameter ac:name="diagramDisplayName">solution.drawio</ac:parameter><ac:parameter ac:name="revision">1</ac:parameter>');
     expect(page).toContain('<ac:parameter ac:name="diagramName">data-model.drawio</ac:parameter>');
@@ -364,7 +364,7 @@ describe("draw.io diagrams", () => {
     expect(solution.content).toContain('value="Account manager Karim Benali"');
     expect(solution.content).toContain('value="Sales Cloud &amp;lt;core&amp;gt;"');
     expect(solution.content).not.toContain("[PERSON_1]");
-    expect(attached.get("data-model.drawio")!.content).toContain('value="Account__c (master-detail)"');
+    expect(attached.get("data-model.drawio")!.content).toContain('value="Account__c"');
 
     // Published again: new versions of the files, which the macros name.
     await call("confluence_publish", { context: "acme", artifactId: doc.id });
@@ -403,5 +403,26 @@ describe("draw.io diagrams", () => {
     expect(updated.isError).toBe(true);
     expect(updated.text).toContain("Confluence refused to attach the diagram solution.drawio (HTTP 403). The page was not updated.");
     expect(confluence.writes).toHaveLength(1);
+  });
+
+  it("says the files were attached when the page changed while the user was approving it", async () => {
+    let bump = () => {};
+    const { call, contexts, confluence } = await connect([
+      { status: "approved" },
+      (req) => {
+        bump();
+        return { status: "approved", missed: [], digest: requestDigest(req) };
+      },
+    ]);
+    const doc = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag", content, artifactType: "high-level", extra: { design: hld } });
+    await call("confluence_publish", { context: "acme", artifactId: doc.id, spaceKey: "ENG", diagrams: "mermaid" });
+    expect(contexts.get("acme")!.settings.confluenceDiagrams).toBe("mermaid");
+    bump = () => void (confluence.pages.get("100")!.version += 1);
+    const r = await call("confluence_publish", { context: "acme", artifactId: doc.id, diagrams: "drawio" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("The diagram files were attached as new versions, but the page was not updated.");
+    expect(r.text).not.toContain("Nothing was written");
+    // Not written: the choice is not kept.
+    expect(contexts.get("acme")!.settings.confluenceDiagrams).toBe("mermaid");
   });
 });

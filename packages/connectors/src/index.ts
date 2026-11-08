@@ -7,7 +7,7 @@ export {
   type AtlassianConfig,
   type IssueState,
 } from "./atlassian.js";
-export { markdownToStorage, type StorageOptions } from "./confluence-storage.js";
+export { diagramNames, markdownToStorage, type StorageOptions } from "./confluence-storage.js";
 export {
   DRAWIO_MEDIA_TYPE,
   drawioMacro,

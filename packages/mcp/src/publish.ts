@@ -4,7 +4,7 @@
 // masked, and so is the page link they return.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { AtlassianError, DRAWIO_MEDIA_TYPE, drawioMacro, drawioText, drawioXml, layoutDiagram, markdownToStorage, type AtlassianClient } from "@sf-agent-po/connectors";
+import { AtlassianError, diagramNames, DRAWIO_MEDIA_TYPE, drawioMacro, drawioXml, layoutDiagram, markdownToStorage, type AtlassianClient, type DiagramGraph } from "@sf-agent-po/connectors";
 import type { ContextRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
@@ -69,9 +69,6 @@ const confluence = <T>(what: string, run: () => Promise<T>) => atlassianCall("Co
 /** How a design's diagrams appear in Confluence: with the draw.io app, or as their Mermaid source. */
 export const DIAGRAM_MODES = ["drawio", "mermaid"] as const;
 export type DiagramMode = (typeof DIAGRAM_MODES)[number];
-
-/** The names of the diagrams a design's Markdown shows, in order ("```mermaid diagram=solution"). */
-export const diagramNames = (markdown: string) => [...new Set([...markdown.matchAll(/^```mermaid[ \t]+(?:[^\n]*[ \t])?diagram=([\w-]+)/gm)].map((m) => m[1]!))];
 
 /** The widest a diagram is shown on the page, in pixels. */
 const MAX_DIAGRAM_WIDTH = 1000;
@@ -185,15 +182,27 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           // What the user reads on the page (the Markdown with the real values), and what is
           // written: storage made from the masked Markdown, with the same values put in escaped.
           const body = masker.unmask(context, doc.content);
-          if (args.diagrams) contexts.updateSettings(context, { confluenceDiagrams: args.diagrams });
           const mode = args.diagrams ?? (contexts.get(context)?.settings.confluenceDiagrams === "mermaid" ? "mermaid" : "drawio");
           // The diagrams go as draw.io files: their labels come from the design, with the real values put in.
           const graphs = mode === "drawio" && doc.metadata.design && doc.metadata.artifactType !== "detailed" ? highLevelDiagrams(doc.metadata.design as HighLevelDesign) : {};
           const files = diagramNames(doc.content)
             .filter((name) => Object.hasOwn(graphs, name))
             .map((name) => {
-              const graph = graphs[name]!;
-              return { name, file: `${name}.drawio`, xml: masker.unmask(context, drawioXml(graph), { escape: drawioText }), width: Math.min(layoutDiagram(graph).width, MAX_DIAGRAM_WIDTH) };
+              // The real values go in before the layout, so that each box is sized for what it shows.
+              const kept = new Set<string>();
+              const revealed: { type: string; value: string }[] = [];
+              const real = (label: string) => {
+                const out = masker.unmask(context, label);
+                out.kept.forEach((k) => kept.add(k));
+                revealed.push(...out.revealed);
+                return out.text;
+              };
+              const g = graphs[name]!;
+              const graph: DiagramGraph = {
+                nodes: g.nodes.map((n) => ({ ...n, label: real(n.label) })),
+                edges: g.edges.map((e) => ({ ...e, ...(e.label ? { label: real(e.label) } : {}) })),
+              };
+              return { name, file: `${name}.drawio`, xml: drawioXml(graph), kept: [...kept], revealed, width: Math.min(layoutDiagram(graph).width, MAX_DIAGRAM_WIDTH) };
             });
           /** The page's storage, with each diagram shown at the version of its file. */
           const storageAt = (revision: (file: string) => number) =>
@@ -207,7 +216,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const attach = async (pageId: string) => {
             const versions = new Map<string, number>();
             for (const f of files) {
-              const { version } = await confluence(`attach the diagram ${f.file}`, () => client.attachFile({ pageId, name: f.file, mediaType: DRAWIO_MEDIA_TYPE, content: f.xml.text }));
+              const { version } = await confluence(`attach the diagram ${f.file}`, () => client.attachFile({ pageId, name: f.file, mediaType: DRAWIO_MEDIA_TYPE, content: f.xml }));
               versions.set(f.file, version);
             }
             return versions;
@@ -248,7 +257,13 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
                 throw new Error(`${(err as Error).message.replace(/ Nothing was written\.$/, "")} The page was not updated.`);
               }
               const at = storageAt((file) => versions.get(file) ?? 1);
-              return client.updatePage({ pageId: page.pageId, expectedVersion: page.version, title: title.text, storage: at.text, message: `Version ${doc.metadata.version}` });
+              try {
+                return await client.updatePage({ pageId: page.pageId, expectedVersion: page.version, title: title.text, storage: at.text, message: `Version ${doc.metadata.version}` });
+              } catch (err) {
+                if (!files.length) throw err;
+                const why = err instanceof AtlassianError ? `Confluence refused to write the page (HTTP ${err.status}).` : (err as Error).message.replace(/ Nothing was written\./, "");
+                throw new Error(`${why} The diagram files were attached as new versions, but the page was not updated.`);
+              }
             };
           } else {
             if (!args.spaceKey) throw new Error("This design has not been published yet. Ask the user which Confluence space (key) to publish to.");
@@ -306,21 +321,22 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
               ? `, and replace the content of its traceability matrix page "${tracePage.title}"${edited ? " (edited in Confluence since it was last published: those edits will be replaced)" : ""}`
               : ", and a new page under it for its traceability matrix";
           }
-          if (files.length) target += `, with ${files.length} draw.io diagram(s) attached to the page (shown below as Mermaid)`;
+          if (files.length)
+            target += `, with ${files.length} draw.io diagram(s) attached to the page as ${files.map((f) => f.file).join(", ")} (shown below as Mermaid; a file of the same name already on the page gets a new version)`;
           const trace = traceTitle && traceBody ? `\n\n---\n\n${traceBody.text}` : "";
           const req: PublishRequest = {
             kind: "publish",
             target,
             title: title.text,
             body: `${body.text}${trace}`,
-            kept: [...new Set([...title.kept, ...body.kept, ...files.flatMap((f) => f.xml.kept), ...(traceTitle?.kept ?? []), ...(traceBody?.kept ?? [])])],
+            kept: [...new Set([...title.kept, ...body.kept, ...files.flatMap((f) => f.kept), ...(traceTitle?.kept ?? []), ...(traceBody?.kept ?? [])])],
           };
           const decision = await kit.reviewerFor(call).review(req);
           if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
           // Page titles from Confluence were shown in clear too, and the comment may quote them.
           const shown = shownTitles.map((value) => ({ type: "PRIVATE", value }));
           const comment = () =>
-            decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...(traceTitle?.revealed ?? []), ...(traceBody?.revealed ?? []), ...shown]);
+            decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...files.flatMap((f) => f.revealed), ...(traceTitle?.revealed ?? []), ...(traceBody?.revealed ?? []), ...shown]);
           if (decision.status !== "approved") {
             const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
             return text(`Nothing was written: the user ${why}.${await comment()}`);
@@ -329,6 +345,8 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const page = await confluence("write the page", write);
           const url = pageLink(page.url);
           const version = doc.metadata.version;
+          // The choice is kept once a page was written with it.
+          if (args.diagrams) contexts.updateSettings(context, { confluenceDiagrams: args.diagrams });
           updateArtifactMeta(contexts, context, doc, (meta) => ({
             // Saved again while this ran: the new version is still unpublished.
             status: meta.version === version ? "published" : "changed",

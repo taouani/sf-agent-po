@@ -69,8 +69,8 @@ export function highLevelDiagrams(d: HighLevelDesign): Record<string, DiagramGra
     const names = [...new Set(pairs.flatMap((p) => [p.parent, p.child]))];
     out["data-model"] = {
       nodes: names.map((name) => ({ id: name, label: name, kind: "object" })),
-      // From the object that holds the field to the one it points to.
-      edges: pairs.map((p) => ({ from: p.child, to: p.parent, label: `${p.r.field} (${p.r.kind})` })),
+      // From the object that holds the field to the one it points to, named by the field as in the Mermaid block.
+      edges: pairs.map((p) => ({ from: p.child, to: p.parent, label: p.r.field })),
     };
   }
   return out;

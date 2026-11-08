@@ -1,7 +1,7 @@
 import { XMLValidator } from "fast-xml-parser";
 import { describe, expect, it } from "vitest";
 import { AtlassianClient } from "../src/atlassian.js";
-import { markdownToStorage } from "../src/confluence-storage.js";
+import { diagramNames, markdownToStorage } from "../src/confluence-storage.js";
 import { drawioMacro, drawioXml, layoutDiagram, type DiagramGraph, type DiagramLayout } from "../src/drawio-write.js";
 import { readDrawio } from "../src/readers/drawio.js";
 
@@ -15,8 +15,8 @@ function segments(layout: DiagramLayout): { edge: number; a: Point; b: Point }[]
     const from = byId.get(e.from)!;
     const to = byId.get(e.to)!;
     const back = to.x < from.x;
-    const start = { x: back ? from.x : from.x + from.width, y: from.y + from.height / 2 };
-    const end = { x: back ? to.x + to.width : to.x, y: to.y + to.height / 2 };
+    const start = { x: back ? from.x : from.x + from.width, y: from.y + from.height * e.exitY };
+    const end = { x: back ? to.x + to.width : to.x, y: to.y + to.height * e.entryY };
     const path = [start, ...e.points, end];
     return path.slice(1).map((b, i) => ({ edge, a: path[i]!, b }));
   });
@@ -143,6 +143,24 @@ describe("draw.io diagrams", () => {
     expect(read).toContain("works");
   });
 
+  it("draws two lines between the same boxes apart, and widens the gap for long labels", () => {
+    const layout = expectNoLineThroughABox({
+      nodes: [
+        { id: "case", label: "Case" },
+        { id: "contact", label: "Contact" },
+      ],
+      edges: [
+        { from: "case", to: "contact", label: "ContactId" },
+        { from: "case", to: "contact", label: "Other_Contact_With_A_Long_Name__c" },
+        { from: "contact", to: "case", label: "Last_Case__c" },
+      ],
+    });
+    const exits = layout.edges.map((e) => `${e.exitY}/${e.entryY}`);
+    expect(new Set(exits).size).toBe(3);
+    const [a, b] = layout.nodes;
+    expect(Math.abs(b!.x - a!.x) - 160).toBeGreaterThan("Other_Contact_With_A_Long_Name__c".length * 6);
+  });
+
   it("names the attachment and its version in the macro", () => {
     const macro = drawioMacro("solution.drawio", 3, 640);
     expect(macro).toContain('<ac:structured-macro ac:name="drawio"');
@@ -163,6 +181,21 @@ describe("draw.io diagrams", () => {
     expect(markdownToStorage(md)).toContain("flowchart LR");
     // A name such as "constructor" is not taken from the object's prototype.
     expect(markdownToStorage("```mermaid diagram=constructor\nx\n```", { diagrams: {} })).toContain("<ac:plain-text-body>");
+  });
+
+  it("finds the named Mermaid blocks as the conversion reads them", () => {
+    expect(diagramNames("```mermaid diagram=solution\nx\n```\n\n````md\n```mermaid diagram=inside\n```\n````\n\n- item\n\n  ```mermaid diagram=data-model\n  y\n  ```\n\n```mermaid diagram=solution\nz\n```")).toEqual([
+      "solution",
+      "data-model",
+    ]);
+  });
+
+  it("refuses an attachment answer without the file's version", async () => {
+    const fakeFetch = (async () => new Response(JSON.stringify({ results: [{ title: "other.drawio", version: { number: 2 } }] }), { status: 200 })) as unknown as typeof fetch;
+    const client = new AtlassianClient({ siteUrl: "https://x.atlassian.net", email: "me@example.com", apiToken: "tok" }, fakeFetch);
+    await expect(client.attachFile({ pageId: "1", name: "solution.drawio", mediaType: "application/vnd.jgraph.mxfile", content: "x" })).rejects.toThrow(
+      "Confluence did not return the version of the attached file solution.drawio.",
+    );
   });
 
   it("attaches a file to a page as a form, and returns its version", async () => {
