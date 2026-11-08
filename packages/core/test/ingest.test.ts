@@ -17,6 +17,15 @@ const setup = (model?: EntityDetector) => {
 };
 
 describe("masking inputs", () => {
+  it("never masks a field type, nor one an older context stored as a name", async () => {
+    const { vault } = setup();
+    // An older context, from before field types were allowlisted, holds "Currency" as a person.
+    await new Masker({ vault, model: fakeModel(["Currency"]), allowlist: [] }).mask("acme", "Premium is a Currency field.");
+    const masker = new Masker({ vault, model: fakeModel(["Currency", "Karim Benali"]) });
+    expect((await masker.maskOutput("acme", 'Use one of Checkbox, Currency, Date.')).text).toBe("Use one of Checkbox, Currency, Date.");
+    expect((await masker.mask("globex", "Karim Benali wants a Currency field.")).text).toBe("[PERSON_1] wants a Currency field.");
+  });
+
   it("masks a text and reports what it masked and whether the model ran", async () => {
     const { masker } = setup(fakeModel(["Karim Benali"]));
     const { text, report } = await masker.mask("acme", "Karim Benali (karim@example.com, +33 6 12 34 56 78) owns the Flow.");

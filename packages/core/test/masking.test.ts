@@ -182,6 +182,10 @@ describe("the policy (MA1)", () => {
     const text = "Premium__c is a Currency field, Rate__c a Percent";
     const ner = (word: string): Span => ({ start: text.indexOf(word), end: text.indexOf(word) + word.length, type: "PERSON", source: "ner" });
     expect(applyPolicy(text, [ner("Currency"), ner("Percent")])).toEqual([]);
+    // As Setup writes them, and with punctuation the model took into the span; a name around one stays masked.
+    const more = "A Roll-Up Summary, a Master-Detail and a Date/Time, Rose Currency";
+    const at = (word: string): Span => ({ start: more.indexOf(word), end: more.indexOf(word) + word.length, type: "PERSON", source: "ner" });
+    expect(applyPolicy(more, [at("Roll-Up Summary,"), at("Master-Detail"), at("Date/Time,"), at("Rose Currency")]).map((s) => more.slice(s.start, s.end))).toEqual(["Rose Currency"]);
   });
 
   it("runs the model and merges its spans with the rules", async () => {

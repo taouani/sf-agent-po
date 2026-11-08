@@ -2,7 +2,7 @@
 // everything the model sees hold pseudonyms; real values come back only on publish.
 
 import type { ContextRepository, NewDocument, SourceDocument } from "../store/contexts.js";
-import { detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
+import { allowKey, detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
 import { detectWithRules } from "./rules.js";
 import { blackOut, decodeImage, encodePng, orient, pageText, redactionBox, TRUSTED_FROM, UNCERTAIN_BELOW, worthChecking, type Box, type OcrResult, type RgbaImage, type TextRecognizer } from "./image.js";
 import type { Span } from "./spans.js";
@@ -120,7 +120,7 @@ function asDictionaryEntry(e: { type: string; value: string }, allowed: Set<stri
   // wholly in those scripts, may be that short: CJK values match inside words.
   const cjkName = e.type === "PERSON" && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\s・·]+$/u.test(value);
   const shortest = cjkName ? 2 : 4;
-  if ([...value].length < shortest || !/\p{L}/u.test(value) || allowed.has(value.toLowerCase())) return undefined;
+  if ([...value].length < shortest || !/\p{L}/u.test(value) || allowed.has(allowKey(value))) return undefined;
   const oneWord = !/\s/u.test(value);
   // A one-word name in lower case is more likely a word the model took for a name; scripts without case are exempt.
   const first = value[0]!;
@@ -192,7 +192,7 @@ export class Masker {
   private readonly allowed: Set<string>;
 
   constructor(private readonly opts: MaskerOptions) {
-    this.allowed = new Set((opts.allowlist ?? DOMAIN_ALLOWLIST).map((a) => a.toLowerCase()));
+    this.allowed = new Set((opts.allowlist ?? DOMAIN_ALLOWLIST).map(allowKey));
   }
 
   /** The known values of a context, compiled; brought up to date with only what changed. */
