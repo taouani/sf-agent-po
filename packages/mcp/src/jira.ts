@@ -25,17 +25,29 @@ import {
 } from "./backlog.js";
 import { atlassianCall, decisionComment, type PublishKit } from "./publish.js";
 import { contextLanguage } from "./checks.js";
+import type { DetailedDesign } from "./design/detailed-schema.js";
+import { planSubtasks } from "./subtasks.js";
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
 type BacklogMeta = ArtifactMeta & { backlog?: Backlog };
 
-type JiraTarget = { context: string; artifactId: string; projectKey: string; epicIssueType: string; storyIssueType: string; storyPointsField?: string };
+type JiraTarget = {
+  context: string;
+  artifactId: string;
+  projectKey: string;
+  epicIssueType: string;
+  storyIssueType: string;
+  storyPointsField?: string;
+  subtasks: boolean;
+  detailedDesignId?: string;
+  subtaskIssueType?: string;
+};
 
 /** One epic or story, masked, and what publishing does with it. */
 interface PlannedItem {
   id: string;
-  level: "epic" | "story";
+  level: "epic" | "story" | "subtask";
   /** The masked summary. */
   summary: string;
   /** "skip" is for won't-have items, which stay out of Jira. */
@@ -49,6 +61,8 @@ interface PlannedItem {
   /** Masked labels. */
   labels: string[];
   epicId?: string;
+  /** A sub-task's story id. */
+  parentId?: string;
   /** The issue as it is in Jira now (in clear: for the approval page only). */
   current?: IssueState;
   /** Whether someone edited the issue in Jira since our last write. */
@@ -234,6 +248,47 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       }
     }
 
+    // Sub-tasks from the detailed design that builds this backlog: one per component change, under each story it cites.
+    const notes: string[] = [];
+    const design = args.subtasks ? designFor(args.context, doc.id, args.detailedDesignId) : undefined;
+    let subtaskType: string | undefined;
+    let unmatched: string[] = [];
+    if (design) {
+      const types = project.subtaskTypes ?? [];
+      if (args.subtaskIssueType && !types.includes(args.subtaskIssueType))
+        throw new Error(`Project ${args.projectKey} has no sub-task issue type "${args.subtaskIssueType}". Available: ${types.join(", ") || "none"}.`);
+      subtaskType = args.subtaskIssueType ?? types.find((t) => /^sub-?task$/i.test(t.replace(/\s+/g, ""))) ?? types[0];
+      const planned = planSubtasks(backlog, design.design, design.doc.title, (story) => mapping.items[story.id]?.key ?? story.jiraKey);
+      unmatched = planned.unmatched;
+      if (!subtaskType) notes.push(`Project ${args.projectKey} has no sub-task issue type, so the ${planned.subtasks.length} sub-task(s) of the detailed design ${design.doc.id} are left out; the stories are published.`);
+      else if (!planned.subtasks.length) notes.push(`The detailed design ${design.doc.id} gives no sub-task to these stories: its deployment list cites none of them.`);
+      else {
+        const stories = new Map(items.filter((i) => i.level === "story").map((i) => [i.id, i]));
+        const byStory = new Map<string, PlannedItem[]>();
+        for (const t of planned.subtasks) {
+          const story = stories.get(t.storyId)!;
+          const fields = { summary: t.summary, description: t.description };
+          const labels = ["sf-agent-po"];
+          const known = mapping.items[t.id];
+          const item: PlannedItem = {
+            id: t.id,
+            level: "subtask",
+            summary: t.summary,
+            action: story.action === "skip" ? "skip" : "create",
+            ...(story.action === "skip" ? { skipReason: `its story ${story.id} is not published` } : {}),
+            ...(known ? { key: known.key } : {}),
+            hash: hash(JSON.stringify({ ...fields, labels })),
+            fields,
+            labels,
+            parentId: story.id,
+          };
+          byStory.set(story.id, [...(byStory.get(story.id) ?? []), item]);
+        }
+        // Each story's sub-tasks right after it: created once their story exists, and shown under it.
+        items.splice(0, items.length, ...items.flatMap((i) => [i, ...(i.level === "story" ? (byStory.get(i.id) ?? []) : [])]));
+      }
+    }
+
     // Two items writing to one issue would overwrite each other on every publish.
     const owners = new Map<string, string>();
     for (const item of items) {
@@ -265,6 +320,14 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       item.action = known && known.hash === item.hash ? "unchanged" : "update";
     });
 
+    // A sub-task whose story was created again (its old one deleted, and its sub-tasks with it) is created again too.
+    for (const item of items) {
+      if (item.level !== "subtask" || !item.current) continue;
+      const story = items.find((i) => i.id === item.parentId)!;
+      if (story.action === "create" || (story.key && item.current.parentKey && item.current.parentKey !== story.key))
+        Object.assign(item, { action: "create", key: undefined, current: undefined, recreate: true });
+    }
+
     // A story already in Jira moves when its epic is created in this run, or when it sits under another epic in Jira.
     const byId = new Map(items.map((i) => [i.id, i]));
     for (const item of items) {
@@ -291,7 +354,24 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     const orphans = Object.entries(mapping.items)
       .filter(([id]) => !byId.has(id))
       .map(([id, i]) => `${id} (${i.key})`);
-    return { project, mapping, items, links, orphans };
+    return { project, mapping, items, links, orphans, notes, unmatched, subtaskType, design: design?.doc };
+  };
+
+  /** The detailed design whose deployment list gives the sub-tasks: the one named, or the newest that builds this backlog. */
+  const designFor = (context: string, backlogId: string, id?: string) => {
+    const designs = maskedDocs(context).filter((d) => d.kind === "design" && (d.metadata as ArtifactMeta).artifact && (d.metadata as ArtifactMeta).artifactType === "detailed");
+    const json = (d: (typeof designs)[number]) => (d.metadata as { design?: DetailedDesign }).design;
+    if (id) {
+      const doc = designs.find((d) => d.id === id);
+      if (!doc) throw new Error(`${id} is not a detailed design in context "${context}".`);
+      const design = json(doc);
+      if (!design) throw new Error(`${id} was not written by the detailed design workflow, so it has no deployment list to make sub-tasks from.`);
+      return { doc, design };
+    }
+    const linked = designs
+      .filter((d) => json(d)?.scope?.backlogId === backlogId)
+      .sort((a, b) => String((b.metadata as ArtifactMeta).savedAt ?? b.updatedAt).localeCompare(String((a.metadata as ArtifactMeta).savedAt ?? a.updatedAt)))[0];
+    return linked ? { doc: linked, design: json(linked)! } : undefined;
   };
 
   server.registerTool(
@@ -314,6 +394,12 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           .regex(/^customfield_\d+$/)
           .optional()
           .describe("Custom field id for story points in this Jira site, e.g. customfield_10016. Left out, points only appear in the description."),
+        subtasks: z
+          .boolean()
+          .default(true)
+          .describe("Give each story one sub-task per component change in the deployment list of the detailed design that builds this backlog."),
+        detailedDesignId: z.string().optional().describe("The detailed design to take the sub-tasks from. Left out: the newest one whose stories come from this backlog."),
+        subtaskIssueType: z.string().optional().describe("The sub-task issue type. Left out: the project's own, read from Jira."),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
@@ -323,7 +409,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const { doc, meta, backlog } = loadBacklog(context, args.artifactId);
         if (!kit.atlassian) throw new Error("Jira is not set up for this server.");
         const client = kit.atlassian();
-        const { project, mapping, items, links, orphans } = await plan(args, doc, meta, backlog, client);
+        const { project, mapping, items, links, orphans, notes, unmatched, subtaskType, design } = await plan(args, doc, meta, backlog, client);
+        const noteText = notes.length ? `\n\n${notes.join("\n")}` : "";
         const version = doc.metadata.version;
         const markPublished = () =>
           updateArtifactMeta(contexts, context, doc, (m) => ({
@@ -338,7 +425,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         if (!count("create") && !count("update") && !links.length) {
           // Nothing of it was ever in Jira (all won't have): nothing is recorded either.
           if (Object.keys(mapping.items).length) markPublished();
-          return text(`Nothing to publish: Jira project ${args.projectKey} is already up to date.${skippedNote}`);
+          return text(`Nothing to publish: Jira project ${args.projectKey} is already up to date.${skippedNote}${noteText}`);
         }
 
         // The real values, for the page and the write. Secrets and unknown pseudonyms stay masked.
@@ -363,7 +450,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const title = reveal(backlog.title);
 
         // The page: every issue as it will be written, and what Jira holds now.
-        const issueType = (i: PlannedItem) => (i.level === "epic" ? args.epicIssueType : args.storyIssueType);
+        const issueType = (i: PlannedItem) => (i.level === "epic" ? args.epicIssueType : i.level === "subtask" ? subtaskType! : args.storyIssueType);
         const describe = (i: PlannedItem) => {
           const w = written.get(i.id)!;
           if (i.action === "skip") return `skipped, ${i.skipReason}${i.key ? `; ${i.key} is left as it is in Jira` : ""}`;
@@ -379,7 +466,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const indent = (s: string, by: string) => s.replace(/^/gm, by);
         const lines = items.flatMap((i) => {
           const w = written.get(i.id)!;
-          const pad = i.level === "story" ? "    " : "";
+          const pad = i.level === "story" ? "    " : i.level === "subtask" ? "        " : "";
           const head = `${pad}${i.id} · ${w.fields.summary}: ${describe(i)}`;
           if (i.action === "skip" || i.action === "unchanged") return [head];
           const points = args.storyPointsField && w.fields[args.storyPointsField] !== undefined ? [`Story points (${args.storyPointsField}): ${String(w.fields[args.storyPointsField])}`] : [];
@@ -397,6 +484,9 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           body: [
             ...lines,
             ...(links.length ? ["Dependency links (the first blocks the second):", ...links.map((l) => `- ${l.blocker} blocks ${l.blocked}`), ""] : []),
+            ...(design && subtaskType ? [`Sub-tasks (${subtaskType}) come from the detailed design "${reveal(design.title)}".`] : []),
+            ...(unmatched.length ? [`Its deployment list also cites stories that are not in this backlog, so they get no sub-task: ${unmatched.map(reveal).join(", ")}`] : []),
+            ...notes.map(reveal),
             ...(orphans.length ? [`No longer in this backlog, left as they are in Jira: ${orphans.join(", ")}`] : []),
           ]
             .join("\n")
@@ -449,7 +539,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         for (const item of items) {
           if (item.action === "unchanged" || item.action === "skip") continue;
           const w = written.get(item.id)!;
-          const parentKey = item.epicId ? mapping.items[item.epicId]?.key : undefined;
+          const parentKey = item.level === "subtask" ? mapping.items[item.parentId!]?.key : item.epicId ? mapping.items[item.epicId]?.key : undefined;
+          // A sub-task is created under its story and stays there.
           const parent = parentKey && (item.action === "create" || item.move) ? { parent: { key: parentKey } } : {};
           if (item.action === "create") {
             const result = await step(`create ${item.id}`, () =>
@@ -477,7 +568,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         }
 
         markPublished();
-        return text(`Published to Jira project ${args.projectKey}:\n${done.map((d) => `- ${d}`).join("\n")}${skippedNote}${await comment()}`);
+        return text(`Published to Jira project ${args.projectKey}:\n${done.map((d) => `- ${d}`).join("\n")}${skippedNote}${noteText}${await comment()}`);
       }),
     ),
   );

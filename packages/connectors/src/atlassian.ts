@@ -94,9 +94,11 @@ export class AtlassianClient {
     };
   }
 
-  async getProject(projectKey: string): Promise<{ key: string; name: string; issueTypes: string[] }> {
+  /** A project, with its standard issue types and, apart, its sub-task types (sites name them differently). */
+  async getProject(projectKey: string): Promise<{ key: string; name: string; issueTypes: string[]; subtaskTypes: string[] }> {
     const r = await this.request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`);
-    return { key: r.key, name: r.name, issueTypes: (r.issueTypes ?? []).filter((t: any) => !t.subtask).map((t: any) => t.name) };
+    const types = (r.issueTypes ?? []) as { name: string; subtask?: boolean }[];
+    return { key: r.key, name: r.name, issueTypes: types.filter((t) => !t.subtask).map((t) => t.name), subtaskTypes: types.filter((t) => t.subtask).map((t) => t.name) };
   }
 
   async createIssue(fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
