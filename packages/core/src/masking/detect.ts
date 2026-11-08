@@ -12,6 +12,12 @@ export const DOMAIN_ALLOWLIST: readonly string[] = [
   "MuleSoft", "Tableau", "Slack", "Jira", "Confluence", "Atlassian", "GitHub", "GitLab", "Azure DevOps",
   "Account", "Contact", "Lead", "Opportunity", "Case", "Order", "Product", "Pricebook", "Campaign",
   "Knowledge", "Omni-Channel", "CPQ", "Revenue Cloud", "Field Service", "Shield", "Platform Events",
+  "Person Account", "Record Type", "Validation Rule", "Permission Set", "Field Set",
+  // Field types: the server writes them in its briefs and checks, and the model names them.
+  "AutoNumber", "Checkbox", "Currency", "Date", "DateTime", "Email", "EncryptedText", "ExternalLookup", "Formula",
+  "Geolocation", "Html", "IndirectLookup", "Location", "LongTextArea", "Lookup", "MasterDetail", "MetadataRelationship",
+  "MultiselectPicklist", "Number", "Percent", "Phone", "Picklist", "Summary", "Text", "TextArea", "Time", "Url",
+  "Hierarchy", "Address", "Id", "Name",
 ];
 
 /** A detection model: finds names (and other entities) that no rule can. */
