@@ -79,6 +79,10 @@ export const backlogSchema = z.object({
   openQuestions: z
     .array(z.object({ question: z.string().min(3), owner: z.string().optional(), sourceIds }))
     .optional(),
+  gaps: z
+    .array(z.object({ requirementId: z.string().regex(/^R[1-9]\d{0,5}$/, "use a requirement id such as R1"), reason: z.string().min(3) }))
+    .optional()
+    .describe("Confirmed requirements no story delivers, each with the reason: out of scope, or waiting on an open question."),
 });
 
 export type Backlog = z.infer<typeof backlogSchema>;
@@ -125,6 +129,7 @@ export function mapBacklogText(backlog: Backlog, f: (text: string) => string): B
     })),
     assumptions: list(backlog.assumptions),
     openQuestions: backlog.openQuestions?.map((q) => ({ ...q, question: f(q.question), owner: opt(q.owner) })),
+    gaps: backlog.gaps?.map((g) => ({ ...g, reason: f(g.reason) })),
   };
 }
 
@@ -200,6 +205,7 @@ export function backlogToMarkdown(backlog: Backlog): string {
   if (backlog.openQuestions?.length) {
     out.push("## Open questions", ...backlog.openQuestions.map((q) => `- ${q.question}${q.owner ? ` (owner: ${q.owner})` : ""}`), "");
   }
+  if (backlog.gaps?.length) out.push("## Requirements not delivered", ...backlog.gaps.map((g) => `- ${g.requirementId}: ${g.reason}`), "");
   return out.join("\n").trimEnd() + "\n";
 }
 
@@ -211,13 +217,16 @@ export interface Finding {
 
 const SCALE = new Set([1, 2, 3, 5, 8, 13]);
 
+/** How a draft's dependency on a story not written yet reads. */
+export const NOT_WRITTEN = "which is not a story written so far";
+
 export interface BacklogCheckOptions {
   /** The context's confirmed requirements: an item may cite only these. Left out, requirement ids are not checked. */
   requirements?: readonly Requirement[];
   /**
    * A backlog still being written, in a workflow run: what only the whole backlog shows (an epic
-   * with no stories yet, inputs no item cites) is not checked, and a dependency must be on a story
-   * written so far.
+   * with no stories yet, inputs no item cites) is not checked, and a dependency on a story not
+   * written yet is a warning.
    */
   draft?: boolean;
 }
@@ -293,7 +302,9 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
       for (const dep of s.dependsOn ?? []) {
         if (dep === s.id) add("error", where, "A story cannot depend on itself.");
         else if (!storyIds.has(dep))
-          add("error", where, options.draft ? `Depends on ${dep}, which is not a story written so far: write the epic it is in first, or submit this epic again once it is written.` : `Depends on ${dep}, which is not a story in this backlog.`);
+          options.draft
+            ? add("warning", where, `Depends on ${dep}, ${NOT_WRITTEN}: it must be by the time the last epic is written.`)
+            : add("error", where, `Depends on ${dep}, which is not a story in this backlog.`);
         else if (s.priority !== "wont" && epic.priority !== "wont" && wontIds.has(dep)) add("warning", where, `Depends on ${dep}, which is won't have and is not published to Jira.`);
       }
       if (epic.priority === "wont" && s.priority && s.priority !== "wont") {

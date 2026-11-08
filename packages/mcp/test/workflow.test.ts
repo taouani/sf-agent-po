@@ -110,6 +110,7 @@ async function connect({ metadata = false, shared }: { metadata?: boolean; share
 }
 
 const wf = { context: "renewals", workflow: "sa_detailed_design" };
+const kitOf = (st: Store) => ({ contexts: st.contexts, masker: st.masker, requirements: st.requirements, runs: st.runs, reviewerFor: () => ({ review: async () => ({ status: "expired" as const, missed: [], digest: "" }) }) });
 const proposal = (sourceId: string) => ({ requirements: [{ kind: "functional", statement: "Send the renewal letter 30 days before the end date.", priority: "must", sourceIds: [sourceId] }] });
 
 describe("workflow tools", () => {
@@ -326,7 +327,7 @@ describe("workflow tools", () => {
   });
 
   it("writes a backlog epic by epic, traced to the confirmed requirements, and saves it once every Must is delivered or explained", async () => {
-    const { call, notes, contexts, runs } = await connect();
+    const { call, notes, contexts, runs, store: st } = await connect();
     const pb = { context: "renewals", workflow: "po_backlog" };
     const submit = (step: string, answer: unknown) => call("workflow_submit", { ...pb, step, answer });
     expect((await call("workflow_start", pb)).text).toContain("Step 1 of 4: Requirements");
@@ -364,13 +365,15 @@ describe("workflow tools", () => {
       priority: "must",
       ...more,
     });
-    const early = await submit("stories", { epicId: "E1", stories: [story("S1", { requirementIds: ["R1"], dependsOn: ["S3"] })] });
-    expect(early.text).toContain("ERROR [S1] Depends on S3, which is not a story written so far");
     expect(await submit("stories", { epicId: "E9", stories: [story("S1")] })).toMatchObject({ text: expect.stringContaining("E9 is not an epic of this backlog: use one of E1, E2.") });
-
-    const next = await submit("stories", { epicId: "E1", stories: [story("S1", { requirementIds: ["R1"] }), story("S2", { dependsOn: ["S1"], requirementIds: ["R1"] })] });
-    expect(next.text).toContain("The stories of E1 passed: 2 stories (S1, S2). Next: epic E2.");
+    const stale = runs.open("renewals", "po_backlog")!;
+    // A story may depend on one of an epic not written yet, until the last epic.
+    const next = await submit("stories", { epicId: "E1", stories: [story("S1", { requirementIds: ["R1"], dependsOn: ["S3"] }), story("S2", { dependsOn: ["S1"], requirementIds: ["R1"] })] });
+    expect(next.text).toContain("The stories of E1 passed: 2 stories (S1, S2). Next: epic E2. It has warnings: tell the user about them.");
+    expect(next.text).toContain("WARNING [S1] Depends on S3, which is not a story written so far");
     expect(next.text).toContain("WARNING [E1] E1 cites R3, but none of its stories delivers it");
+    // Another chat that read the run before E1 was written cannot write over it.
+    await expect(submitStep({ ...kitOf(st), runs }, {} as never, stale, "stories", { epicId: "E2", stories: [story("S3")] })).rejects.toThrow(WorkflowRunChangedError);
     expect(next.text).toContain('Write the stories of epic E2, "Letter archive"');
     expect(next.text).toContain("- E1: S1, S2");
     expect(next.text).toContain("This is the last epic");
@@ -379,10 +382,19 @@ describe("workflow tools", () => {
 
     const twice = await submit("stories", { epicId: "E2", stories: [story("S1")] });
     expect(twice.text).toContain("ERROR [S1] Id S1 is used 2 times");
+    // The last epic: every dependency is due. Revising E1 keeps E2's failed attempts.
+    const due = await submit("stories", { epicId: "E2", stories: [story("S4", { summary: "Archive the letter" })] });
+    expect(due.text).toContain("attempt 2 of 3");
+    expect(due.text).toContain("ERROR [S1] Depends on S3, which is not a story written so far: every dependency must name a story of the backlog.");
+    const revised = await submit("stories", { epicId: "E1", stories: [story("S1", { requirementIds: ["R1"] }), story("S2", { dependsOn: ["S1"], requirementIds: ["R1"] })] });
+    expect(revised.text).toContain("The stories of E1 were revised");
+    expect(runs.open("renewals", "po_backlog")!.steps[2]).toMatchObject({ status: "pending", attempts: 2 });
     const assembleBrief = await submit("stories", { epicId: "E2", stories: [story("S3", { dependsOn: ["S1"], summary: "Archive the letter" })] });
     expect(assembleBrief.text).toContain('Step "stories" passed with warnings');
     expect(assembleBrief.text).toContain("3 stories in 2 epics.");
     expect(assembleBrief.text).toContain("Step 4 of 4: Assemble and save the backlog");
+    // The step's findings are the whole backlog's, the earlier epics' included.
+    expect(assembleBrief.text).toContain("WARNING [E1] E1 cites R3");
     expect(assembleBrief.text).toMatch(/Confirmed requirements no story delivers:\n- R2 .*\n- R3 /);
 
     const missing = await submit("assemble", { title: "Renewals backlog" });
@@ -392,14 +404,20 @@ describe("workflow tools", () => {
       title: "Renewals backlog",
       summary: "Letters and their archive.",
       openQuestions: [{ question: "How long must Karim Haddad's letters be kept?", owner: "Compliance officer" }],
-      gaps: [{ requirementId: "R2", reason: "The archive is set up by the records team." }],
+      gaps: [
+        { requirementId: "R2", reason: "The archive is set up by the records team." },
+        { requirementId: "R1", reason: "Not needed." },
+      ],
     });
+    expect(done.text).toContain("WARNING [R1] R1 is delivered by a story, so it is not a gap");
     expect(done.text).toMatch(/Step "assemble" passed with warnings: tell the user about them\. Saved as doc-[0-9a-f]{10}, version 1: Renewals backlog \(2 epics, 3 stories\)\./);
     expect(done.text).toContain("Every step is done");
     expect(done.text).toContain("offer to publish it to Jira with jira_publish");
 
     const saved = contexts.documents("renewals").find((d) => d.kind === "backlog")!;
     expect(saved.content).toContain("Requirements: R1");
+    expect(saved.content).toContain("## Requirements not delivered\n- R2: The archive is set up by the records team.");
+    expect(saved.content).not.toContain("Not needed");
     expect(saved.content).toMatch(/## E1: Renewal letters for \[PERSON_\d+\]/);
     const backlog = (saved.metadata as { backlog: { epics: { stories: { id: string; requirementIds?: string[] }[] }[]; openQuestions: { question: string }[] } }).backlog;
     expect(backlog.epics[0]!.stories.map((x) => x.requirementIds)).toEqual([["R1"], ["R1"]]);
@@ -417,6 +435,19 @@ describe("workflow tools", () => {
     // One that cites no requirement is checked as before.
     const old = await call("backlog_save", { context: "renewals", backlog: { title: "Old backlog", epics: [{ id: "E1", summary: "Renewal letters", outcome: "Clients renew on time", stories: [story("S1", { sourceIds: [notes.id] })] }] } });
     expect(old.text).not.toContain("delivered by no story");
+  });
+
+  it("tells the model when the backlog has no epics to write stories for", async () => {
+    const { call } = await connect();
+    const pb = { context: "renewals", workflow: "po_backlog" };
+    await call("workflow_start", pb);
+    for (let i = 0; i < 3; i++) await call("workflow_submit", { ...pb, step: "requirements", answer: { keep: true } });
+    const bad = { epics: [{ id: "E1", summary: "Letters", outcome: "Clients renew on time", requirementIds: ["R4"] }] };
+    for (let i = 0; i < 2; i++) await call("workflow_submit", { ...pb, step: "epics", answer: bad });
+    const stories = await call("workflow_submit", { ...pb, step: "epics", answer: bad });
+    expect(stories.text).toContain('Step "epics" failed its checks 3 times');
+    expect(stories.text).toContain("The epics step failed, so there is no epic to write stories for.");
+    expect((await call("workflow_submit", { ...pb, step: "stories", answer: { epicId: "E1", stories: [] } })).text).toContain("attempt 1 of 3");
   });
 
   it("writes a high-level design section by section, checked against the index, and saves it with its traceability", async () => {

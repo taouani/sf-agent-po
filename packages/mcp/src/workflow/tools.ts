@@ -74,7 +74,8 @@ export async function submitStep(kit: WorkflowKit, call: CallContext, run: Workf
   const outcome: StepOutcome = parsed.success ? await def.submit(parsed.data, s) : { kind: "retry", attempt: true, findings: shapeFindings(parsed.error) };
   const findings = await maskFindings(kit, run.context, outcome.findings);
   // The step must still be as it was when the answer came in: another chat may have moved it.
-  const expected = { status: state.status, attempts: state.attempts };
+  // What it holds too: a step that saves its work in parts looks the same before and after a part.
+  const expected = { status: state.status, attempts: state.attempts, answer: state.answer };
   const message = outcome.message ? `\n\n${(await kit.masker.maskOutputs(run.context, [outcome.message])).texts[0]}` : "";
 
   if (outcome.kind === "passed") {
@@ -86,8 +87,9 @@ export async function submitStep(kit: WorkflowKit, call: CallContext, run: Workf
   }
 
   if (outcome.kind === "progress") {
-    const done = kit.runs.record(run.id, def.id, { status: "pending", attempts: 0, findings, answer: outcome.saved }, expected);
-    return briefText({ ...s, run: done }, `${message.trim()}${findings.length ? `\n${findingsText(findings)}` : ""}`);
+    const done = kit.runs.record(run.id, def.id, { status: "pending", attempts: outcome.fresh ? 0 : state.attempts, findings, answer: outcome.saved }, expected);
+    const warned = findings.some((f) => f.level === "warning") ? " It has warnings: tell the user about them." : "";
+    return briefText({ ...s, run: done }, `${message.trim()}${warned}${findings.length ? `\n${findingsText(findings)}` : ""}`);
   }
 
   const attempts = state.attempts + (outcome.attempt ? 1 : 0);

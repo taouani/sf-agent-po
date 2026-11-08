@@ -16,6 +16,7 @@ import {
   epicSchema,
   type Finding,
   maskBacklogFields,
+  NOT_WRITTEN,
   saveBacklog,
   type Story,
   storySchema,
@@ -68,6 +69,16 @@ function draftOf(run: StepState["run"], title = ""): Backlog {
   return { title, epics: epicsOf(run).map((e) => ({ ...e, stories: stories[e.id] ?? [] })) };
 }
 
+/** The saved backlogs, for the title: a backlog saved under the same title is a new version of it, and keeps its Jira issues. */
+function savedBacklogs(s: StepState): string[] {
+  const backlogs = s.kit.contexts.documents(s.context).filter((d) => d.kind === "backlog" && (d.metadata as { artifact?: boolean } | undefined)?.artifact);
+  return backlogs.length
+    ? [
+        `Saved backlogs:\n${backlogs.map(docLine).join("\n")}\nTo revise one of them, give it the same title: it is saved as a new version, and publishing updates its Jira issues instead of creating new ones. A new title starts a new backlog.`,
+      ]
+    : [];
+}
+
 /** The backlogs and designs already in the context: the backlog keeps their ids and follows them. */
 function earlierWork(s: StepState): string[] {
   const docs = s.kit.contexts.documents(s.context);
@@ -85,6 +96,15 @@ const requirementsBlock = (confirmed: readonly Requirement[], what: string) =>
   confirmed.length
     ? `Confirmed requirements (cite the ids ${what} delivers; only these):\n${requirementsToText(confirmed)}`
     : "No requirement is confirmed: base the backlog on the inputs, and say so to the user.";
+
+/** The requirements an epic cites that none of its published stories delivers. */
+function undelivered(epic: EpicHead, stories: readonly Story[]): Finding[] {
+  if (epic.priority === "wont") return [];
+  const delivered = new Set(stories.filter((x) => x.priority !== "wont").flatMap((x) => x.requirementIds ?? []));
+  return (epic.requirementIds ?? [])
+    .filter((id) => !delivered.has(id))
+    .map((id) => ({ level: "warning" as const, where: epic.id, message: `${epic.id} cites ${id}, but none of its stories delivers it: cite it in the story that does, or leave it to another epic.` }));
+}
 
 /** Warnings and infos about one epic's own items: the rest of the draft was checked when it was written. */
 const about = (ids: ReadonlySet<string>) => (f: Finding) => f.level === "error" || f.where === "backlog" || ids.has(f.where.split(" ")[0]!);
@@ -147,8 +167,12 @@ export const storiesStep: StepDefinition<StoriesAnswer> = {
       `Write the stories of epic ${next.id}, "${next.summary}", with their acceptance criteria. Outcome: ${next.outcome}${next.scopeNotes ? `\nScope: ${next.scopeNotes}` : ""}`,
       cited.length ? `Requirements this epic cites (each should be delivered by at least one of its stories):\n${requirementsToText(cited)}` : "This epic cites no requirement.",
       done.length
-        ? `Epics written so far (submit one again, with its epicId, to revise it before the last epic is written):\n${done.map((e) => `- ${e.id}: ${written[e.id]!.map((x) => x.id).join(", ")}`).join("\n")}\nStory ids must be unique across the backlog; a story may depend on any story written so far or in this epic.`
-        : "No story is written yet. A story may depend only on a story of this epic or of an epic written before it: write the epics others depend on first.",
+        ? `Epics written so far (submit one again, with its epicId, to revise it before the last epic is written):\n${done.map((e) => `- ${e.id}: ${written[e.id]!.map((x) => x.id).join(", ")}`).join("\n")}`
+        : "No story is written yet.",
+      [
+        "Submit one epic at a time, in any order: this one is a suggestion. Story ids must be unique across the backlog.",
+        "A story may depend on a story of an epic not written yet: that is a warning until the last epic is written, when every dependency must name a story of the backlog.",
+      ].join(" "),
       ...(later.length ? [`Epics after this one: ${later.map((e) => e.id).join(", ")}.`] : ["This is the last epic: the step passes once its stories pass."]),
       ["Stories", "INVEST", "Definition of Ready", "Acceptance criteria", "Non-functional requirements", "Open questions", "Dependencies", "Traceability", "Design alignment", "Stable ids"].map(practice).join("\n"),
       ...[industryBlock(s.industry).trim()].filter(Boolean),
@@ -168,23 +192,34 @@ export const storiesStep: StepDefinition<StoriesAnswer> = {
       };
     const confirmed = confirmedOf(s);
     const masked = (await maskBacklogFields(s.kit.masker, s.context, { title: "", epics: [{ ...epic, stories: answer.stories }] })).backlog.epics[0]!.stories;
-    const written = { ...storiesOf(s.run), [epic.id]: masked };
-    const draft: Backlog = { title: "", epics: epics.filter((e) => written[e.id]).map((e) => ({ ...e, stories: written[e.id]! })) };
-    const own = new Set([epic.id, ...masked.map((x) => x.id)]);
-    const findings = checkBacklog(draft, s.kit.contexts.documents(s.context).filter((d) => d.masked), contextLanguage(s.kit.contexts, s.context), {
+    const before = storiesOf(s.run);
+    const written = { ...before, [epic.id]: masked };
+    // Every epic, those not written yet with no stories: an id is checked against the epics' too.
+    const draft: Backlog = { title: "", epics: epics.map((e) => ({ ...e, stories: written[e.id] ?? [] })) };
+    const left = epics.filter((e) => !written[e.id]);
+    const checked = checkBacklog(draft, s.kit.contexts.documents(s.context).filter((d) => d.masked), contextLanguage(s.kit.contexts, s.context), {
       requirements: confirmed,
       draft: true,
-    }).filter(about(own));
-    const delivered = new Set(masked.filter((x) => x.priority !== "wont").flatMap((x) => x.requirementIds ?? []));
-    for (const id of epic.priority === "wont" ? [] : (epic.requirementIds ?? []).filter((id) => !delivered.has(id)))
-      findings.push({ level: "warning", where: epic.id, message: `${epic.id} cites ${id}, but none of its stories delivers it: cite it in the story that does, or leave it to another epic.` });
+    });
+    // Once the last epic is written, what the draft let wait is due, and the step's findings are the whole backlog's.
+    const findings = left.length
+      ? checked.filter(about(new Set([epic.id, ...masked.map((x) => x.id)])))
+      : checked.map((f): Finding => (f.message.includes(NOT_WRITTEN) ? { ...f, level: "error", message: f.message.replace(/: it must be .*$/, ": every dependency must name a story of the backlog.") } : f));
+    for (const e of left.length ? [epic] : epics) findings.push(...undelivered(e, written[e.id] ?? []));
     if (findings.some((f) => f.level === "error")) return { kind: "retry", attempt: true, findings };
 
-    const left = epics.filter((e) => !written[e.id]);
     const saved: StoriesSaved = { stories: written };
     const all = Object.values(written).flat();
-    if (left.length)
-      return { kind: "progress", findings, saved, message: `The stories of ${epic.id} passed: ${plural(masked.length, "story", "stories")} (${masked.map((x) => x.id).join(", ")}). Next: epic ${left[0]!.id}.` };
+    if (left.length) {
+      const verb = before[epic.id] ? "were revised" : "passed";
+      return {
+        kind: "progress",
+        findings,
+        saved,
+        fresh: !before[epic.id],
+        message: `The stories of ${epic.id} ${verb}: ${plural(masked.length, "story", "stories")} (${masked.map((x) => x.id).join(", ")}). Next: epic ${left[0]!.id}.`,
+      };
+    }
     return { kind: "passed", findings, summary: `${plural(all.length, "story", "stories")} in ${plural(epics.length, "epic")}.`, saved };
   },
 };
@@ -194,7 +229,16 @@ const assembleAnswer = z.strictObject({
   title: z.string().trim().min(3).max(200),
   summary: z.string().trim().min(1).max(2_000).optional(),
   assumptions: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
-  openQuestions: z.array(z.strictObject({ question: z.string().trim().min(3).max(500), owner: z.string().trim().min(1).max(120).optional(), sourceIds: z.array(z.string()).max(10).optional() })).max(30).optional(),
+  openQuestions: z
+    .array(
+      z.strictObject({
+        question: z.string().trim().min(3).max(500),
+        owner: z.string().trim().min(1).max(120).optional(),
+        sourceIds: z.array(z.string().regex(/^doc-[0-9a-f]{10}$/, "use a context document id such as doc-1a2b3c4d5e")).max(10).optional(),
+      }),
+    )
+    .max(30)
+    .optional(),
   gaps: z.array(gapSchema).max(60).default([]),
 });
 type AssembleAnswer = z.infer<typeof assembleAnswer>;
@@ -214,6 +258,7 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
     const empty = draft.epics.filter((e) => !e.stories.length).map((e) => e.id);
     return [
       "Give the backlog its title, a short summary, the assumptions and the open questions, each with the role who should answer it. The server puts the epics and stories together, checks the whole backlog and saves it.",
+      ...savedBacklogs(s),
       practice("Open questions"),
       open.length
         ? `Confirmed requirements no story delivers:\n${requirementsToText(open)}\nFor each Must, give the reason in gaps (out of scope, waiting on an open question...): a Must left out without a reason is sent back. Give the reason for the others too.`
@@ -238,14 +283,21 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
       ...(rest.openQuestions?.length ? { openQuestions: rest.openQuestions } : {}),
     };
     const known = new Set(confirmed.map((r) => r.id));
+    const open = new Set(uncoveredRequirements(backlog, confirmed).map((r) => r.id));
     const findings: Finding[] = [];
-    for (const g of rest.gaps) if (!known.has(g.requirementId)) findings.push(error(g.requirementId, `${g.requirementId} is not a confirmed requirement.`));
+    for (const g of rest.gaps) {
+      if (!known.has(g.requirementId)) findings.push(error(g.requirementId, `${g.requirementId} is not a confirmed requirement.`));
+      else if (!open.has(g.requirementId)) findings.push({ level: "warning", where: g.requirementId, message: `${g.requirementId} is delivered by a story, so it is not a gap: it is left out of the gaps.` });
+    }
     findings.push(...coverageFindings(backlog, confirmed, "error", new Set(rest.gaps.map((g) => g.requirementId))));
     // The epics and stories passed their own steps: what the whole backlog still shows is for the user to see, not for this answer to fix.
     const whole = checkBacklog(backlog, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context), { requirements: confirmed });
     findings.push(...whole.map((f): Finding => (f.level === "error" ? { ...f, level: "warning", message: `${f.message} (Left from an earlier step: fix it with backlog_save, or run the workflow again.)` } : f)));
     for (const e of draft.epics.filter((x) => !x.stories.length)) findings.push({ level: "warning", where: e.id, message: `Epic ${e.id} has no stories (the stories step failed) and is left out of the backlog.` });
     if (findings.some((f) => f.level === "error")) return { kind: "retry", attempt: true, findings };
+    // The reasons stay with the backlog, for the user and the traceability matrix.
+    const gaps = rest.gaps.filter((g) => open.has(g.requirementId));
+    if (gaps.length) backlog.gaps = gaps;
     const doc = saveBacklog(kit.contexts, context, backlog);
     const version = doc.metadata.version;
     const stories = allStories(backlog).length;

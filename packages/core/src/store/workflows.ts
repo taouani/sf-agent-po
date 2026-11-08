@@ -151,9 +151,11 @@ export class WorkflowRepository {
 
   /**
    * Records a step's new state in an open run, and ends the run (`done`) once no step is
-   * pending. With `expected`, the step must still be in that state (WorkflowRunChangedError).
+   * pending. With `expected`, the step must still be in that state (WorkflowRunChangedError):
+   * its status and attempts and, when `expected` has the key, what it holds (`answer`), for a
+   * step that saves work in parts while it stays open.
    */
-  record(runId: string, step: string, update: StepUpdate, expected?: { status: WorkflowStepStatus; attempts: number }): WorkflowRun {
+  record(runId: string, step: string, update: StepUpdate, expected?: { status: WorkflowStepStatus; attempts: number; answer?: unknown }): WorkflowRun {
     this.database.write(() => {
       const run = this.db.prepare("SELECT status FROM workflow_run WHERE id = ?").get(runId) as { status: string } | undefined;
       if (!run) throw new Error(`No workflow run ${runId}.`);
@@ -164,10 +166,12 @@ export class WorkflowRepository {
       if (update.attempts !== undefined) (sets.push("attempts = ?"), values.push(update.attempts));
       if (update.answer !== undefined) (sets.push("answer = ?"), values.push(JSON.stringify(update.answer)));
       if (update.summary !== undefined) (sets.push("summary = ?"), values.push(update.summary));
-      const where = expected ? " AND status = ? AND attempts = ?" : "";
+      const held = expected && "answer" in expected;
+      const where = expected ? ` AND status = ? AND attempts = ?${held ? " AND answer IS ?" : ""}` : "";
+      const was = held ? [expected.answer === undefined ? null : JSON.stringify(expected.answer)] : [];
       const done = this.db
         .prepare(`UPDATE workflow_step SET ${sets.join(", ")} WHERE run = ? AND step = ?${where}`)
-        .run(...values, runId, step, ...(expected ? [expected.status, expected.attempts] : []));
+        .run(...values, runId, step, ...(expected ? [expected.status, expected.attempts, ...was] : []));
       if (!done.changes) {
         const exists = this.db.prepare("SELECT 1 FROM workflow_step WHERE run = ? AND step = ?").get(runId, step);
         throw exists ? new WorkflowRunChangedError(runId, step) : new Error(`Run ${runId} has no step "${step}".`);
