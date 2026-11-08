@@ -1,9 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AtlassianError, type AtlassianClient } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
+import { ContextRepository, Database, Masker, newVaultKey, RequirementRepository, Vault, WorkflowRepository, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, pageLink, requestDigest, type ApprovalRequest, type Decision, type Reviewer } from "../src/index.js";
+import { ApprovalServer, createServer, pageLink, requestDigest, saveArtifact, saveBacklog, type ApprovalRequest, type Decision, type Reviewer } from "../src/index.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -63,7 +63,17 @@ async function connect(answers: (Partial<Omit<Decision, "digest">> | ((req: Appr
       return typeof a === "function" ? a(req) : { status: "approved", missed: [], ...a, digest: requestDigest(req) };
     },
   };
-  const server = createServer({ contexts, masker, approval, recognizer: async () => Promise.reject(new Error("no OCR")), version: "1.0.0", reviewer: () => reviewer, atlassian: () => confluence.client });
+  const requirements = new RequirementRepository(db);
+  const server = createServer({
+    contexts,
+    masker,
+    approval,
+    recognizer: async () => Promise.reject(new Error("no OCR")),
+    version: "1.0.0",
+    reviewer: () => reviewer,
+    atlassian: () => confluence.client,
+    workflows: { requirements, runs: new WorkflowRepository(db) },
+  });
   const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
@@ -77,7 +87,7 @@ async function connect(answers: (Partial<Omit<Decision, "digest">> | ((req: Appr
   };
   // An input, so the context knows Karim Benali as [PERSON_1].
   await call("context_add_text", { context: "acme", title: "Call", content: "Karim Benali owns the VIP flag. Login secret: password: hunter22x", kind: "meeting-notes" });
-  return { call, contexts, seen, confluence, masker, vault };
+  return { call, contexts, seen, confluence, masker, vault, requirements };
 }
 
 const design = "# VIP flag\n\nOwner: [PERSON_1]. Reviewer: Lea Martin. Service login stays [SECRET_1].";
@@ -225,3 +235,62 @@ describe("publishing to Confluence", () => {
   });
 });
 
+
+describe("traceability matrix", () => {
+  it("is shown in the chat, and written under the design's page at each publish, from the ids the design and backlog carry", async () => {
+    const { call, contexts, seen, confluence, requirements } = await connect();
+    const notes = contexts.documents("acme")[0]!;
+    requirements.save("acme", [
+      { kind: "functional", statement: "Flag VIP clients for [PERSON_1].", priority: "must", status: "confirmed", sourceIds: [notes.id] },
+      { kind: "compliance", statement: "Keep the flag history for 5 years.", priority: "must", status: "confirmed", sourceIds: [notes.id] },
+      { kind: "functional", statement: "Show the flag on mobile.", priority: "could", status: "confirmed", sourceIds: [] },
+      { kind: "functional", statement: "Export the flags.", priority: "wont", status: "confirmed", sourceIds: [] },
+    ]);
+    // Nothing saved yet: every requirement is not covered.
+    expect((await call("trace_show", { context: "acme" })).text).toContain("4 confirmed requirement(s): 0 covered, 0 partly covered, 3 not covered, 1 won't have.");
+
+    const hld = {
+      title: "VIP flag",
+      solution: { overview: "", orgStrategy: "", components: [{ id: "C1", name: "VIP flag field", type: "Field", status: "new", purpose: "", requirementIds: ["R1", "R2"] }] },
+      gaps: [{ requirementId: "R3", reason: "Mobile comes in release 2." }],
+    };
+    const design = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag for [PERSON_1]", content: "# VIP flag\n\nOwner: [PERSON_1].", artifactType: "high-level", extra: { design: hld } });
+    const story = (id: string, requirementIds: string[]) => ({
+      id,
+      type: "story" as const,
+      summary: `Flag story ${id}`,
+      persona: "Account manager",
+      want: "to flag VIP clients",
+      benefit: "they get priority service",
+      acceptanceCriteria: [{ given: "a client", when: "flagged", then: "the flag shows" }],
+      requirementIds,
+    });
+    saveBacklog(contexts, "acme", { title: "VIP backlog", epics: [{ id: "E1", summary: "VIP flag", outcome: "VIP clients get priority", stories: [story("S1", ["R1"]), story("S2", ["R3"])] }] });
+
+    const shown = await call("trace_show", { context: "acme" });
+    expect(shown.text).toContain('Computed from the high-level design "VIP flag for [PERSON_1]"');
+    expect(shown.text).toContain("4 confirmed requirement(s): 1 covered, 2 partly covered, 0 not covered, 1 won't have. Must requirements not fully covered: R2.");
+    expect(shown.text).toMatch(/\| R1 \| must \| Flag VIP clients for \[PERSON_1\]\. \| Call \(doc-[0-9a-f]{10}\) \| HLD Solution: C1 VIP flag field \| S1 Flag story S1 \| covered \|/);
+    expect(shown.text).toContain("| partly covered (HLD: Mobile comes in release 2.) |");
+    expect(shown.text).not.toContain("Karim");
+    expect((await call("trace_show", { context: "acme", backlogId: design.id })).text).toContain("is not a backlog");
+
+    const first = await call("confluence_publish", { context: "acme", artifactId: design.id, spaceKey: "ENG" });
+    expect(first.text).toMatch(/Its traceability matrix \(4 requirement\(s\)\) is at https:\/\/acme\.atlassian\.net\/wiki\/spaces\/ENG\/pages\/101/);
+    const req = seen.at(-1)!;
+    expect(req.kind === "publish" && req.target).toContain("and a new page under it for its traceability matrix");
+    expect(req.kind === "publish" && req.body).toContain("Flag VIP clients for Karim Benali.");
+    expect(confluence.writes.map((w) => w.title)).toEqual(["VIP flag for Karim Benali", "VIP flag for Karim Benali: traceability matrix"]);
+    expect(confluence.writes[1]!.storage).toContain("Flag VIP clients for Karim Benali.");
+    expect(first.text).not.toContain("Karim");
+
+    // Published again: the same page is rebuilt, not a new one.
+    const again = await call("confluence_publish", { context: "acme", artifactId: design.id });
+    expect(again.text).toContain("pages/101");
+    expect(seen.at(-1)!.kind === "publish" && (seen.at(-1) as { target: string }).target).toContain('replace the content of its traceability matrix page "VIP flag for Karim Benali: traceability matrix"');
+    expect(confluence.pages.size).toBe(2);
+    // Left out on request, and for a design not written by a workflow.
+    await call("confluence_publish", { context: "acme", artifactId: design.id, traceability: false });
+    expect(confluence.writes).toHaveLength(5);
+  });
+});

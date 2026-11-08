@@ -25,6 +25,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
+import { registerTraceTools } from "./trace.js";
 import { registerImpactTools } from "./impact-tools.js";
 import { registerScopeTools } from "./scope-tools.js";
 import { registerMetadataTools } from "./metadata-tools.js";
@@ -178,6 +179,7 @@ export function createServer(opts: ServerOptions): McpServer {
     registerImpactTools(server, { index: opts.metadata.index, contexts, masker, guard, contextName });
   }
   if (opts.workflows) {
+    registerTraceTools(server, { contexts, requirements: opts.workflows.requirements, guard, contextName });
     registerWorkflowTools(server, { ...opts.workflows, contexts, masker, reviewerFor, guard, contextName, ...(opts.metadata ? { index: opts.metadata.index } : {}) });
   }
 

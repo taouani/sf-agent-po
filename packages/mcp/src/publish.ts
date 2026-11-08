@@ -8,9 +8,10 @@ import { AtlassianError, markdownToStorage, type AtlassianClient } from "@sf-age
 import type { ContextRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
-import { getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
+import { type Artifact, getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
+import { buildTrace, renderTrace, type TraceMatrix } from "./trace.js";
 
 type Result = { content: { type: "text"; text: string }[] };
 
@@ -80,6 +81,14 @@ export async function decisionComment(masker: Masker, context: string, comment: 
 export function registerPublishTools(server: McpServer, kit: PublishKit): void {
   const { contexts, masker, guard, contextName, lock } = kit;
 
+  /** The matrix of a design written by a workflow, when the server keeps requirements and some are confirmed. */
+  const traceOf = (context: string, doc: Artifact): TraceMatrix | undefined => {
+    if (!kit.requirements || doc.kind !== "design" || !doc.metadata.design) return undefined;
+    const type = doc.metadata.artifactType === "detailed" ? "detailed" : "highLevel";
+    const matrix = buildTrace(contexts, kit.requirements, context, { [type]: doc.id });
+    return matrix.rows.length ? matrix : undefined;
+  };
+
   server.registerTool(
     "design_save",
     {
@@ -124,12 +133,16 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
         pageId: z.string().optional().describe("Update this existing page instead of the artifact's own page."),
         title: z.string().optional().describe("Page title. Defaults to the artifact title."),
         newPage: z.boolean().default(false).describe("Create a new page even if the artifact was published before."),
+        traceability: z
+          .boolean()
+          .default(true)
+          .describe("For a design written by a workflow: also write its traceability matrix as a page under the design's own page, rebuilt at each publish."),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
     guard(
       async (
-        args: { context: string; artifactId: string; spaceKey?: string; parentPageId?: string; pageId?: string; title?: string; newPage: boolean },
+        args: { context: string; artifactId: string; spaceKey?: string; parentPageId?: string; pageId?: string; title?: string; newPage: boolean; traceability: boolean },
         call,
       ) =>
         lock.run(`${args.context}:${args.artifactId}`, async () => {
@@ -185,12 +198,44 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             write = () => client.createPage({ spaceId, parentId: parent?.pageId, title: title.text, storage: storage.text });
           }
 
-          const req: PublishRequest = { kind: "publish", target, title: title.text, body: body.text, kept: [...new Set([...title.kept, ...body.kept])] };
+          // The matrix goes under the design's own page, from the requirement ids this design carries.
+          const matrix = ownPage && args.traceability ? traceOf(context, doc) : undefined;
+          let traceTitle: ReturnType<Masker["unmask"]> | undefined;
+          let traceBody: ReturnType<Masker["unmask"]> | undefined;
+          let traceStorage: ReturnType<typeof unmaskStorage> | undefined;
+          let tracePage: Awaited<ReturnType<AtlassianClient["getPageSummary"]>> | undefined;
+          if (matrix) {
+            const masked = `${doc.title}: traceability matrix`;
+            const content = renderTrace(matrix, masked);
+            traceTitle = masker.unmask(context, masked);
+            traceBody = masker.unmask(context, content);
+            traceStorage = unmaskStorage(masker, context, markdownToStorage(content));
+            const known = (doc.metadata.traceability as { pageId?: string } | undefined)?.pageId;
+            // Gone or out of reach: it is created again.
+            tracePage =
+              known && existing
+                ? await client.getPageSummary(known).catch((err: unknown) => {
+                    if (err instanceof AtlassianError && err.status === 404) return undefined;
+                    throw err instanceof AtlassianError ? new Error(`Confluence did not return the traceability matrix page (HTTP ${err.status}). Nothing was written.`) : err;
+                  })
+                : undefined;
+            if (tracePage) shownTitles.push(tracePage.title);
+            target += tracePage ? `, and replace the content of its traceability matrix page "${tracePage.title}"` : ", and a new page under it for its traceability matrix";
+          }
+          const trace = traceTitle && traceBody ? `\n\n---\n\n${traceBody.text}` : "";
+          const req: PublishRequest = {
+            kind: "publish",
+            target,
+            title: title.text,
+            body: `${body.text}${trace}`,
+            kept: [...new Set([...title.kept, ...body.kept, ...(traceTitle?.kept ?? []), ...(traceBody?.kept ?? [])])],
+          };
           const decision = await kit.reviewerFor(call).review(req);
           if (decision.digest !== requestDigest(req)) throw new Error("The decision does not match what was shown for approval, so nothing was written.");
           // Page titles from Confluence were shown in clear too, and the comment may quote them.
           const shown = shownTitles.map((value) => ({ type: "PRIVATE", value }));
-          const comment = () => decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...shown]);
+          const comment = () =>
+            decisionComment(masker, context, decision.comment, [...title.revealed, ...body.revealed, ...(traceTitle?.revealed ?? []), ...(traceBody?.revealed ?? []), ...shown]);
           if (decision.status !== "approved") {
             const why = decision.status === "expired" ? "did not approve it in time, or closed the page" : "rejected it";
             return text(`Nothing was written: the user ${why}.${await comment()}`);
@@ -204,7 +249,26 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             status: meta.version === version ? "published" : "changed",
             ...(ownPage ? { confluence: { pageId: page.pageId, url, pageVersion: page.version, artifactVersion: version, publishedAt: new Date().toISOString() } } : {}),
           }));
-          return text(`${existing ? "Updated" : "Created"} the Confluence page for "${doc.title}" (version ${page.version}): ${url}${await comment()}`);
+          let traced = "";
+          if (matrix && traceTitle && traceStorage) {
+            try {
+              const written = tracePage
+                ? await confluence("write the traceability matrix page", () =>
+                    client.updatePage({ pageId: tracePage.pageId, expectedVersion: tracePage.version, title: traceTitle.text, storage: traceStorage.text, message: `Version ${version}` }),
+                  )
+                : await confluence("write the traceability matrix page", async () => {
+                    const parent = await client.getPageSummary(page.pageId);
+                    return client.createPage({ spaceId: parent.spaceId, parentId: page.pageId, title: traceTitle.text, storage: traceStorage.text });
+                  });
+              const traceUrl = pageLink(written.url);
+              updateArtifactMeta(contexts, context, doc, () => ({ traceability: { pageId: written.pageId, url: traceUrl, pageVersion: written.version } }));
+              traced = ` Its traceability matrix (${matrix.rows.length} requirement(s)) is at ${traceUrl}.`;
+            } catch (err) {
+              const why = (await masker.maskOutputs(context, [(err as Error).message.replace(/ Nothing was written\.$/, "")])).texts[0];
+              traced = ` The traceability matrix page was not written: ${why} Publish again to retry.`;
+            }
+          }
+          return text(`${existing ? "Updated" : "Created"} the Confluence page for "${doc.title}" (version ${page.version}): ${url}${traced}${await comment()}`);
         }),
     ),
   );
