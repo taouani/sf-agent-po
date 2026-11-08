@@ -183,6 +183,27 @@ describe("model files", () => {
     await expect(modelFile(join(tmp, "offline"), manifest(), file(), { fetch: offline })).rejects.toThrow(/fetch failed/);
   });
 
+  it("names the network's reason behind \"fetch failed\" and the fix for it", async () => {
+    const failing = (cause: Error & { code?: string }): Fetch =>
+      async () => {
+        throw new TypeError("fetch failed", { cause });
+      };
+    const proxy = Object.assign(new Error("getaddrinfo ENOTFOUND huggingface.co"), { code: "ENOTFOUND" });
+    const dir = join(tmp, "proxy");
+    const err = (await modelFile(dir, manifest(), file(), { fetch: failing(proxy) }).catch((e: Error) => e)) as Error;
+    expect(err.message).toContain("(fetch failed: ENOTFOUND: getaddrinfo ENOTFOUND huggingface.co)");
+    expect(err.message).toContain("NODE_USE_ENV_PROXY=1");
+    expect(err.message).toContain(`save it as ${join(dir, "test/model/abc123/config.json")}`);
+    expect(err.message).toContain("https://huggingface.co/test/model/resolve/abc123/config.json");
+    expect(err.cause).toBeInstanceOf(TypeError);
+    const cert = Object.assign(new Error("unable to get local issuer certificate"), { code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" });
+    const certErr = (await modelFile(join(tmp, "cert"), manifest(), file(), { fetch: failing(cert) }).catch((e: Error) => e)) as Error;
+    expect(certErr.message).toContain("--use-system-ca");
+    expect(certErr.message).not.toContain("NODE_USE_ENV_PROXY");
+    // Our own errors keep their wording.
+    await expect(modelFile(join(tmp, "own"), manifest(), file(sha, 4), { fetch: fakeFetch(body) })).rejects.toThrow(/^The detection model file config.json is larger/);
+  });
+
   it("downloads a cached file again when it was changed", async () => {
     const dir = join(tmp, "changed");
     mkdirSync(join(dir, "test/model/abc123"), { recursive: true });

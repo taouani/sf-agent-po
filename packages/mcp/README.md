@@ -44,6 +44,12 @@ or in a key file when no keychain is available. Back it up: without it, nothing 
 unmasked.
 
 The name detection model (about 140 MB) is downloaded on first use, pinned and checked.
+It comes from huggingface.co, whose larger files are served from its download hosts
+(`*.hf.co`). Behind a company proxy, add `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` to the
+server's environment, since Node does not use the system's proxy on its own; if the proxy
+inspects HTTPS, also add `NODE_OPTIONS=--use-system-ca`. Without access at all, download the
+files yourself: the error names each file's address and where to save it, and the server
+checks them against their checksums.
 
 Approval pages open in your default browser. To use another one, set `SF_AGENT_PO_BROWSER` in
 the server's environment to a JSON array: the browser's absolute path, then any arguments, for

@@ -63,16 +63,47 @@ export interface DownloadOptions {
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 /** Streams a download into `partial` while hashing it, and stops at the expected size. */
+/** An error of ours about a model file, as opposed to one from the network. */
+class ModelFileError extends Error {}
+
+/** The reasons Node gives for a failed request, from the error and its causes: "fetch failed" alone says nothing. */
+function networkReason(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err, depth = 0; e && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
+    const { code, message } = e as { code?: unknown; message?: unknown };
+    for (const p of [typeof code === "string" ? code : undefined, typeof message === "string" ? message : String(e)])
+      if (p && !parts.some((q) => q.includes(p))) parts.push(p);
+  }
+  return parts.join(": ") || "unknown error";
+}
+
+const CERTIFICATE = /CERT|SELF_SIGNED|UNABLE_TO_(VERIFY|GET_ISSUER)|certificate/i;
+
+/** What to do when a model file cannot be downloaded: the reason, the likely fix, and how to place the file by hand. */
+function downloadFailed(url: string, path: string, err: unknown): Error {
+  const reason = networkReason(err);
+  const fix = CERTIFICATE.test(reason)
+    ? "The certificate the server got was not one Node trusts, which happens when a company proxy or an antivirus inspects HTTPS. " +
+      "Add NODE_OPTIONS=--use-system-ca to the server's environment so that Node trusts the certificates of your operating system, or set NODE_EXTRA_CA_CERTS to your company's certificate file."
+    : "If this computer reaches the internet through a proxy, add HTTPS_PROXY (the proxy's address) and NODE_USE_ENV_PROXY=1 to the server's environment: Node does not use the system's proxy on its own. " +
+      "huggingface.co sends the larger files from its download hosts (*.hf.co), so a firewall must allow both.";
+  return new Error(
+    `Could not download the name detection model from huggingface.co (${reason}). ${fix} ` +
+      `You can also download ${url} yourself and save it as ${path}: the server checks it against its checksum before using it.`,
+    { cause: err },
+  );
+}
+
 async function download(url: string, partial: string, file: ModelFile, opts: DownloadOptions): Promise<string> {
   const res = await (opts.fetch ?? fetch)(url, { headers: { "user-agent": "sf-agent-po" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 15 * 60_000) });
-  if (!res.ok || !res.body) throw new Error(`Could not download the detection model: ${res.status} ${url}`);
+  if (!res.ok || !res.body) throw new ModelFileError(`Could not download the detection model: ${res.status} ${url}`);
   const hash = createHash("sha256");
   const out = await open(partial, "w");
   let size = 0;
   try {
     for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
       size += chunk.length;
-      if (size > file.size) throw new Error(`The detection model file ${file.path} is larger than expected (${file.size} bytes).`);
+      if (size > file.size) throw new ModelFileError(`The detection model file ${file.path} is larger than expected (${file.size} bytes).`);
       hash.update(chunk);
       await out.write(chunk);
     }
@@ -108,7 +139,9 @@ async function loadFile(path: string, manifest: ModelManifest, file: ModelFile, 
   await mkdir(dirname(path), { recursive: true });
   const partial = `${path}.${randomUUID()}.partial`;
   try {
-    const actual = await download(url, partial, file, opts);
+    const actual = await download(url, partial, file, opts).catch((err: unknown) => {
+      throw err instanceof ModelFileError ? err : downloadFailed(url, path, err);
+    });
     if (actual !== file.sha256) throw new Error(`The detection model file ${file.path} does not match its checksum (got ${actual}); it was not saved.`);
     try {
       await rename(partial, path);
