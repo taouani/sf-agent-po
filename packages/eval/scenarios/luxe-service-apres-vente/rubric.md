@@ -18,6 +18,8 @@ Cette grille sert à juger le travail des agents pour ce scénario, à la main o
 - [ ] Propose un type de licence pour les conseillers en boutique (plus légère que Service Cloud complet, ou justifie le contraire) et laisse l'estimation de coût en question ouverte.
 - [ ] Prévoit le cas des numéros de série antérieurs à 2015 absents de SAP.
 - [ ] Cite les identifiants des documents sources et liste les questions ouvertes avec un responsable (grille tarifaire, licences, procédure CITES).
+- [ ] Trace chaque exigence indispensable (must) des entrées vers une partie de la conception (par son identifiant, ou en nommant l'exigence et sa source), ou dit pourquoi elle est écartée.
+- [ ] Chaque composant existant de l'org qu'elle nomme (objet, champ, flow, classe Apex, intégration) figure dans les entrées ; tout le reste est présenté comme nouveau.
 
 ## Backlog (po_backlog)
 
@@ -29,4 +31,6 @@ Cette grille sert à juger le travail des agents pour ce scénario, à la main o
 - [ ] Les critères d'acceptation sont en Given/When/Then (ou Étant donné/Quand/Alors) et couvrent les cas d'erreur (devis refusé, numéro de série introuvable, note contenant une donnée de santé).
 - [ ] Les indicateurs (délai de 5 semaines, 90 % de clients informés, taux de réclamation) deviennent des rapports, tableaux de bord ou critères d'acceptation.
 - [ ] Un spike ou une question ouverte couvre l'intégration SAP ou Cegid, ou la reprise de la grille tarifaire.
-- [ ] `backlog_save` ne signale aucune erreur.
+- [ ] Le contrôle qualité du serveur ne signale aucune erreur sur le backlog enregistré (dans le résultat de l'enregistrement ou l'état du workflow).
+- [ ] Chaque exigence indispensable (must) des entrées est livrée par au moins une story, ou figure comme écart avec une raison.
+- [ ] Les notes techniques ne nomment que des composants existants de l'org présents dans les entrées ou la conception, ou les signalent comme nouveaux.

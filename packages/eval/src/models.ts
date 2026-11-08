@@ -47,7 +47,8 @@ export const PROVIDERS = {
 
 export type Provider = keyof typeof PROVIDERS;
 
-const DEFAULT_MAX_TURNS = 40;
+/** A guided v1 run submits each step and may be sent back, so it takes more turns than 0.x. */
+const DEFAULT_MAX_TURNS = 80;
 const MAX_TOKENS = 32_000;
 
 /** Builds a model from "provider:model". Keys come from the provider's usual environment variable. */

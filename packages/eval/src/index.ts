@@ -1,7 +1,12 @@
 export { AnthropicModel, OpenAICompatibleModel, PROVIDERS, checkOpenRouterModels, createModel, type AgentRun, type CallTool, type Model, type Provider, type ToolSpec } from "./models.js";
 export { TARGET_SCORE, reportMarkdown } from "./report.js";
+export { Approver, approvePage, openerPath, parseForm, type ApprovalRecord, type ParsedForm } from "./approver.js";
 export {
   allowedTool,
+  firstTryShare,
+  forgetVaultKey,
+  submitOutcome,
+  workflowSave,
   judgeSection,
   parseVerdicts,
   runScenario,
@@ -9,6 +14,8 @@ export {
   UNATTENDED,
   withLanguage,
   type Connect,
+  type RunOptions,
+  type StepTries,
   type CriterionVerdict,
   type ScenarioResult,
   type SectionResult,

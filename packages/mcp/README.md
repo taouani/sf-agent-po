@@ -41,4 +41,9 @@ unmasked.
 
 The name detection model (about 140 MB) is downloaded on first use, pinned and checked.
 
+Approval pages open in your default browser. To use another one, set `SF_AGENT_PO_BROWSER` in
+the server's environment to a JSON array: the browser's absolute path, then any arguments, for
+example `["/Applications/Firefox.app/Contents/MacOS/firefox", "--new-window"]`. The page's
+address is added last.
+
 Source, documentation and issues: https://github.com/taouani/sf-agent-po

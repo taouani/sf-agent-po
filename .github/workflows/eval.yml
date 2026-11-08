@@ -21,10 +21,15 @@ on:
         description: 'Scenario ids, separated by commas (empty for all)'
         required: false
         default: ''
+      baseline:
+        description: 'Run against the 0.x server instead of v1'
+        type: boolean
+        required: false
+        default: false
       max_turns:
         description: 'Turn limit per task'
         required: false
-        default: '40'
+        default: '80'
 
 permissions:
   contents: read
@@ -51,11 +56,13 @@ jobs:
           JUDGE: ${{ inputs.judge }}
           SCENARIOS: ${{ inputs.scenarios }}
           MAX_TURNS: ${{ inputs.max_turns }}
+          BASELINE: ${{ inputs.baseline }}
         run: |
           set -o pipefail
           args=(--models "$MODELS" --out eval-results --max-turns "$MAX_TURNS")
           if [ -n "$JUDGE" ]; then args+=(--judge "$JUDGE"); fi
           if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
+          if [ "$BASELINE" = "true" ]; then args+=(--baseline); fi
           node packages/eval/dist/cli.js "${args[@]}"
       - name: Write the report to the job summary
         if: always()

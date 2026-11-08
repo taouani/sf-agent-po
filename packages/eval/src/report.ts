@@ -1,4 +1,4 @@
-import type { ScenarioResult } from "./run.js";
+import { firstTryShare, type ScenarioResult, type StepTries } from "./run.js";
 
 /** The target from the confirmed goal: a rubric score of at least 7/10 per model. */
 export const TARGET_SCORE = 7;
@@ -18,19 +18,26 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
     const runs = results.filter((r) => r.model === m);
     return runs.length ? Math.round((runs.reduce((n, r) => n + (r.error ? 0 : r.score), 0) / runs.length) * 10) / 10 : undefined;
   };
+  // The second number: the share of workflow steps whose first answer passed (v1 only).
+  const firstTry = (m: string) => {
+    const steps: StepTries[] = results.filter((r) => r.model === m).flatMap((r) => r.sections.flatMap((x) => x.steps ?? []));
+    const share = firstTryShare(steps);
+    return share === undefined ? "n/a" : `${Math.round(share * 100)}%`;
+  };
   const failures = (m: string) => results.filter((r) => r.model === m).reduce((n, r) => n + (r.error ? 1 : r.sections.filter((x) => x.error).length), 0);
   const lines = [
     `# Evaluation ${meta.date}`,
     ``,
-    `Server: ${meta.server}. Judge: ${meta.judge}. Scores are out of 10 (the share of rubric criteria met); the target is ${TARGET_SCORE} per model.`,
+    `Server: ${meta.server}. Judge: ${meta.judge}. Scores are out of 10 (the share of rubric criteria met); the target is ${TARGET_SCORE} per model. ` +
+      `First try is the share of workflow steps whose first answer the server accepted.`,
     ``,
-    `| Model | Mean | ${scenarios.join(" | ")} |`,
-    `| --- | --- | ${scenarios.map(() => "---").join(" | ")} |`,
+    `| Model | Mean | First try | ${scenarios.join(" | ")} |`,
+    `| --- | --- | --- | ${scenarios.map(() => "---").join(" | ")} |`,
     ...models.map((m) => {
       const avg = mean(m);
       const failed = failures(m);
       const notes = [...(avg !== undefined && avg < TARGET_SCORE ? ["below target"] : []), ...(failed ? [`${failed} failed, counted as 0`] : [])];
-      return `| ${m} | ${avg === undefined ? "n/a" : `${avg}${notes.length ? ` (${notes.join("; ")})` : ""}`} | ${scenarios.map((s) => cell(m, s)).join(" | ")} |`;
+      return `| ${m} | ${avg === undefined ? "n/a" : `${avg}${notes.length ? ` (${notes.join("; ")})` : ""}`} | ${firstTry(m)} | ${scenarios.map((s) => cell(m, s)).join(" | ")} |`;
     }),
   ];
   for (const r of results) {
@@ -39,6 +46,10 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
       lines.push(`The run failed: ${r.error}`);
       continue;
     }
+    const pages = (list: { page: string; ok: boolean; error?: string }[] | undefined) =>
+      list?.length ? `Approval pages answered: ${list.map((p) => (p.ok ? p.page : `${p.page} (failed: ${p.error})`)).join("; ")}.` : undefined;
+    const loading = pages(r.approvals);
+    if (loading) lines.push(`While loading the inputs. ${loading}`, ``);
     for (const s of r.sections) {
       const a = s.agent;
       lines.push(`### ${s.title}: ${s.score}/10`, ``);
@@ -48,6 +59,17 @@ export function reportMarkdown(results: ScenarioResult[], meta: { server: string
           ``,
         );
       }
+      if (s.steps?.length) {
+        const share = firstTryShare(s.steps);
+        const back = s.steps.filter((x) => x.sentBack);
+        lines.push(
+          `Workflow steps: ${s.steps.length}, ${share === undefined ? "none answered" : `${Math.round(share * 100)}% passed on the first try`}` +
+            `${back.length ? `; sent back: ${back.map((x) => `${x.step} ${x.sentBack}×`).join(", ")}` : ""}${s.steps.some((x) => !x.accepted) ? `; never accepted: ${s.steps.filter((x) => !x.accepted).map((x) => x.step).join(", ")}` : ""}.`,
+          ``,
+        );
+      }
+      const answered = pages(s.approvals);
+      if (answered) lines.push(answered, ``);
       if (s.error) {
         lines.push(`The task failed: ${s.error}`, ``);
         continue;

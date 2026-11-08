@@ -144,6 +144,8 @@ const ALIASES: Record<string, string> = {
   retail: "retail-consumer-goods",
   "consumer-goods": "retail-consumer-goods",
   cpg: "retail-consumer-goods",
+  luxury: "retail-consumer-goods",
+  fashion: "retail-consumer-goods",
   telecommunications: "communications",
   telco: "communications",
   media: "communications",

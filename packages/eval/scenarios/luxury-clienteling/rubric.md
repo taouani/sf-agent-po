@@ -1,6 +1,6 @@
 # Clienteling for client advisors: evaluation rubric
 
-Use this rubric to judge the agents' output for this scenario, by hand or with a model as judge. Each line is one point. The scenario has no metadata or org documents, uses the `luxury` industry template, and contains two traps: the retail director's email changes the kick-off scope (Milan joins phase 1, China waits, no WhatsApp messaging), and the DPO's requirements cannot be met by training alone.
+Use this rubric to judge the agents' output for this scenario, by hand or with a model as judge. Each line is one point. The scenario has no metadata or org documents, uses the `luxury` industry (the retail and consumer goods template in v1), and contains two traps: the retail director's email changes the kick-off scope (Milan joins phase 1, China waits, no WhatsApp messaging), and the DPO's requirements cannot be met by training alone.
 
 ## High-level design (sa_high_level_design)
 
@@ -19,6 +19,9 @@ Use this rubric to judge the agents' output for this scenario, by hand or with a
 - [ ] Shows advisors whether identity documents are on file for cash payments, and leaves cash checks at the till with Finance (AML).
 - [ ] Covers offline access to the client book on mobile, and appointment booking from the website.
 - [ ] Cites source document ids, and lists open questions with owners (for example the tier thresholds, the Data 360 licence, the China hosting decision).
+- [ ] Is written in English.
+- [ ] Traces every must-have requirement in the inputs to a part of the design (by requirement id, or by naming the requirement and its source), or says why it is left out.
+- [ ] Every existing org component it names (object, field, flow, Apex class, integration) is one the inputs show; everything else is presented as new.
 
 ## Backlog (po_backlog)
 
@@ -29,4 +32,7 @@ Use this rubric to judge the agents' output for this scenario, by hand or with a
 - [ ] Acceptance criteria are Given/When/Then and include permission and error paths (for example an advisor from another boutique editing a note, contact without consent, offline use).
 - [ ] The success measures (70% of sales linked to a client, every VIC contacted each quarter) become reports, dashboards or acceptance criteria.
 - [ ] A spike or open question covers the POS integration (Cegid data, volumes, latency) or the tier calculation.
-- [ ] `backlog_save` reports no errors.
+- [ ] The server's quality check of the saved backlog reports no errors (in the save result or the workflow status).
+- [ ] Is written in English.
+- [ ] Every must-have requirement in the inputs is delivered by at least one story, or is listed as a gap with a reason.
+- [ ] Technical notes name only existing org components the inputs or the design show, or mark them as new.

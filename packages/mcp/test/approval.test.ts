@@ -321,4 +321,13 @@ describe("helpers", () => {
     expect(await openInBrowser(link, node)).toBe(true);
     expect(await openInBrowser(link, { file: "/no/such/program", args: () => [] })).toBe(false);
   });
+
+  it("opens pages with the program SF_AGENT_PO_BROWSER names, and with nothing when it cannot be read", () => {
+    const own = browserCommand("linux", { SF_AGENT_PO_BROWSER: JSON.stringify(["/opt/firefox/firefox", "--private-window"]) })!;
+    expect(own.file).toBe("/opt/firefox/firefox");
+    expect(own.args("http://127.0.0.1:1/a/x")).toEqual(["--private-window", "http://127.0.0.1:1/a/x"]);
+    expect(browserCommand("win32", { SF_AGENT_PO_BROWSER: JSON.stringify(["C:\\Program Files\\node.exe", "opener.js"]) })?.file).toBe("C:\\Program Files\\node.exe");
+    for (const bad of ["firefox", '["firefox"]', "[]", '[""]', '["/bin/x", 3]', "{}"]) expect(browserCommand("linux", { SF_AGENT_PO_BROWSER: bad }), bad).toBeNull();
+    expect(browserCommand("darwin", { SF_AGENT_PO_BROWSER: "" })?.file).toBe("/usr/bin/open");
+  });
 });

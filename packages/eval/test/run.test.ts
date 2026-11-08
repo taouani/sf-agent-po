@@ -184,7 +184,7 @@ describe("runScenario", () => {
     const md = reportMarkdown([r], { server: "test", judge: "fake", date: "today" });
     expect(md).toContain("design 10, backlog error");
     expect(md).toContain("The task failed: 529 overloaded");
-    expect(md).toContain("| fake:scripted | 5 (below target; 1 failed, counted as 0) |");
+    expect(md).toContain("| fake:scripted | 5 (below target; 1 failed, counted as 0) | n/a |");
   }, 30_000);
 
   it("reports a scenario that cannot load instead of throwing", async () => {
@@ -216,7 +216,7 @@ describe("judging and reporting", () => {
   it("summarises scores against the target and lists missed criteria", async () => {
     const r = await runScenario(insurance, new ScriptedModel(), new FakeJudge(), inProcess);
     const md = reportMarkdown([r], { server: "0.x", judge: "fake:judge", date: "2026-11-07" });
-    expect(md).toContain("| fake:scripted | 7.5 | design 10, backlog 5 |");
+    expect(md).toContain("| fake:scripted | 7.5 | n/a | design 10, backlog 5 |");
     expect(md).toContain("### Backlog: 5/10");
     expect(md).toContain("- Missed: ");
   }, 30_000);
