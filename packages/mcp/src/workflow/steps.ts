@@ -1,7 +1,7 @@
 // The steps every workflow shares, and the four workflows. The designs are written section by
-// section (design-steps.ts, detailed-steps.ts); the backlog becomes steps of its own in a later
-// PR, and until then ends with one step that follows the agent's full method and points to the
-// saved backlog. The method step also ends design runs started before the section steps.
+// section (design-steps.ts, detailed-steps.ts), and the backlog epic by epic (backlog-steps.ts).
+// The story review ends with one step that follows the agent's full method and points to the
+// saved stories; the same method step ends design and backlog runs started before their steps.
 
 import type { SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import { backlogSchema, checkBacklog, type Finding } from "../backlog.js";
 import { contextLanguage } from "../checks.js";
 import { assembleStep, hldSectionSteps } from "./design-steps.js";
 import { ddAssembleStep, ddSectionSteps } from "./detailed-steps.js";
+import { backlogSteps } from "./backlog-steps.js";
 import type { StepDefinition, StepOutcome, StepState, WorkflowDefinition, WorkflowKit } from "./engine.js";
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
@@ -191,7 +192,10 @@ export function methodStep(workflow: keyof typeof WORKFLOWS, expects: { kind: "d
       if (expects.kind === "backlog") {
         const parsed = backlogSchema.safeParse(meta.backlog);
         if (!parsed.success) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} holds no backlog the check can read: save it again with backlog_save.`)] };
-        const errors = checkBacklog(parsed.data, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context)).filter((f) => f.level === "error");
+        const confirmed = kit.requirements.list(context).filter((r) => r.status === "confirmed");
+        const errors = checkBacklog(parsed.data, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context), { requirements: confirmed }).filter(
+          (f) => f.level === "error",
+        );
         if (errors.length) return { kind: "retry", attempt: true, findings: [...errors, error("artifactId", "The backlog's quality check has errors: fix them, save it again with backlog_save, then submit its id.")] };
       }
       return { kind: "passed", findings: [], summary: `Saved as ${doc.id}, version ${meta?.version ?? 1}: ${doc.title}.`, saved: { artifactId: doc.id, version: meta?.version ?? 1 } };
@@ -224,7 +228,9 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     id: "po_backlog",
     title: WORKFLOWS.po_backlog.title,
     next: "Show the user the backlog, and offer to publish it to Jira with jira_publish.",
-    steps: () => [requirementsStep, methodStep("po_backlog", { kind: "backlog" })] as StepDefinition[],
+    steps: () => [requirementsStep, ...backlogSteps] as StepDefinition[],
+    // A run started before the backlog had its steps ends the old way, with a saved backlog.
+    optional: [methodStep("po_backlog", { kind: "backlog" }) as StepDefinition],
   },
   po_review_stories: {
     id: "po_review_stories",

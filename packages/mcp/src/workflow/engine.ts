@@ -40,7 +40,13 @@ export type StepOutcome =
   /** The answer is accepted: `saved` (masked) is kept with the step. */
   | { kind: "passed"; findings: Finding[]; summary: string; saved?: unknown; message?: string }
   /** The answer is sent back. `attempt` is false when it was not the model's doing (the user closed the page). */
-  | { kind: "retry"; findings: Finding[]; attempt: boolean; message?: string };
+  | { kind: "retry"; findings: Finding[]; attempt: boolean; message?: string }
+  /**
+   * The answer is accepted, but the step needs more answers (the stories of the next epic):
+   * `saved` (masked) replaces what the step holds, and it stays open. Its attempts start again
+   * when `fresh` (new work was accepted), and stay as they were when an earlier part was revised.
+   */
+  | { kind: "progress"; findings: Finding[]; saved: unknown; message: string; fresh: boolean };
 
 export interface StepDefinition<A = unknown> {
   id: string;

@@ -168,7 +168,7 @@ export function createServer(opts: ServerOptions): McpServer {
       }
     };
 
-  const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock() };
+  const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock(), ...(opts.workflows ? { requirements: opts.workflows.requirements } : {}) };
   registerPublishTools(server, publishKit);
   registerBacklogTools(server, publishKit);
   registerAgentPrompts(server, publishKit);

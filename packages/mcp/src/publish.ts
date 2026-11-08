@@ -5,7 +5,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AtlassianError, markdownToStorage, type AtlassianClient } from "@sf-agent-po/connectors";
-import type { ContextRepository, Masker } from "@sf-agent-po/core";
+import type { ContextRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
 import { getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
@@ -24,6 +24,8 @@ export interface PublishKit {
   contextName: z.ZodType<string>;
   /** One publish at a time per artifact, whatever the target. */
   lock: KeyedLock;
+  /** The confirmed requirements, when the server keeps them: the backlog check reads them. */
+  requirements?: RequirementRepository;
 }
 
 const text = (t: string): Result => ({ content: [{ type: "text", text: t }] });
