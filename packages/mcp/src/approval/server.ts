@@ -391,7 +391,7 @@ export class ApprovalServer {
         const p = form.get(`priority-${k}`) as RequirementPriority | null;
         if (p && REQUIREMENT_PRIORITIES.includes(p)) priorities[k] = p;
       }
-      const lines = [...new Set((form.get("added") ?? "").split(/\r?\n/).map((v) => v.trim().slice(0, MAX_LINE)).filter((v) => v.length >= 3))].slice(0, MAX_TYPED_LINES);
+      const lines = [...new Set((form.get("added") ?? "").split(/\r?\n/).map((v) => v.trim().slice(0, MAX_LINE)).filter((v) => v.length >= 5))].slice(0, MAX_TYPED_LINES);
       entry.finish({ status: choice, choice, missed: [], selected, priorities, lines, ...(comment ? { comment } : {}) });
       return send(303, "", "text/plain", { location: action });
     }

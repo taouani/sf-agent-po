@@ -209,6 +209,80 @@ describe("proposeRequirements", () => {
     expect(requirements.list("renewals")).toEqual([]);
   });
 
+  it("refuses a statement that repeats a kept requirement, and gives an existing id to one new twin only", async () => {
+    const { kit, seen, requirements, docs } = await setup();
+    await proposeRequirements(kit, "renewals", [
+      { kind: "functional", statement: "Send the renewal letter.", priority: "must", sourceIds: [docs.notes.id] },
+      { kind: "functional", statement: "Log the call.", priority: "must", sourceIds: [docs.notes.id] },
+    ]);
+    // R1 rewritten to say what R2, kept from before, says.
+    const rewrite = await proposeRequirements(kit, "renewals", [{ id: "R1", kind: "functional", statement: "Log the call", priority: "must", sourceIds: [docs.notes.id] }]);
+    expect(rewrite.status).toBe("invalid");
+    expect(rewrite.findings.filter((f) => f.level === "error").map((f) => `${f.where}: ${f.message}`)).toEqual([
+      "R1: Says the same as R2, which the context keeps; revise R2 with its id instead, or say something else.",
+    ]);
+    // Two new items both say what R1 says: the first takes R1, the second is reported in its own place.
+    const twins = await proposeRequirements(kit, "renewals", [
+      { kind: "functional", statement: "send the renewal letter", priority: "must", sourceIds: [docs.notes.id] },
+      { kind: "functional", statement: "Send the renewal letter", priority: "must", sourceIds: [docs.notes.id] },
+    ]);
+    expect(twins.findings.filter((f) => f.level === "error").map((f) => `${f.where}: ${f.message}`)).toEqual(["new 2: Says the same as R1; keep one of them."]);
+    expect(seen).toHaveLength(1);
+    expect(requirements.list("renewals").map((r) => r.statement)).toEqual(["Send the renewal letter.", "Log the call."]);
+  });
+
+  it("matches a new statement to the requirement in use, not a dropped one that says the same", async () => {
+    const { kit, seen, requirements, docs } = await setup();
+    requirements.save("renewals", [
+      { kind: "functional", statement: "Send the letter", priority: "must", status: "dropped", sourceIds: [docs.notes.id] },
+      { kind: "functional", statement: "Send the letter.", priority: "must", status: "confirmed", origin: "user", sourceIds: [] },
+    ]);
+    await proposeRequirements(kit, "renewals", [{ kind: "functional", statement: "Send the letter", priority: "should", sourceIds: [docs.notes.id] }]);
+    expect(seen[0]!.items.map((i) => [i.key, i.note])).toEqual([["R2", "Changed"]]);
+  });
+
+  it("does not add typed lines that repeat a kept requirement or each other", async () => {
+    const { kit, requirements, docs } = await setup(() => ({ lines: ["send the letter.", "Call the client", "call the client"] }));
+    const out = await proposeRequirements(kit, "renewals", [{ kind: "functional", statement: "Send the letter", priority: "must", sourceIds: [docs.notes.id] }]);
+    expect(out.repeatedLines).toBe(2);
+    expect(out.typed).toEqual(["R2"]);
+    expect(requirements.list("renewals").map((r) => r.statement)).toEqual(["Send the letter", "Call the client"]);
+  });
+
+  it("saves nothing when the requirements or the context changed while the user decided", async () => {
+    const { kit, requirements, docs } = await setup();
+    const proposal = [{ kind: "functional" as const, statement: "Send the letter", priority: "must" as const, sourceIds: [docs.notes.id] }];
+    const approve = kit.reviewer.review;
+    // Another confirmation saved meanwhile.
+    kit.reviewer = {
+      review: async (req) => {
+        requirements.save("renewals", [{ kind: "functional", statement: "Something else", priority: "could", status: "confirmed", sourceIds: [docs.notes.id] }]);
+        return approve(req);
+      },
+    };
+    const out = await proposeRequirements(kit, "renewals", proposal);
+    expect(out.status).toBe("changed");
+    expect(requirements.list("renewals").map((r) => r.statement)).toEqual(["Something else"]);
+    // The context deleted meanwhile: it is not brought back.
+    kit.reviewer = {
+      review: async (req) => {
+        kit.contexts.delete("renewals");
+        return approve(req);
+      },
+    };
+    expect((await proposeRequirements(kit, "renewals", [{ ...proposal[0]!, statement: "Send the letter now" }])).status).toBe("changed");
+    expect(kit.contexts.get("renewals")).toBeUndefined();
+    expect(requirements.list("renewals", { dropped: true })).toEqual([]);
+  });
+
+  it("refuses an approval that does not say what the user kept", async () => {
+    const { kit, requirements, docs } = await setup();
+    await proposeRequirements(kit, "renewals", [{ kind: "functional", statement: "Send the letter", priority: "must", sourceIds: [docs.notes.id] }]);
+    kit.reviewer = { review: async (req) => ({ status: "approved", missed: [], digest: requestDigest(req) }) };
+    await expect(proposeRequirements(kit, "renewals", [{ kind: "functional", statement: "Log the call", priority: "must", sourceIds: [docs.notes.id] }])).rejects.toThrow(/which requirements the user kept/);
+    expect(requirements.list("renewals").map((r) => r.id)).toEqual(["R1"]);
+  });
+
   it("puts the checks' warnings on the page with the real values", async () => {
     const { kit, seen, docs } = await setup();
     await proposeRequirements(kit, "renewals", [{ kind: "functional", statement: "Send the letter", priority: "must", sourceIds: [docs.notes.id, docs.design.id] }]);

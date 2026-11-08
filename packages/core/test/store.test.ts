@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ContextRepository, Database, MIGRATIONS, RequirementRepository, documentId, schemaVersion } from "../src/index.js";
+import { ContextRepository, Database, MIGRATIONS, RequirementRepository, RequirementsChangedError, documentId, schemaVersion } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "sf-agent-core-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -209,6 +209,23 @@ describe("RequirementRepository", () => {
     expect(() => repo.save("other", [{ ...change("x"), id: "R1" }])).toThrow(/R1 is not in context "other"/);
     expect(repo.list("c").map((r) => r.id)).toEqual(["R1"]);
     expect(() => repo.save("../x", [change("x")])).toThrow(/Invalid context name/);
+    db.close();
+  });
+
+  it("saves against a snapshot only while the context and its requirements are unchanged", () => {
+    const db = freshDb();
+    const repo = new RequirementRepository(db);
+    const contexts = new ContextRepository(db);
+    repo.save("c", [change("One")]);
+    const snapshot = () => ({ contextCreatedAt: contexts.get("c")?.createdAt ?? "", requirements: repo.list("c", { dropped: true }) });
+    const before = snapshot();
+    expect(repo.save("c", [change("Two")], { expected: before }).map((r) => r.id)).toEqual(["R2"]);
+    // R2 was added since `before`.
+    expect(() => repo.save("c", [change("Three")], { expected: before })).toThrow(RequirementsChangedError);
+    const now = snapshot();
+    contexts.delete("c");
+    expect(() => repo.save("c", [change("Three")], { expected: now })).toThrow(/changed while the user was deciding/);
+    expect(contexts.get("c")).toBeUndefined();
     db.close();
   });
 

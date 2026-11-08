@@ -63,6 +63,20 @@ const toRequirement = (r: Row): Requirement => ({
 });
 
 export const REQUIREMENT_ID = /^R[1-9]\d{0,5}$/;
+const MAX_SEQ = 999_999;
+
+/** What a save expects to find: the context as it was when the user was asked, and its requirements then. */
+export interface RequirementSnapshot {
+  contextCreatedAt: string;
+  requirements: readonly Pick<Requirement, "id" | "updatedAt">[];
+}
+
+/** The requirements changed (or the context was deleted) since the snapshot a save was based on. */
+export class RequirementsChangedError extends Error {
+  constructor(context: string) {
+    super(`The requirements of "${context}" changed while the user was deciding, so nothing was saved. Propose them again.`);
+  }
+}
 
 /**
  * The requirements of each context. New requirements get the next free number, counted over
@@ -91,12 +105,23 @@ export class RequirementRepository {
   /**
    * Saves changes in one transaction and returns the saved requirements, in the order given.
    * A change with an id that the context does not have is an error, and nothing is saved.
+   * With `expected`, the save is refused (RequirementsChangedError) unless the context and its
+   * requirements are still as they were in that snapshot.
    */
-  save(context: string, changes: readonly RequirementChange[]): Requirement[] {
+  save(context: string, changes: readonly RequirementChange[], { expected }: { expected?: RequirementSnapshot } = {}): Requirement[] {
     validateContextName(context);
     if (!changes.length) return [];
     return this.database.write(() => {
       const now = new Date().toISOString();
+      if (expected) {
+        const ctx = this.db.prepare("SELECT created_at FROM context WHERE name = ?").get(context) as { created_at: string } | undefined;
+        const rows = this.db.prepare("SELECT id, updated_at FROM requirement WHERE context = ? ORDER BY seq").all(context) as unknown as { id: string; updated_at: string }[];
+        const same =
+          ctx?.created_at === expected.contextCreatedAt &&
+          rows.length === expected.requirements.length &&
+          rows.every((r, i) => r.id === expected.requirements[i]!.id && r.updated_at === expected.requirements[i]!.updatedAt);
+        if (!same) throw new RequirementsChangedError(context);
+      }
       this.db.prepare("INSERT OR IGNORE INTO context (name, created_at, updated_at) VALUES (?, ?, ?)").run(context, now, now);
       const { top } = this.db.prepare("SELECT coalesce(max(seq), 0) AS top FROM requirement WHERE context = ?").get(context) as { top: number };
       let next = top;
@@ -112,6 +137,7 @@ export class RequirementRepository {
           continue;
         }
         next += 1;
+        if (next > MAX_SEQ) throw new Error(`Context "${context}" has reached ${MAX_SEQ} requirements.`);
         const id = `R${next}`;
         this.db
           .prepare(

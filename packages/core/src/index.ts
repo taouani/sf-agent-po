@@ -18,6 +18,8 @@ export {
   REQUIREMENT_PRIORITIES,
   REQUIREMENT_STATUSES,
   RequirementRepository,
+  RequirementsChangedError,
+  type RequirementSnapshot,
   type Requirement,
   type RequirementChange,
   type RequirementKind,

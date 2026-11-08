@@ -10,6 +10,7 @@ import {
   REQUIREMENT_ID,
   REQUIREMENT_KINDS,
   REQUIREMENT_PRIORITIES,
+  RequirementsChangedError,
   type ContextRepository,
   type Masker,
   type Requirement,
@@ -69,6 +70,9 @@ export function checkRequirements(proposal: readonly ProposedRequirement[], exis
   const known = new Map(existing.map((r) => [r.id, r]));
   const docs = new Map(contextDocs.map((d) => [d.id, d]));
 
+  const inProposal = new Set(proposal.flatMap((r) => (r.id ? [r.id] : [])));
+  const kept = existing.filter((r) => r.status !== "dropped" && !inProposal.has(r.id));
+  const keptStatements = new Map(kept.map((r) => [normalizeStatement(r.statement), r.id]));
   const ids = new Map<string, number>();
   const statements = new Map<string, string>();
   const cited = new Set<string>();
@@ -81,7 +85,9 @@ export function checkRequirements(proposal: readonly ProposedRequirement[], exis
     }
     const norm = normalizeStatement(r.statement);
     const twin = statements.get(norm);
+    const keptTwin = keptStatements.get(norm);
     if (twin) add("error", where, `Says the same as ${twin}; keep one of them.`);
+    else if (keptTwin) add("error", where, `Says the same as ${keptTwin}, which the context keeps; revise ${keptTwin} with its id instead, or say something else.`);
     else statements.set(norm, where);
 
     if (!r.sourceIds.length && before?.origin !== "user") add("error", where, "No source: cite the documents the requirement comes from.");
@@ -99,8 +105,6 @@ export function checkRequirements(proposal: readonly ProposedRequirement[], exis
   });
   for (const [id, n] of ids) if (n > 1) add("error", id, `${id} is in the proposal ${n} times.`);
 
-  const inProposal = new Set(proposal.flatMap((r) => (r.id ? [r.id] : [])));
-  const kept = existing.filter((r) => r.status !== "dropped" && !inProposal.has(r.id));
   if (kept.length) add("info", "proposal", `${kept.map((r) => r.id).join(", ")} ${kept.length === 1 ? "is" : "are"} not in the proposal; the user sees ${kept.length === 1 ? "it" : "them"} on the page as kept from before.`);
 
   const compliance = new Set(proposal.filter((r) => r.kind === "compliance" || r.kind === "non-functional" || r.kind === "constraint").flatMap((r) => r.sourceIds));
@@ -125,8 +129,10 @@ export interface RequirementsOutcome {
    * - `invalid`: the checks found errors; nothing was shown to the user.
    * - `approved`: the user confirmed the list; `requirements` is the context's list now.
    * - `rejected` or `expired`: nothing changed.
+   * - `changed`: the requirements changed (another confirmation, say) while the user was
+   *   deciding; nothing was saved, and the proposal should be made again.
    */
-  status: "invalid" | "approved" | "rejected" | "expired";
+  status: "invalid" | "approved" | "rejected" | "expired" | "changed";
   findings: Finding[];
   /** The context's requirements (masked), dropped ones aside. */
   requirements: Requirement[];
@@ -134,6 +140,8 @@ export interface RequirementsOutcome {
   dropped: string[];
   /** Ids of the requirements the user typed. */
   typed: string[];
+  /** Lines the user typed that repeat a requirement they kept, or another line: not added. */
+  repeatedLines: number;
   /** The user's comment, masked. */
   comment?: string;
 }
@@ -148,17 +156,28 @@ const same = (a: readonly string[], b: readonly string[]) => a.length === b.leng
  */
 export async function proposeRequirements(kit: RequirementsKit, context: string, proposal: readonly ProposedRequirement[]): Promise<RequirementsOutcome> {
   const { contexts, requirements, masker } = kit;
+  const info = contexts.get(context);
   const existing = requirements.list(context, { dropped: true });
   const docs = contexts.documents(context);
 
   // What the agent wrote is masked like any output: pseudonyms stay, values in clear are hidden.
   const masked = (await masker.maskOutputs(context, proposal.map((r) => r.statement))).texts;
-  const byStatement = new Map(existing.map((r) => [normalizeStatement(r.statement), r]));
+  // Two existing requirements can say the same (one dropped, one typed by the user): the one in use wins.
+  const byStatement = new Map<string, Requirement>();
+  for (const r of existing) {
+    const norm = normalizeStatement(r.statement);
+    const other = byStatement.get(norm);
+    if (!other || (other.status === "dropped" && r.status !== "dropped")) byStatement.set(norm, r);
+  }
+  const taken = new Set(proposal.flatMap((p) => (p.id ? [p.id] : [])));
   const items: ProposedRequirement[] = proposal.map((r, i) => {
     const statement = masked[i]!;
-    // A new requirement that says what an existing one says takes its id, so it is not listed twice.
+    // A new requirement that says what an existing one says takes its id, so it is not listed
+    // twice; only the first one does, and never an id the agent gave another item.
     const twin = r.id ? undefined : byStatement.get(normalizeStatement(statement));
-    return { ...r, statement, sourceIds: [...new Set(r.sourceIds)], ...(twin && !proposal.some((p) => p.id === twin.id) ? { id: twin.id } : {}) };
+    const id = twin && !taken.has(twin.id) ? twin.id : r.id;
+    if (id) taken.add(id);
+    return { ...r, statement, sourceIds: [...new Set(r.sourceIds)], ...(id ? { id } : {}) };
   });
   const findings = checkRequirements(items, existing, docs);
   const outcome = (status: RequirementsOutcome["status"], extra: Partial<RequirementsOutcome> = {}): RequirementsOutcome => ({
@@ -167,6 +186,7 @@ export async function proposeRequirements(kit: RequirementsKit, context: string,
     requirements: requirements.list(context),
     dropped: [],
     typed: [],
+    repeatedLines: 0,
     ...extra,
   });
   if (findings.some((f) => f.level === "error")) return outcome("invalid");
@@ -213,7 +233,9 @@ export async function proposeRequirements(kit: RequirementsKit, context: string,
   const comment = decision.comment ? (await masker.mask(context, decision.comment)).text : undefined;
   if (decision.status !== "approved") return outcome(decision.status === "rejected" ? "rejected" : "expired", comment ? { comment } : {});
 
-  const selected = new Set(decision.selected ?? []);
+  // An approval always says what was kept: without it, every requirement would be dropped.
+  if (!decision.selected) throw new Error("The approval does not say which requirements the user kept, so nothing was saved.");
+  const selected = new Set(decision.selected);
   const changes: RequirementChange[] = [];
   const dropped: string[] = [];
   for (const { item, change, before } of offered) {
@@ -231,10 +253,26 @@ export async function proposeRequirements(kit: RequirementsKit, context: string,
   }
   const lines = decision.lines ?? [];
   const typedText = lines.length ? await Promise.all(lines.map(async (l) => (await masker.mask(context, l)).text)) : [];
-  const typedChanges: RequirementChange[] = typedText.map((statement) => ({ kind: "functional", statement, priority: "must", status: "confirmed", origin: "user", sourceIds: [] }));
-  const saved = requirements.save(context, [...changes, ...typedChanges]);
+  // A typed line that repeats a requirement the user kept, or an earlier line, is not added twice.
+  const seen = new Set(offered.filter((o) => selected.has(o.item.key)).map((o) => normalizeStatement(o.change.statement)));
+  const unique = typedText.filter((t) => {
+    const norm = normalizeStatement(t);
+    if (seen.has(norm)) return false;
+    seen.add(norm);
+    return true;
+  });
+  const typedChanges: RequirementChange[] = unique.map((statement) => ({ kind: "functional", statement, priority: "must", status: "confirmed", origin: "user", sourceIds: [] }));
+  const repeatedLines = typedText.length - unique.length;
+  let saved: Requirement[];
+  try {
+    // Saved only if nothing changed since the page was built: another confirmation, or the context deleted.
+    saved = requirements.save(context, [...changes, ...typedChanges], { expected: { contextCreatedAt: info?.createdAt ?? "", requirements: existing } });
+  } catch (err) {
+    if (err instanceof RequirementsChangedError) return outcome("changed", { repeatedLines, ...(comment ? { comment } : {}) });
+    throw err;
+  }
   const typed = saved.slice(changes.length).map((r) => r.id);
-  return outcome("approved", { dropped, typed, ...(comment ? { comment } : {}) });
+  return outcome("approved", { dropped, typed, repeatedLines, ...(comment ? { comment } : {}) });
 }
 
 /** The context's requirements as the model reads them (masked). */

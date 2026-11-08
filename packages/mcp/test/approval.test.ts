@@ -253,7 +253,7 @@ describe("approval page", () => {
     expect(html).toContain("new 1: &#60;b&#62;vague&#60;/b&#62;");
     expect(html).not.toMatch(/<script|style="/i);
     const page = await call(tab.page, { headers: { cookie: tab.cookie } });
-    const lines = ["Send a reminder", "", "Send a reminder", "ok", "x".repeat(1_200)].join("\r\n");
+    const lines = ["Send a reminder", "", "Send a reminder", "ok", "okay", "x".repeat(1_200)].join("\r\n");
     const body = `csrf=${encodeURIComponent(csrfOf(page.body.toString()))}&decision=approved&item=n1&item=R9&priority-R1=wont&priority-n1=urgent&priority-R9=must&added=${encodeURIComponent(lines)}`;
     const posted = await call(tab.page, { method: "POST", body, headers: { origin: s.origin!, cookie: tab.cookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" } });
     expect(posted.status).toBe(303);
