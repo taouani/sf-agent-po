@@ -115,9 +115,11 @@ const proposal = (sourceId: string) => ({ requirements: [{ kind: "functional", s
 describe("workflow tools", () => {
   it("run a design workflow step by step: requirements confirmed on the page, then the saved design", async () => {
     const { call, seen, runs, notes } = await connect();
+    // A run started before the design had section steps: it ends with the method step.
+    runs.start("renewals", "sa_detailed_design", ["requirements", "design"]);
     const started = await call("workflow_start", wf);
     expect(started.isError).toBeFalsy();
-    expect(started.text).toContain("Started a new run.");
+    expect(started.text).toContain("Resuming the open run");
     expect(started.text).toContain("Step 1 of 2: Requirements");
     expect(started.text).toContain(`[${notes.id}] meeting-notes: Workshop with [PERSON_`);
     expect(started.text).not.toContain("Karim");
@@ -212,15 +214,15 @@ describe("workflow tools", () => {
   it("adds a scope step to designs when metadata is on, which can be skipped only while nothing is indexed", async () => {
     const { call, notes } = await connect({ metadata: true });
     const started = await call("workflow_start", wf);
-    expect(started.text).toContain("Step 1 of 3: Requirements");
+    expect(started.text).toContain("Step 1 of 12: Requirements");
     const scope = await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
-    expect(scope.text).toContain("Step 2 of 3: Scope");
+    expect(scope.text).toContain("Step 2 of 12: Scope");
     expect(scope.text).toContain("Nothing is indexed");
     expect((await call("workflow_submit", { ...wf, step: "scope", answer: { keep: true } })).text).toContain("No scope is confirmed yet");
     expect((await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Account"] } })).text).toContain("Nothing is indexed, so no scope can be confirmed");
     const skipped = await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "The user has no org access yet." } });
     expect(skipped.text).toContain('Step "scope" passed with warnings');
-    expect(skipped.text).toContain("Step 3 of 3: Draft the detailed design");
+    expect(skipped.text).toContain("Step 3 of 12: Stories in scope");
     // The backlog has no scope step.
     expect((await call("workflow_start", { ...wf, workflow: "po_backlog" })).text).toContain("Step 1 of 2: Requirements");
   });
@@ -232,8 +234,8 @@ describe("workflow tools", () => {
     const again = await connect({ shared: first.store });
     const resumed = await again.call("workflow_start", wf);
     expect(resumed.isError).toBeFalsy();
-    expect(resumed.text).toContain("Step 2 of 3: Scope");
-    expect((await again.call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No metadata here." } })).text).toContain("Step 3 of 3");
+    expect(resumed.text).toContain("Step 2 of 12: Scope");
+    expect((await again.call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No metadata here." } })).text).toContain("Step 3 of 12");
   });
 
   it("confirms the scope of an indexed project through the step, and masks an unknown object's name", async () => {
@@ -248,7 +250,7 @@ describe("workflow tools", () => {
     expect((await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No time." } })).text).toContain("propose the objects instead of skipping");
     const ok = await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Policy__c"], reason: "Renewals change policies." } });
     expect(ok.text).toContain('Step "scope" passed. Scope confirmed: Policy__c.');
-    expect(ok.text).toContain("Step 3 of 3: Draft the detailed design");
+    expect(ok.text).toContain("Step 3 of 12: Stories in scope");
   });
 
   it("refuses a record built on a step that moved meanwhile", async () => {
@@ -262,12 +264,12 @@ describe("workflow tools", () => {
   });
 
   it("takes only a design of the right type written in the run, and a backlog whose check has no error", async () => {
-    const { call, notes } = await connect();
+    const { call, notes, runs } = await connect();
     const save = (designType: string, content: string) => call("design_save", { context: "renewals", title: `Renewals ${designType}`, designType, content });
     const idOf = (t: string) => /as (doc-[0-9a-f]{10})/.exec(t)![1]!;
     const old = idOf((await save("detailed", "# Old design")).text);
     await new Promise((r) => setTimeout(r, 5));
-    await call("workflow_start", wf);
+    runs.start("renewals", "sa_detailed_design", ["requirements", "design"]);
     await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
     // Saved again unchanged: still the old version.
     await save("detailed", "# Old design");
@@ -440,4 +442,100 @@ describe("workflow tools", () => {
     expect(resumed.text).toContain("Step 1 of 2: Requirements");
     expect((await call("workflow_status", { context: "renewals" })).text).toContain("2. Draft the high-level design (design): to do");
   });
+
+  it("writes a detailed design from the stories, with field tables, tests for every criterion and the deployment list", async () => {
+    const { call, notes, contexts, store: st } = await connect({ metadata: true });
+    await indexProject(st.index, project());
+    const dd = { context: "renewals", workflow: "sa_detailed_design" };
+    const submit = (step: string, answer: unknown) => call("workflow_submit", { ...dd, step, answer });
+    const idOf = (t: string) => /(doc-[0-9a-f]{10})/.exec(t)![1]!;
+    const ac = (then: string) => ({ given: "a policy", when: "30 days are left", then });
+    const story = (id: string, criteria: ReturnType<typeof ac>[]) => ({ id, summary: `Story ${id}`, persona: "Renewals agent", want: "to send the letter", benefit: "clients renew", acceptanceCriteria: criteria, sourceIds: [notes.id] });
+    const backlogId = idOf(
+      (
+        await call("backlog_save", {
+          context: "renewals",
+          backlog: { title: "Renewals backlog", epics: [{ id: "E1", summary: "Renewal letters", outcome: "Clients renew on time", stories: [story("S1", [ac("a letter is sent"), ac("the agent is told")]), story("S2", [ac("the date shows")])] }] },
+        })
+      ).text,
+    );
+    expect((await call("workflow_start", dd)).text).toContain("Step 1 of 12: Requirements");
+    await submit("requirements", proposal(notes.id));
+    expect((await submit("scope", { objects: ["Policy__c"] })).text).toContain("Step 3 of 12: Stories in scope");
+
+    const s1 = { ref: "S1", summary: "Send the letter", requirementIds: ["R1"], acceptanceCriteria: [{ id: "AC1", text: "A letter is sent." }] };
+    const s2 = { ref: "S2", summary: "Show the date", acceptanceCriteria: [{ id: "AC1", text: "The date shows." }] };
+    const badScope = await submit("stories", { summary: "Renewal letters.", highLevelDesignId: notes.id, backlogId, stories: [s1, s2] });
+    expect(badScope.text).toContain(`ERROR [highLevelDesignId] ${notes.id} is not a high-level design of this context.`);
+    expect(badScope.text).toContain("ERROR [S1] S1 has 2 acceptance criteria in the backlog");
+    const stories = [{ ...s1, acceptanceCriteria: [...s1.acceptanceCriteria, { id: "AC2", text: "The agent is told." }] }, s2];
+    const dataModel = await submit("stories", { summary: "Renewal letters.", backlogId, stories });
+    expect(dataModel.text).toContain("Step 4 of 12: Data model changes");
+
+    const access = [{ permissionSet: "Renewals_Agent", edit: true }];
+    const date = { name: "Renewal_Date__c", label: "Renewal date", type: "Date", status: "new", helpText: "When the policy renews.", access };
+    const channel = { name: "Channel__c", label: "Channel", type: "Picklist", status: "new", helpText: "How the letter goes.", access };
+    const status = { name: "Policy__c.Status__c", label: "Status", type: "Text", status: "existing" };
+    const policy = { name: "Policy__c", status: "changed", stories: ["S1", "S2"], fields: [date, channel, status] };
+    const noValues = await submit("data-model", { objects: [policy] });
+    expect(noValues.text).toContain("ERROR [Policy__c.Channel__c] A picklist needs its values");
+    const automation = await submit("data-model", { objects: [{ ...policy, fields: [date, { ...channel, picklistValues: ["Email", "Letter"] }, status] }] });
+    expect(automation.text).toContain("Step 5 of 12: Automation");
+
+    const flow = { id: "F1", name: "Policy_Renewal_Reminder", kind: "record-triggered", status: "new", object: "Policy__c", event: "update", runAs: "user", steps: ["Create the letter"], faultHandling: "Email the admin.", requirementIds: ["R1"], stories: ["S1"] };
+    const apex = { id: "AP1", name: "RenewalService", kind: "service", status: "new", responsibility: "Sends letters.", sharing: "with sharing", userMode: false, bulk: "One query per batch.", testClass: "RenewalServiceTest", why: "Callouts.", stories: ["S1"] };
+    const noTiming = await submit("automation", { flows: [flow], apex: [apex] });
+    expect(noTiming.text).toContain("ERROR [F1] A record-triggered flow needs its object, event");
+    const ui = await submit("automation", { flows: [{ ...flow, timing: "after-save" }], apex: [apex], orderNotes: "Runs after the existing status rule." });
+    expect(ui.text).toContain("WARNING [AP1] RenewalService does not run its queries and DML in user mode");
+
+    const panel = { name: "RenewalPanel", kind: "lwc", status: "new", purpose: "Shows the renewal.", stories: ["S2"] };
+    expect((await submit("user-interface", { components: [panel] })).text).toContain("ERROR [RenewalPanel] A Lightning web component's name is camelCase");
+    await submit("user-interface", { components: [{ ...panel, name: "renewalPanel" }] });
+    await submit("integrations", { integrations: [] });
+
+    expect((await submit("security", {})).text).toContain("ERROR [Renewals_Agent] The data model gives access through Renewals_Agent, which is neither described here");
+    const tests = await submit("security", { permissionSets: [{ name: "Renewals_Agent", status: "new", purpose: "Agents renew policies.", grants: ["Policy__c: read, edit"], stories: ["S1"] }] });
+    expect(tests.text).toContain("Step 9 of 12: Test approach");
+
+    const test = (story: string, criterion: string) => ({ story, criterion, kind: "manual", test: "Check it by hand." });
+    const untested = await submit("tests", { acceptance: [test("S1", "AC1"), test("S3", "AC1")] });
+    expect(untested.text).toContain("ERROR [S1 AC2] No test is mapped to S1 AC2");
+    expect(untested.text).toContain("ERROR [S2 AC1] No test is mapped to S2 AC1");
+    expect(untested.text).toContain("ERROR [S3 AC1] S3 is not a story in scope.");
+    const deployment = await submit("tests", {
+      apex: [{ testClass: "RenewalServiceTest", covers: ["RenewalService"], scenarios: ["200 policies"] }],
+      acceptance: [test("S1", "AC1"), test("S1", "AC2"), test("S2", "AC1")],
+    });
+    expect(deployment.text).toContain("Step 10 of 12: Deployment");
+    // The brief lists what needs a deployment entry.
+    expect(deployment.text).toContain("- CustomField Policy__c.Channel__c\n");
+    expect(deployment.text).toContain("- ApexClass RenewalServiceTest\n");
+
+    const components = [
+      { type: "CustomObject", name: "Policy__c", change: "modify", stories: ["S1"] },
+      { type: "CustomField", name: "Policy__c.Renewal_Date__c", change: "add", stories: ["S1"] },
+      { type: "Flow", name: "Policy_Renewal_Reminder", change: "add", stories: ["S1"] },
+    ];
+    const unchecked = await submit("deployment", { components, rollback: "Deactivate the flow." });
+    expect(unchecked.text).toContain("ERROR [CustomObject Policy__c] Run metadata_impact on CustomObject Policy__c (modify) first");
+    await call("metadata_impact", { context: "renewals", changes: [{ type: "CustomObject", name: "Policy__c", change: "modify" }] });
+    const decisions = await submit("deployment", { components, rollback: "Deactivate the flow." });
+    expect(decisions.text).toContain("WARNING [Policy__c] CustomField Policy__c.Channel__c has no deployment entry.");
+    expect(decisions.text).toContain("WARNING [AP1] ApexClass RenewalServiceTest has no deployment entry.");
+    expect(decisions.text).toContain("WARNING [renewalPanel] LightningComponentBundle renewalPanel has no deployment entry.");
+
+    const decisionsBrief = await submit("decisions", { decisions: [], openQuestions: [{ question: "Which template?", owner: "Business owner" }] });
+    expect(decisionsBrief.text).toContain("Step 12 of 12: Assemble and save the design");
+    expect((await submit("assemble", { title: "Renewal letters: detailed design", gaps: [{ story: "S9", reason: "Not needed." }] })).text).toContain("ERROR [S9] S9 is not a story in scope.");
+    const done = await submit("assemble", { title: "Renewal letters: detailed design" });
+    expect(done.text).toContain('Step "assemble" passed');
+    const doc = contexts.getDocument("renewals", /Saved as (doc-[0-9a-f]{10})/.exec(done.text)![1]!)!;
+    expect(doc).toMatchObject({ kind: "design", metadata: { artifactType: "detailed", sourceIds: [backlogId, notes.id] } });
+    expect(doc.content).toContain("| Renewal_Date__c (new) | Renewal date | Date |");
+    expect(doc.content).toContain("| S1 | AC2 | manual | Check it by hand. |");
+    expect(doc.content).toContain("| S2 Show the date |  | Data model: Policy__c; User interface: renewalPanel | AC1 |");
+    expect(doc.content).toContain("**Rollback:** Deactivate the flow.");
+  });
 });
+

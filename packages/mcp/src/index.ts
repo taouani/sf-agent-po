@@ -57,7 +57,48 @@ export { currentStep, MAX_ATTEMPTS, type StepDefinition, type StepOutcome, type 
 export { methodStep, requirementsStep, scopeStep, WORKFLOW_DEFINITIONS } from "./workflow/steps.js";
 export { registerWorkflowTools, submitStep, type WorkflowToolsKit } from "./workflow/tools.js";
 export { assembleStep, designSoFar, HLD_SECTION_STEPS, hldSectionSteps } from "./workflow/design-steps.js";
-export * from "./design/schema.js";
+export {
+  AUTOMATION_TYPES,
+  automationSection,
+  contextSection,
+  currentStateSection,
+  dataModelSection,
+  decisionsSection,
+  FIELD_TYPES,
+  impactSection,
+  INTEGRATION_PATTERNS,
+  integrationsSection,
+  securitySection,
+  solutionSection,
+  tracedItems,
+  type HighLevelDesign,
+} from "./design/schema.js";
+export {
+  ddAutomationSection,
+  ddDataModelSection,
+  ddDeploymentSection,
+  ddIntegrationsSection,
+  ddScopeSection,
+  ddSecuritySection,
+  ddTestsSection,
+  ddUserInterfaceSection,
+  storyItems,
+  type DetailedDesign,
+} from "./design/detailed-schema.js";
+export {
+  checkDdAutomation,
+  checkDdDataModel,
+  checkDdDeployment,
+  checkDdIntegrations,
+  checkDdScope,
+  checkDdSecurity,
+  checkDdTests,
+  checkDdUserInterface,
+  ddComponents,
+  unbuiltStories,
+} from "./design/detailed-checks.js";
+export { renderDetailedDesign, type StoryGap } from "./design/detailed-render.js";
+export { DD_SECTION_STEPS, ddAssembleStep, ddSectionSteps, detailedSoFar } from "./workflow/detailed-steps.js";
 export {
   checkAutomation,
   checkContext,

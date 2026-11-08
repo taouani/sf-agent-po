@@ -5,15 +5,14 @@
 
 import { z } from "zod";
 
-const text = (max = 4_000) => z.string().trim().min(1).max(max);
-const list = <T extends z.ZodTypeAny>(item: T, max = 60) => z.array(item).max(max);
-const requirementIds = z.array(z.string().regex(/^R[1-9]\d{0,5}$/, "use requirement ids such as R1")).max(40).default([]);
-const localId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[1-9]\\d{0,3}$`), `use an id such as ${prefix}1`);
-const STATUS = ["existing", "new", "changed", "retired"] as const;
-const SHARING = ["private", "public read only", "public read/write", "controlled by parent"] as const;
+export const text = (max = 4_000) => z.string().trim().min(1).max(max);
+export const list = <T extends z.ZodTypeAny>(item: T, max = 60) => z.array(item).max(max);
+export const requirementIds = z.array(z.string().regex(/^R[1-9]\d{0,5}$/, "use requirement ids such as R1")).max(40).default([]);
+export const localId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[1-9]\\d{0,3}$`), `use an id such as ${prefix}1`);
+export const STATUS = ["existing", "new", "changed", "retired"] as const;
+export const SHARING = ["private", "public read only", "public read/write", "controlled by parent"] as const;
 
-export const contextSection = z
-  .object({
+export const contextSection = z.strictObject({
     goals: list(text(500), 20).min(1),
     inScope: list(text(500), 40).min(1),
     outOfScope: list(text(500), 40).default([]),
@@ -30,8 +29,7 @@ export const contextSection = z
     ).min(1),
   });
 
-export const currentStateSection = z
-  .object({
+export const currentStateSection = z.strictObject({
     summary: text(),
     components: list(
       z.strictObject({
@@ -44,8 +42,7 @@ export const currentStateSection = z
     debt: list(z.strictObject({ component: text(200), issue: text(500) }), 60).default([]),
   });
 
-export const solutionSection = z
-  .object({
+export const solutionSection = z.strictObject({
     overview: text(),
     orgStrategy: text(1_000).describe("Existing org, new org or several, and why."),
     components: list(
@@ -62,7 +59,7 @@ export const solutionSection = z
     userExperience: text().optional(),
     reporting: text().optional(),
     diagram: z
-      .object({
+      .strictObject({
         nodes: list(z.strictObject({ id: z.string().regex(/^[A-Za-z]\w{0,40}$/, "use letters, digits and underscores, such as sf or erp"), label: text(120), kind: z.enum(["salesforce", "external", "user", "data"]).default("salesforce") }), 40).min(1),
         edges: list(z.strictObject({ from: z.string(), to: z.string(), label: text(120).optional() }), 80).default([]),
       })
@@ -78,8 +75,7 @@ export const FIELD_TYPES = [
   "Address", "Id", "Name",
 ] as const;
 
-export const dataModelSection = z
-  .object({
+export const dataModelSection = z.strictObject({
     objects: list(
       z.strictObject({
         name: text(120).describe('API name: "Account" for a standard object, "Policy__c" for a custom one.'),
@@ -113,8 +109,7 @@ export const dataModelSection = z
 
 export const AUTOMATION_TYPES = ["record-triggered flow", "screen flow", "scheduled flow", "autolaunched flow", "apex trigger", "apex class", "batch apex", "platform event", "other"] as const;
 
-export const automationSection = z
-  .object({
+export const automationSection = z.strictObject({
     automations: list(
       z.strictObject({
         id: localId("A"),
@@ -135,8 +130,7 @@ export const automationSection = z
 /** The integration patterns of the SA principles. */
 export const INTEGRATION_PATTERNS = ["request and reply", "fire and forget", "batch data sync", "remote call-in", "ui update from data changes", "data virtualisation"] as const;
 
-export const integrationsSection = z
-  .object({
+export const integrationsSection = z.strictObject({
     integrations: list(
       z.strictObject({
         id: localId("I"),
@@ -153,8 +147,7 @@ export const integrationsSection = z
     ),
   });
 
-export const securitySection = z
-  .object({
+export const securitySection = z.strictObject({
     sharing: list(
       z.strictObject({
         object: text(120),
@@ -169,8 +162,7 @@ export const securitySection = z
     nonFunctional: list(z.strictObject({ requirementIds, topic: text(120), target: text(500) }), 40).default([]),
   });
 
-export const impactSection = z
-  .object({
+export const impactSection = z.strictObject({
     changes: list(
       z.strictObject({
         type: text(80),
@@ -184,8 +176,7 @@ export const impactSection = z
     delivery: text().optional().describe("Environments, DevOps, data migration, release sequencing, phases or MVP."),
   });
 
-export const decisionsSection = z
-  .object({
+export const decisionsSection = z.strictObject({
     decisions: list(
       z.strictObject({
         id: localId("D"),

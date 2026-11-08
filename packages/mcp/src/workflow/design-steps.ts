@@ -46,9 +46,19 @@ import type { StepDefinition, StepOutcome, StepState } from "./engine.js";
 
 type SectionKey = Exclude<keyof HighLevelDesign, "title">;
 
-interface SectionSpec<T> {
+/** A kind of design written section by section: which steps hold which sections. */
+export interface DesignKind<D> {
+  /** "high-level design", as the briefs name it. */
+  name: string;
+  /** Section keys, by step id. */
+  steps: Record<string, Exclude<keyof D, "title"> & string>;
+  /** What the design should still address that no section addresses yet, for the brief of a step that traces it. */
+  openNote(design: D, confirmed: readonly Requirement[]): string | undefined;
+}
+
+export interface SectionSpec<T, D = HighLevelDesign> {
   id: string;
-  key: SectionKey;
+  key: Exclude<keyof D, "title"> & string;
   title: string;
   schema: z.ZodType<T>;
   shape: string;
@@ -60,9 +70,13 @@ interface SectionSpec<T> {
   industry?: boolean;
   /** Whether its items cite requirement ids. */
   traces?: boolean;
+  /** Whether the brief shows what the design does not address yet: by default, when it traces. */
+  openNote?: boolean;
+  /** More for the brief, from the design so far. */
+  extra?(design: D): string | undefined;
   /** The earlier sections it builds on, shown in full. */
-  uses?: SectionKey[];
-  check(section: T, env: DesignCheckEnv): Finding[];
+  uses?: (Exclude<keyof D, "title"> & string)[];
+  check(section: T, env: DesignCheckEnv<D>): Finding[];
   summary(section: T): string;
 }
 
@@ -80,35 +94,43 @@ export const HLD_SECTION_STEPS: Record<string, SectionKey> = {
 };
 
 /** One principle of SA_PRINCIPLES, by its bold heading. */
-function principle(heading: string): string {
+export function principle(heading: string): string {
   const line = SA_PRINCIPLES.split("\n").find((l) => l.startsWith(`- **${heading}`));
   if (!line) throw new Error(`No design principle "${heading}".`);
   return line;
 }
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-const cites = (ids: readonly string[]) => {
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+export const cites = (ids: readonly string[]) => {
   const unique = [...new Set(ids)];
   return unique.length ? ` Addresses ${unique.join(", ")}.` : "";
 };
 
-/** The sections earlier steps saved in a run. */
-export function designSoFar(run: StepState["run"]): HighLevelDesign {
-  const design: HighLevelDesign = { title: "" };
+/** The sections earlier steps saved in a run, by the step ids of a kind of design. */
+export function sectionsSoFar<D extends { title: string }>(run: StepState["run"], steps: Record<string, string>): D {
+  const design = { title: "" } as D;
   for (const s of run.steps) {
-    const key = HLD_SECTION_STEPS[s.step];
+    const key = steps[s.step];
     if (key && s.answer !== undefined && (s.status === "passed" || s.status === "warned")) (design as unknown as Record<string, unknown>)[key] = s.answer;
   }
   return design;
 }
 
-const confirmedOf = (s: StepState): Requirement[] => s.kit.requirements.list(s.context).filter((r) => r.status === "confirmed");
+/** The sections earlier steps saved in a high-level design run. */
+export const designSoFar = (run: StepState["run"]): HighLevelDesign => sectionsSoFar<HighLevelDesign>(run, HLD_SECTION_STEPS);
+
+export const confirmedOf = (s: StepState): Requirement[] => s.kit.requirements.list(s.context).filter((r) => r.status === "confirmed");
 
 /** What the checks need: the requirements, the design so far, the index and what metadata_impact looked at in this run. */
-function checkEnv(s: StepState): DesignCheckEnv {
+export function checkEnv<D>(s: StepState, design: D): DesignCheckEnv<D> {
   const { kit, context, run } = s;
-  const env: DesignCheckEnv = { requirements: confirmedOf(s), design: designSoFar(run), rules: checkRules(contextLanguage(kit.contexts, context)) };
+  const env: DesignCheckEnv<D> = {
+    requirements: confirmedOf(s),
+    design,
+    rules: checkRules(contextLanguage(kit.contexts, context)),
+    document: (id) => kit.contexts.getDocument(context, id),
+  };
   const index = kit.index;
   if (index && readySources(index).length) {
     // The source the user confirmed the scope in, or the newest one.
@@ -120,6 +142,15 @@ function checkEnv(s: StepState): DesignCheckEnv {
   }
   return env;
 }
+
+const HLD: DesignKind<HighLevelDesign> = {
+  name: "high-level design",
+  steps: HLD_SECTION_STEPS,
+  openNote(design, confirmed) {
+    const open = unaddressed(design, confirmed).filter((r) => r.priority === "must");
+    return open.length ? `Must requirements no section addresses yet: ${open.map((r) => r.id).join(", ")}.` : undefined;
+  },
+};
 
 const SECTIONS: SectionSpec<any>[] = [
   {
@@ -293,12 +324,12 @@ const SECTIONS: SectionSpec<any>[] = [
 ];
 
 /** A section as the brief shows it: its JSON, cut when it is very long. */
-function sectionJson(value: unknown): string {
+export function sectionJson(value: unknown): string {
   const json = JSON.stringify(value);
   return json.length > 20_000 ? `${json.slice(0, 20_000)}... (cut here: the section is long)` : json;
 }
 
-function sectionStep<T>(spec: SectionSpec<T>): StepDefinition<T> {
+export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T, D>, kind: DesignKind<D>): StepDefinition<T> {
   return {
     id: spec.id,
     title: spec.title,
@@ -306,33 +337,35 @@ function sectionStep<T>(spec: SectionSpec<T>): StepDefinition<T> {
     schema: spec.schema,
     brief(s) {
       const confirmed = confirmedOf(s);
-      const design = designSoFar(s.run);
-      const open = unaddressed(design, confirmed).filter((r) => r.priority === "must");
+      const design = sectionsSoFar<D>(s.run, kind.steps);
+      const open = (spec.openNote ?? spec.traces) ? kind.openNote(design, confirmed) : undefined;
+      const extra = spec.extra?.(design);
       const docs = s.kit.contexts.documents(s.context);
       const earlier = (spec.uses ?? []).filter((k) => design[k] !== undefined);
       return [
-        `Write the "${spec.title}" section of the high-level design: ${spec.guidance}`,
+        `Write the "${spec.title}" section of the ${kind.name}: ${spec.guidance}`,
         ...(spec.principles?.length ? [spec.principles.map(principle).join("\n")] : []),
         ...(spec.industry ? [industryBlock(s.industry).trim()].filter(Boolean) : []),
         confirmed.length
           ? `Confirmed requirements${spec.traces ? " (cite the ids each item addresses; only these)" : ""}:\n${requirementsToText(confirmed)}`
           : "No requirement is confirmed: base the section on the inputs.",
-        ...(spec.traces && open.length ? [`Must requirements no section addresses yet: ${open.map((r) => r.id).join(", ")}.`] : []),
-        ...earlier.map((k) => `The ${k} section, as saved:\n${sectionJson(design[k])}`),
+        ...(open ? [open] : []),
+        ...(extra ? [extra] : []),
+        ...earlier.map((k) => `The ${k} section, as saved:\n${sectionJson((design as Record<string, unknown>)[k])}`),
         `Context documents (read them with context_get):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
         "Write only what the inputs, the index or the earlier sections support; mark the rest as an assumption or an open question. Give API names as the index has them. Leave out an optional field rather than filling it with a placeholder.",
       ].join("\n\n");
     },
     async submit(answer, s): Promise<StepOutcome> {
       const masked = await maskDeep(s.kit.masker, s.context, answer);
-      const findings = spec.check(masked, checkEnv(s));
+      const findings = spec.check(masked, checkEnv(s, sectionsSoFar<D>(s.run, kind.steps)));
       if (findings.some((f) => f.level === "error")) return { kind: "retry", attempt: true, findings };
       return { kind: "passed", findings, summary: spec.summary(masked), saved: masked };
     },
   };
 }
 
-export const hldSectionSteps: StepDefinition[] = SECTIONS.map((s) => sectionStep(s) as StepDefinition);
+export const hldSectionSteps: StepDefinition[] = SECTIONS.map((s) => sectionStep(s, HLD) as StepDefinition);
 
 const gapSchema = z.object({ requirementId: z.string().regex(/^R[1-9]\d{0,5}$/, "use a requirement id such as R1"), reason: z.string().trim().min(3).max(500) }).strict();
 type AssembleAnswer = { title: string; gaps: RequirementGap[] };

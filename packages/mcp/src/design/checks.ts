@@ -3,7 +3,7 @@
 // stay visible, info is for the agent. Components the design calls existing are looked up in
 // the metadata index; requirement ids must be confirmed ones.
 
-import type { IndexedComponent, Requirement } from "@sf-agent-po/core";
+import type { IndexedComponent, Requirement, SourceDocument } from "@sf-agent-po/core";
 import type { Finding } from "../backlog.js";
 import { hash } from "../artifacts.js";
 import { languageFinding, type CheckRules } from "../checks.js";
@@ -24,16 +24,18 @@ import {
   type SolutionSection,
 } from "./schema.js";
 
-export interface DesignCheckEnv {
+export interface DesignCheckEnv<D = HighLevelDesign> {
   /** The confirmed requirements. */
   requirements: readonly Requirement[];
   /** The sections the earlier steps saved. */
-  design: HighLevelDesign;
+  design: D;
   rules: CheckRules;
   /** A component of the index, by type and API name as the agent wrote it; absent when nothing is indexed. */
   lookup?: (type: string, name: string) => IndexedComponent | undefined;
   /** Whether metadata_impact looked at a component during this run. */
   impactChecked?: (type: string, name: string) => boolean;
+  /** A document of the context, by id. */
+  document?: (id: string) => SourceDocument | undefined;
 }
 
 /** Metadata types the index holds, which existing components are checked against. */
@@ -42,7 +44,7 @@ export const INDEXED_TYPES = [
   "LightningComponentBundle", "AuraDefinitionBundle", "FlexiPage", "CustomApplication", "CustomTab", "WorkflowRule", "NamedCredential", "ExternalCredential",
   "ConnectedApp", "CustomMetadata", "PlatformEventChannel", "QuickAction", "ApexPage",
 ] as const;
-const squash = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+export const squash = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
 const TYPE_ALIASES: Record<string, string> = {
   ...Object.fromEntries(INDEXED_TYPES.map((t) => [squash(t), t])),
   object: "CustomObject", standardobject: "CustomObject", field: "CustomField", customfields: "CustomField", recordtypes: "RecordType", validation: "ValidationRule",
@@ -61,24 +63,24 @@ export const indexedType = (type: string): string | undefined => TYPE_ALIASES[sq
  */
 export const impactKey = (type: string, realName: string) => hash(`${indexedType(type) ?? squash(type)}:${realName.trim().toLowerCase()}`).slice(0, 32);
 
-const error = (where: string, message: string): Finding => ({ level: "error", where, message });
-const warning = (where: string, message: string): Finding => ({ level: "warning", where, message });
-const info = (where: string, message: string): Finding => ({ level: "info", where, message });
+export const error = (where: string, message: string): Finding => ({ level: "error", where, message });
+export const warning = (where: string, message: string): Finding => ({ level: "warning", where, message });
+export const info = (where: string, message: string): Finding => ({ level: "info", where, message });
 
 /** A custom object's API name: custom, metadata type, platform event, external or big object. */
 export const CUSTOM_OBJECT = /__(c|mdt|e|x|b)$/i;
-const CUSTOM_FIELD = /__c$/i;
-const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+export const CUSTOM_FIELD = /__c$/i;
+export const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** Unknown or unconfirmed requirement ids, as errors. */
-function requirementFindings(env: DesignCheckEnv, where: string, ids: readonly string[]): Finding[] {
+export function requirementFindings(env: DesignCheckEnv<unknown>, where: string, ids: readonly string[]): Finding[] {
   const confirmed = new Set(env.requirements.map((r) => r.id));
   const unknown = [...new Set(ids)].filter((id) => !confirmed.has(id));
   return unknown.length ? [error(where, `${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not confirmed requirement(s): cite only the ids the brief lists.`)] : [];
 }
 
 /** Repeated local ids (C1, A1...), as errors. */
-function repeatedIds(items: readonly { id: string }[], what: string): Finding[] {
+export function repeatedIds(items: readonly { id: string }[], what: string): Finding[] {
   const seen = new Set<string>();
   const twice = new Set<string>();
   for (const i of items) (seen.has(i.id) ? twice : seen).add(i.id);
@@ -86,7 +88,7 @@ function repeatedIds(items: readonly { id: string }[], what: string): Finding[] 
 }
 
 /** The language warning for a section, on the text the agent wrote: not the fixed words, ids or API names. */
-const language = (env: DesignCheckEnv, section: unknown, where: string): Finding[] => {
+export const language = (env: DesignCheckEnv<unknown>, section: unknown, where: string): Finding[] => {
   const texts = stringsOf(section).filter((t) => !FIXED_WORDS.has(t) && !/^[\w.-]+$/.test(t));
   const f = languageFinding(texts, env.rules.language, where);
   return f ? [f] : [];
@@ -97,7 +99,7 @@ const language = (env: DesignCheckEnv, section: unknown, where: string): Finding
  * describes something that does not exist), info for a standard one, which a source often
  * holds only when something references it.
  */
-function existence(env: DesignCheckEnv, where: string, type: string, name: string, custom: boolean): Finding[] {
+export function existence(env: DesignCheckEnv<unknown>, where: string, type: string, name: string, custom: boolean): Finding[] {
   if (!env.lookup || env.lookup(type, name)) return [];
   return custom
     ? [error(where, `${type} ${name} is not in the metadata index: check its API name with metadata_search, or mark it new.`)]
@@ -105,7 +107,7 @@ function existence(env: DesignCheckEnv, where: string, type: string, name: strin
 }
 
 /** Errors as warnings: for a check that cannot be fixed at this step (an earlier section failed). */
-const soften = (findings: Finding[]): Finding[] => findings.map((f) => (f.level === "error" ? { ...f, level: "warning" } : f));
+export const soften = (findings: Finding[]): Finding[] => findings.map((f) => (f.level === "error" ? { ...f, level: "warning" } : f));
 
 /** A field type as the Metadata API names it, from what the agent wrote ("Text Area", "Lookup Relationship", "Number(18,0)"). */
 const FIELD_TYPE_ALIASES: Record<string, string> = {
@@ -116,10 +118,10 @@ const FIELD_TYPE_ALIASES: Record<string, string> = {
 export const fieldType = (type: string): string | undefined => FIELD_TYPE_ALIASES[squash(type.replace(/\(.*\)/, ""))];
 
 /** A field's API name without its object ("Policy__c.Status__c" written in Policy__c's fields). */
-const fieldName = (object: string, field: string) => (field.toLowerCase().startsWith(`${object.toLowerCase()}.`) ? field.slice(object.length + 1) : field);
+export const fieldName = (object: string, field: string) => (field.toLowerCase().startsWith(`${object.toLowerCase()}.`) ? field.slice(object.length + 1) : field);
 
 /** Whether a name looks custom for its type: objects and fields by their suffix, everything else is the org's own. */
-const customName = (type: string, name: string) =>
+export const customName = (type: string, name: string) =>
   type === "CustomObject" ? CUSTOM_OBJECT.test(name) : type === "CustomField" ? CUSTOM_FIELD.test(name) : true;
 
 export function checkContext(s: ContextSection, env: DesignCheckEnv): Finding[] {
@@ -130,7 +132,7 @@ export function checkContext(s: ContextSection, env: DesignCheckEnv): Finding[] 
   ];
 }
 
-const LEGACY = (c: IndexedComponent | undefined) => c && ((c.type === "Flow" && c.attrs.processType === "Workflow") || c.type === "WorkflowRule");
+export const LEGACY = (c: IndexedComponent | undefined) => c && ((c.type === "Flow" && c.attrs.processType === "Workflow") || c.type === "WorkflowRule");
 
 export function checkCurrentState(s: CurrentStateSection, env: DesignCheckEnv): Finding[] {
   const findings: Finding[] = [];
@@ -289,7 +291,7 @@ export function checkImpact(s: ImpactSection, env: DesignCheckEnv): Finding[] {
   return findings;
 }
 
-export function checkDecisions(s: DecisionsSection, env: DesignCheckEnv): Finding[] {
+export function checkDecisions(s: DecisionsSection, env: DesignCheckEnv<unknown>): Finding[] {
   const findings: Finding[] = [...repeatedIds(s.decisions, "decisions")];
   for (const d of s.decisions) findings.push(...requirementFindings(env, d.id, d.requirementIds));
   if (!s.decisions.length) findings.push(warning("decisions", "No decision is recorded: a design makes some (Flow or Apex, standard or custom, an integration pattern)."));
