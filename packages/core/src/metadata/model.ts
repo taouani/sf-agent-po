@@ -44,10 +44,12 @@ export type EdgeKind = (typeof EDGE_KINDS)[number];
  * many things ("System.debug") that only might be a class or an object.
  * With `field` alone, a custom field named without its object (reached through something the
  * reader cannot type, or named in a string): linked only when the component has no other link
- * to a field of that name and one object alone has it (Foo__pc is always Account's).
+ * to a field of that name and one object alone has it (Foo__pc is always Account's). With
+ * `among`, it is a field of each of those objects that has it (an email's recipient is a
+ * contact, a lead or a user).
  */
 export type Ref =
-  | { kind: EdgeKind; field: string }
+  | { kind: EdgeKind; field: string; among?: readonly string[] }
   | { kind: EdgeKind; object: string; path?: string; known?: boolean }
   | { kind: EdgeKind; type: ComponentType | readonly ComponentType[]; name: string; known?: boolean };
 

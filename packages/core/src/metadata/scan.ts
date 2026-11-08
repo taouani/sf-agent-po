@@ -235,7 +235,20 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
       const content = await readFile(path.join(root, file), "utf8");
       if (what.kind === "markup") {
-        add(readMarkup(what.type!, what.object, content, file), file);
+        // A template's subject and plain text, in its -meta.xml, hold merge fields too.
+        let extra = "";
+        if (what.type === "EmailTemplate" && files.has(`${file}-meta.xml`)) {
+          const meta = await readFile(path.join(root, `${file}-meta.xml`), "utf8").catch(() => "");
+          if (meta.length <= MAX_FILE_BYTES) {
+            try {
+              const t = obj(parseMetadataXml(meta).EmailTemplate);
+              extra = [t.subject, t.textOnly].filter((v): v is string => typeof v === "string").join("\n");
+            } catch {
+              // An unreadable -meta.xml leaves the body's merge fields.
+            }
+          }
+        }
+        add(readMarkup(what.type!, what.object, content, file, extra), file);
         knownHome(file);
         continue;
       }

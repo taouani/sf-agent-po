@@ -278,7 +278,7 @@ export function linkObjects(components: readonly ParsedComponent[]): {
   };
 
   /** Fields named without their object, linked once every other link is known. */
-  const byName: { from: ParsedEdge["from"]; field: string; kind: EdgeKind }[] = [];
+  const byName: { from: ParsedEdge["from"]; field: string; kind: EdgeKind; among?: readonly string[] }[] = [];
   for (const c of components) {
     const from = { type: c.type, name: c.name };
     if (c.parent) edges.push({ from, to: need(c.parentType ?? "CustomObject", c.parent), kind: "part_of" });
@@ -290,7 +290,7 @@ export function linkObjects(components: readonly ParsedComponent[]): {
       if (typeof c.attrs.controllingField === "string" && c.parent) readsField(from, `${c.parent}.${c.attrs.controllingField}`);
     }
     for (const ref of c.refs ?? []) {
-      if ("field" in ref) byName.push({ from, field: ref.field, kind: ref.kind });
+      if ("field" in ref) byName.push({ from, field: ref.field, kind: ref.kind, ...(ref.among ? { among: ref.among } : {}) });
       else if ("type" in ref) {
         const types = typeof ref.type === "string" ? [ref.type] : ref.type;
         const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? (ref.known ? undefined : types[0]);
@@ -317,15 +317,15 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     const owners = new Map<string, string[]>();
     for (const m of fields.values()) for (const [field, f] of m) owners.set(field, [...(owners.get(field) ?? []), f.parent!]);
     const reached = new Set(edges.filter((e) => e.to.type === "CustomField").map((e) => `${componentKey(e.from.type, e.from.name)}>${e.to.name.slice(e.to.name.lastIndexOf(".") + 1).toLowerCase()}`));
-    for (const { from, field, kind } of byName) {
+    for (const { from, field, kind, among } of byName) {
       const lower = field.toLowerCase();
       if (reached.has(`${componentKey(from.type, from.name)}>${lower}`)) continue;
-      // An object of that name (Policy__c.SObjectType) is not a field.
-      if (objectNamed(field)) continue;
-      const on = /__pc$/i.test(field) ? ["Account"] : owners.get(lower);
-      if (on?.length !== 1) continue;
-      readsField(from, `${on[0]}.${field}`, kind);
-      reached.add(`${componentKey(from.type, from.name)}>${lower}`);
+      // An object of that name (Policy__c.SObjectType, a managed object only referenced) is not a field.
+      if (objectNamed(field) || missing.has(componentKey("CustomObject", field))) continue;
+      const owning = /__pc$/i.test(field) ? ["Account"] : (owners.get(lower) ?? []);
+      const on = among ? owning.filter((o) => among.some((a) => a.toLowerCase() === o.toLowerCase())) : owning.length === 1 ? owning : [];
+      for (const o of on) readsField(from, `${o}.${field}`, kind);
+      if (on.length) reached.add(`${componentKey(from.type, from.name)}>${lower}`);
     }
   }
   // A person account field (Account.Foo__pc) is its contact field (Contact.Foo__c) seen from the account.
