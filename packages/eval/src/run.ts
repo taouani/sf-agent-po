@@ -127,6 +127,13 @@ export interface StepTries {
   accepted: boolean;
   /** The step failed its checks after the last attempt allowed, and the run went on without it. */
   failed?: boolean;
+  /** The errors that sent its answers back, as the server listed them: what to fix in the briefs or the checks. */
+  errors?: string[];
+}
+
+/** The ERROR lines of a reply that sent an answer back. */
+export function replyErrors(reply: string): string[] {
+  return reply.split("\n").flatMap((l) => (l.startsWith("- ERROR ") ? [l.slice(2).trim()] : []));
 }
 
 /** The share of steps whose first counted answer was accepted, or undefined with no steps. */
@@ -231,8 +238,11 @@ async function runSection(
       const step = steps.get(args.step) ?? { step: args.step, sentBack: 0, accepted: false };
       steps.set(args.step, step);
       const outcome = submitOutcome(args.step, r.text);
-      if (outcome === "sent back") step.sentBack++;
-      else if (outcome === "failed") (step.sentBack++, (step.failed = true));
+      if (outcome === "sent back" || outcome === "failed") {
+        step.sentBack++;
+        if (outcome === "failed") step.failed = true;
+        step.errors = [...(step.errors ?? []), ...replyErrors(r.text)];
+      }
       else if (outcome !== "not counted") step.accepted = true;
       const id = outcome === "passed" ? workflowSave(args.step, r.text) : undefined;
       if (id) saved = { id, tool: "workflow_submit", result: r.text };
