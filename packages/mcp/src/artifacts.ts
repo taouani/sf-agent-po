@@ -20,6 +20,8 @@ export interface ArtifactMeta {
   jira?: JiraMapping;
   /** Identifies the saved version: a hash of the content unless the caller gives one. */
   fingerprint?: string;
+  /** When this version's content was saved: a save with unchanged content, or a publish, keeps it. */
+  savedAt?: string;
   [key: string]: unknown;
 }
 
@@ -90,6 +92,7 @@ export function saveArtifact(contexts: ContextRepository, context: string, input
       status,
       sourceIds: input.sourceIds ?? prev?.sourceIds,
       fingerprint,
+      savedAt: changed ? new Date().toISOString() : (prev?.savedAt ?? existing!.updatedAt),
     };
     return { kind: input.kind, title: input.title, source, content: input.content, metadata, masked: true };
   }) as Artifact;

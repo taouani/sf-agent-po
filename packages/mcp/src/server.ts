@@ -4,7 +4,18 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type ContextRepository, decodeImage, DOCUMENT_KINDS, type Masker, type MetadataIndex, type NewDocument, type SourceDocument, type TextRecognizer } from "@sf-agent-po/core";
+import {
+  type ContextRepository,
+  decodeImage,
+  DOCUMENT_KINDS,
+  type Masker,
+  type MetadataIndex,
+  type NewDocument,
+  type RequirementRepository,
+  type SourceDocument,
+  type TextRecognizer,
+  type WorkflowRepository,
+} from "@sf-agent-po/core";
 import type { AtlassianClient, BackgroundIndexer, LoadError } from "@sf-agent-po/connectors";
 import { loadLocalDocuments, MAX_FILE_BYTES, textDocument } from "@sf-agent-po/connectors";
 import { z } from "zod";
@@ -19,6 +30,7 @@ import { registerScopeTools } from "./scope-tools.js";
 import { registerMetadataTools } from "./metadata-tools.js";
 import { registerAgentPrompts } from "./prompts.js";
 import { registerPublishTools } from "./publish.js";
+import { registerWorkflowTools } from "./workflow/tools.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
 export interface ServerOptions {
@@ -44,6 +56,8 @@ export interface ServerOptions {
   reviewer?: (call: CallContext) => Reviewer;
   /** The metadata index and its background runs: the metadata tools are offered with them. */
   metadata?: { index: MetadataIndex; indexer: BackgroundIndexer };
+  /** The requirements and workflow runs: the workflow tools are offered with them. */
+  workflows?: { requirements: RequirementRepository; runs: WorkflowRepository };
 }
 
 /** Images taken from one folder in one call: each one is a page for the user to check. */
@@ -159,6 +173,9 @@ export function createServer(opts: ServerOptions): McpServer {
     registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
     registerScopeTools(server, { index: opts.metadata.index, contexts, masker, reviewerFor, guard, contextName });
     registerImpactTools(server, { index: opts.metadata.index, contexts, masker, guard, contextName });
+  }
+  if (opts.workflows) {
+    registerWorkflowTools(server, { ...opts.workflows, contexts, masker, reviewerFor, guard, contextName, ...(opts.metadata ? { index: opts.metadata.index } : {}) });
   }
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));

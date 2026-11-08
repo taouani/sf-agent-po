@@ -26,6 +26,17 @@ export {
   type RequirementPriority,
   type RequirementStatus,
 } from "./store/requirements.js";
+export {
+  WORKFLOW_STEP_STATUSES,
+  WorkflowRepository,
+  WorkflowRunChangedError,
+  type StepFinding,
+  type StepUpdate,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type WorkflowStep,
+  type WorkflowStepStatus,
+} from "./store/workflows.js";
 export { importLegacyWorkspace, parseLegacyContext, type ImportReport } from "./store/import.js";
 export {
   BUILTIN_CONTENT_DIR,

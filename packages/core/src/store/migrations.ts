@@ -231,4 +231,37 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    name: "workflow runs",
+    sql: `
+      -- Guided workflows (phase 4): a run is one workflow on one context, made of steps the
+      -- server checks in order. Its state is on disk, so a run can be resumed in a new chat.
+      -- answer and findings are masked, like every document.
+      CREATE TABLE workflow_run (
+        id           TEXT PRIMARY KEY,
+        context      TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        workflow     TEXT NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('open', 'done', 'closed')),
+        options      TEXT NOT NULL DEFAULT '{}',   -- JSON: focus (masked), industry
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+      -- At most one open run of a workflow per context.
+      CREATE UNIQUE INDEX workflow_run_open ON workflow_run (context, workflow) WHERE status = 'open';
+      CREATE TABLE workflow_step (
+        run          TEXT NOT NULL REFERENCES workflow_run(id) ON DELETE CASCADE,
+        seq          INTEGER NOT NULL,
+        step         TEXT NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('pending', 'passed', 'warned', 'failed')),
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        answer       TEXT,                         -- JSON, masked
+        findings     TEXT NOT NULL DEFAULT '[]',   -- JSON array of {level, where, message}
+        summary      TEXT,
+        updated_at   TEXT NOT NULL,
+        PRIMARY KEY (run, seq),
+        UNIQUE (run, step)
+      );
+    `,
+  },
 ];

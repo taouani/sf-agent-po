@@ -122,6 +122,75 @@ async function describeScope(pieces: Pieces, snap: SnapshotInfo, scope: Metadata
   return out.join("\n\n");
 }
 
+/** The source was indexed again or removed while the user decided: the user's choice could not be kept. */
+export class SourceGoneError extends Error {
+  constructor(source: string) {
+    super(`${source} is not indexed any more, so the scope could not be kept. Index it again with metadata_index.`);
+  }
+}
+
+/** What a scope proposal came to: `confirmed` when the user kept objects and the scope was stored. */
+export interface ScopeOutcome {
+  status: "confirmed" | "rejected" | "expired" | "empty";
+  /** For the model, masked. */
+  text: string;
+  stored?: StoredScope;
+}
+
+/**
+ * Asks the user to confirm the objects a piece of work touches, and keeps what they confirm
+ * with the context (scope_propose, and the scope step of a workflow).
+ */
+export async function confirmScope(
+  kit: Pick<ScopeKit, "index" | "contexts" | "masker" | "reviewerFor">,
+  call: CallContext,
+  context: string,
+  { source, objects, reason }: { source?: string; objects: readonly string[]; reason?: string },
+): Promise<ScopeOutcome> {
+  const { index, contexts } = kit;
+  const snap = pick(index, source);
+  const proposal = index.scope(snap.id, objects, { hops: 2 });
+  if (!proposal.objects.length) {
+    const near = proposal.unknown.flatMap((u) => index.search(snap.id, u, { types: ["CustomObject"], limit: 3 }).map((c) => c.name));
+    throw new Error(`None of these objects is in ${snap.source}: ${proposal.unknown.join(", ")}.${near.length ? ` Close matches: ${[...new Set(near)].join(", ")}.` : ""}`);
+  }
+  const decision = await kit.reviewerFor(call).review({
+    kind: "scope",
+    title: context,
+    source: snap.source,
+    ...(reason?.trim() ? { reason: reason.trim() } : {}),
+    proposed: proposal.objects.map((o) => proposedChoice(index, snap.id, o)),
+    suggested: proposal.neighbours.slice(0, MAX_SUGGESTED).map(suggestedChoice),
+  });
+  const pieces = new Pieces(kit.masker, context);
+  const comment = decision.comment ? `\nThe user's comment: ${await pieces.mask(decision.comment)}` : "";
+  if (decision.status !== "approved") {
+    const why = decision.status === "rejected" ? "The user rejected this scope" : "The user did not confirm the scope in time, or closed the page";
+    return { status: decision.status === "rejected" ? "rejected" : "expired", text: `${why}; the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}` };
+  }
+  // The source may have been indexed again while the user decided: use its newest snapshot.
+  const now = readySources(index).find((x) => x.source === snap.source);
+  if (!now) throw new SourceGoneError(snap.source);
+  const chosen = [...(decision.selected ?? []), ...(decision.added ?? [])];
+  const confirmed = index.scope(now.id, chosen, { hops: 2 });
+  const typedUnknown = (decision.added ?? []).filter((a) => confirmed.unknown.includes(a)).length;
+  if (!confirmed.objects.length) {
+    const typed = typedUnknown ? ` (the ${typedUnknown} object name(s) they typed are not in the index)` : "";
+    return { status: "empty", text: `The user kept no object${typed}, so the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}` };
+  }
+  const stored: StoredScope = { source: now.source, objects: confirmed.objects.map((o) => o.name), confirmedAt: new Date().toISOString() };
+  contexts.updateSettings(context, { scope: stored });
+  const added = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.id === o.id) && !decision.selected?.some((x) => x.toLowerCase() === o.name.toLowerCase())).map((o) => o.name);
+  const ticked = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.name === o.name) && decision.selected?.includes(o.name)).map((o) => o.name);
+  const changed = [
+    ...(ticked.length ? [`The user added linked objects: ${ticked.join(", ")}.`] : []),
+    ...(added.length ? [`The user added: ${added.join(", ")}.`] : []),
+    ...(typedUnknown ? [`${typedUnknown} object name(s) the user typed are not in the index.`] : []),
+    ...proposal.objects.filter((o) => !decision.selected?.includes(o.name)).map((o) => `The user removed ${o.name}.`),
+  ].join(" ");
+  return { status: "confirmed", stored, text: await describeScope(pieces, now, { ...confirmed, unknown: [] }, `The user confirmed the scope of "${context}".${changed ? ` ${changed}` : ""}${comment}`) };
+}
+
 export function registerScopeTools(server: McpServer, kit: ScopeKit): void {
   const { index, contexts, guard, contextName } = kit;
 
@@ -141,49 +210,9 @@ export function registerScopeTools(server: McpServer, kit: ScopeKit): void {
       },
       annotations: { readOnlyHint: false },
     },
-    guard(async ({ context, source, objects, reason }: { context: string; source?: string; objects: string[]; reason?: string }, call) => {
-      const snap = pick(index, source);
-      const proposal = index.scope(snap.id, objects, { hops: 2 });
-      if (!proposal.objects.length) {
-        const near = proposal.unknown.flatMap((u) => index.search(snap.id, u, { types: ["CustomObject"], limit: 3 }).map((c) => c.name));
-        throw new Error(`None of these objects is in ${snap.source}: ${proposal.unknown.join(", ")}.${near.length ? ` Close matches: ${[...new Set(near)].join(", ")}.` : ""}`);
-      }
-      const decision = await kit.reviewerFor(call).review({
-        kind: "scope",
-        title: context,
-        source: snap.source,
-        ...(reason?.trim() ? { reason: reason.trim() } : {}),
-        proposed: proposal.objects.map((o) => proposedChoice(index, snap.id, o)),
-        suggested: proposal.neighbours.slice(0, MAX_SUGGESTED).map(suggestedChoice),
-      });
-      const pieces = new Pieces(kit.masker, context);
-      const comment = decision.comment ? `\nThe user's comment: ${await pieces.mask(decision.comment)}` : "";
-      if (decision.status !== "approved") {
-        const why = decision.status === "rejected" ? "The user rejected this scope" : "The user did not confirm the scope in time, or closed the page";
-        return text(`${why}; the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}`);
-      }
-      // The source may have been indexed again while the user decided: use its newest snapshot.
-      const now = readySources(index).find((x) => x.source === snap.source);
-      if (!now) throw new Error(`${snap.source} is not indexed any more, so the scope could not be kept. Index it again with metadata_index.`);
-      const chosen = [...(decision.selected ?? []), ...(decision.added ?? [])];
-      const confirmed = index.scope(now.id, chosen, { hops: 2 });
-      const typedUnknown = (decision.added ?? []).filter((a) => confirmed.unknown.includes(a)).length;
-      if (!confirmed.objects.length) {
-        const typed = typedUnknown ? ` (the ${typedUnknown} object name(s) they typed are not in the index)` : "";
-        return text(`The user kept no object${typed}, so the context keeps ${storedScope(contexts, context) ? "its previous scope" : "no scope"}.${comment}`);
-      }
-      const stored: StoredScope = { source: now.source, objects: confirmed.objects.map((o) => o.name), confirmedAt: new Date().toISOString() };
-      contexts.updateSettings(context, { scope: stored });
-      const added = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.id === o.id) && !decision.selected?.some((x) => x.toLowerCase() === o.name.toLowerCase())).map((o) => o.name);
-      const ticked = confirmed.objects.filter((o) => !proposal.objects.some((p) => p.name === o.name) && decision.selected?.includes(o.name)).map((o) => o.name);
-      const changed = [
-        ...(ticked.length ? [`The user added linked objects: ${ticked.join(", ")}.`] : []),
-        ...(added.length ? [`The user added: ${added.join(", ")}.`] : []),
-        ...(typedUnknown ? [`${typedUnknown} object name(s) the user typed are not in the index.`] : []),
-        ...proposal.objects.filter((o) => !decision.selected?.includes(o.name)).map((o) => `The user removed ${o.name}.`),
-      ].join(" ");
-      return text(await describeScope(pieces, now, { ...confirmed, unknown: [] }, `The user confirmed the scope of "${context}".${changed ? ` ${changed}` : ""}${comment}`));
-    }),
+    guard(async ({ context, source, objects, reason }: { context: string; source?: string; objects: string[]; reason?: string }, call) =>
+      text((await confirmScope(kit, call, context, { source, objects, ...(reason !== undefined ? { reason } : {}) })).text),
+    ),
   );
 
   server.registerTool(

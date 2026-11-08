@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ContextRepository, Database, MIGRATIONS, RequirementRepository, RequirementsChangedError, documentId, schemaVersion } from "../src/index.js";
+import { ContextRepository, Database, MIGRATIONS, RequirementRepository, RequirementsChangedError, WorkflowRepository, documentId, schemaVersion } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "sf-agent-core-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -238,6 +238,40 @@ describe("RequirementRepository", () => {
     new ContextRepository(db).delete("a");
     expect(repo.list("a", { dropped: true })).toEqual([]);
     expect(repo.list("b")).toHaveLength(1);
+    db.close();
+  });
+});
+
+describe("WorkflowRepository", () => {
+  it("starts runs with pending steps, one open run per workflow, and records steps", () => {
+    const db = freshDb();
+    const runs = new WorkflowRepository(db);
+    const run = runs.start("c", "po_backlog", ["requirements", "backlog"], { focus: "[PERSON_1]" });
+    expect(run).toMatchObject({ context: "c", workflow: "po_backlog", status: "open", options: { focus: "[PERSON_1]" } });
+    expect(run.id).toMatch(/^run-[0-9a-f]{12}$/);
+    expect(run.steps.map((s) => [s.step, s.status, s.attempts])).toEqual([["requirements", "pending", 0], ["backlog", "pending", 0]]);
+    expect(runs.open("c", "po_backlog")?.id).toBe(run.id);
+
+    const after = runs.record(run.id, "requirements", { status: "warned", attempts: 1, answer: { confirmed: ["R1"] }, findings: [{ level: "warning", where: "R1", message: "m" }], summary: "1 confirmed" });
+    expect(after.steps[0]).toMatchObject({ status: "warned", attempts: 1, answer: { confirmed: ["R1"] }, summary: "1 confirmed" });
+    expect(runs.record(run.id, "backlog", { status: "pending", findings: [] }).steps[1]).toMatchObject({ attempts: 0, findings: [] });
+    expect(() => runs.record(run.id, "nope", { status: "passed", findings: [] })).toThrow(/no step "nope"/);
+
+    // A new run closes the open one; a finished run takes no more records.
+    const second = runs.start("c", "po_backlog", ["requirements"]);
+    expect(runs.get(run.id)?.status).toBe("closed");
+    expect(() => runs.record(run.id, "requirements", { status: "passed", findings: [] })).toThrow(/closed/);
+    expect(runs.finish(second.id, "done").status).toBe("done");
+    expect(() => runs.finish(second.id, "done")).toThrow(/not open/);
+    expect(runs.open("c", "po_backlog")).toBeUndefined();
+    expect(runs.list("c").map((r) => r.id)).toEqual([second.id, run.id]);
+    expect(runs.get("../x")).toBeUndefined();
+    expect(() => runs.start("c", "x", [])).toThrow(/at least one step/);
+    expect(() => runs.start("c", "x", ["a", "a"])).toThrow(/different names/);
+
+    new ContextRepository(db).delete("c");
+    expect(runs.list("c")).toEqual([]);
+    expect(db.db.prepare("SELECT count(*) AS n FROM workflow_step").get()).toEqual({ n: 0 });
     db.close();
   });
 });
