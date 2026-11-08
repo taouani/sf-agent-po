@@ -204,23 +204,29 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           let traceBody: ReturnType<Masker["unmask"]> | undefined;
           let traceStorage: ReturnType<typeof unmaskStorage> | undefined;
           let tracePage: Awaited<ReturnType<AtlassianClient["getPageSummary"]>> | undefined;
+          const traceMeta = doc.metadata.traceability as { pageId?: string; url?: string; pageVersion?: number } | undefined;
           if (matrix) {
-            const masked = `${doc.title}: traceability matrix`;
+            // Named after the design page as written, within Confluence's 255 characters.
+            const masked = `${args.title?.trim() || doc.title}: traceability matrix`;
             const content = renderTrace(matrix, masked);
-            traceTitle = masker.unmask(context, masked);
+            const named = masker.unmask(context, masked);
+            traceTitle = { ...named, text: named.text.length > 255 ? `${named.text.slice(0, 230).trimEnd()}… traceability matrix` : named.text };
             traceBody = masker.unmask(context, content);
             traceStorage = unmaskStorage(masker, context, markdownToStorage(content));
-            const known = (doc.metadata.traceability as { pageId?: string } | undefined)?.pageId;
-            // Gone or out of reach: it is created again.
+            const known = traceMeta?.pageId;
+            // Deleted, or out of reach (moved to a space the token cannot read): it is created again.
             tracePage =
               known && existing
                 ? await client.getPageSummary(known).catch((err: unknown) => {
-                    if (err instanceof AtlassianError && err.status === 404) return undefined;
+                    if (err instanceof AtlassianError && (err.status === 404 || err.status === 403)) return undefined;
                     throw err instanceof AtlassianError ? new Error(`Confluence did not return the traceability matrix page (HTTP ${err.status}). Nothing was written.`) : err;
                   })
                 : undefined;
             if (tracePage) shownTitles.push(tracePage.title);
-            target += tracePage ? `, and replace the content of its traceability matrix page "${tracePage.title}"` : ", and a new page under it for its traceability matrix";
+            const edited = tracePage && traceMeta?.pageVersion !== undefined && traceMeta.pageVersion !== tracePage.version;
+            target += tracePage
+              ? `, and replace the content of its traceability matrix page "${tracePage.title}"${edited ? " (edited in Confluence since it was last published: those edits will be replaced)" : ""}`
+              : ", and a new page under it for its traceability matrix";
           }
           const trace = traceTitle && traceBody ? `\n\n---\n\n${traceBody.text}` : "";
           const req: PublishRequest = {
@@ -249,10 +255,11 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             status: meta.version === version ? "published" : "changed",
             ...(ownPage ? { confluence: { pageId: page.pageId, url, pageVersion: page.version, artifactVersion: version, publishedAt: new Date().toISOString() } } : {}),
           }));
-          let traced = "";
+          let traced = traceMeta?.url ? ` Its traceability matrix page (${traceMeta.url}) was not updated.` : "";
           if (matrix && traceTitle && traceStorage) {
+            let written: Awaited<ReturnType<AtlassianClient["updatePage"]>> | undefined;
             try {
-              const written = tracePage
+              written = tracePage
                 ? await confluence("write the traceability matrix page", () =>
                     client.updatePage({ pageId: tracePage.pageId, expectedVersion: tracePage.version, title: traceTitle.text, storage: traceStorage.text, message: `Version ${version}` }),
                   )
@@ -260,12 +267,16 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
                     const parent = await client.getPageSummary(page.pageId);
                     return client.createPage({ spaceId: parent.spaceId, parentId: page.pageId, title: traceTitle.text, storage: traceStorage.text });
                   });
-              const traceUrl = pageLink(written.url);
-              updateArtifactMeta(contexts, context, doc, () => ({ traceability: { pageId: written.pageId, url: traceUrl, pageVersion: written.version } }));
-              traced = ` Its traceability matrix (${matrix.rows.length} requirement(s)) is at ${traceUrl}.`;
             } catch (err) {
               const why = (await masker.maskOutputs(context, [(err as Error).message.replace(/ Nothing was written\.$/, "")])).texts[0];
-              traced = ` The traceability matrix page was not written: ${why} Publish again to retry.`;
+              const hint = err instanceof Error && /HTTP 400/.test(err.message) && !tracePage ? " A page with the same title may already be in the space: rename or delete it, or publish with traceability set to false." : " Publish again to retry.";
+              traced = ` The traceability matrix page was not written: ${why}${hint}`;
+            }
+            if (written) {
+              const traceUrl = pageLink(written.url);
+              const page = written;
+              updateArtifactMeta(contexts, context, doc, () => ({ traceability: { pageId: page.pageId, url: traceUrl, pageVersion: page.version } }));
+              traced = ` Its traceability matrix (${matrix.rows.length} requirement(s)) is at ${traceUrl}.`;
             }
           }
           return text(`${existing ? "Updated" : "Created"} the Confluence page for "${doc.title}" (version ${page.version}): ${url}${traced}${await comment()}`);

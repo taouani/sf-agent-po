@@ -39,4 +39,34 @@ describe("traceability matrix", () => {
     expect(md).toContain("Send the letter \\| by post.");
     expect(md).toContain("S1 (PORT-12) Send the letter; PORT-9 Print it");
   });
+
+  it("leaves the backlog's won't-have stories out, matches Jira keys, follows the detailed design's links, and never shows an unmasked title", () => {
+    const db = new Database(":memory:");
+    const contexts = new ContextRepository(db);
+    const requirements = new RequirementRepository(db);
+    contexts.addDocuments("c", [{ kind: "meeting-notes", title: "Call with Karim Benali", source: "old.md", content: "", masked: false }]);
+    const old = contexts.documents("c")[0]!;
+    requirements.save("c", [
+      { kind: "functional", statement: "Send the letter.", priority: "must", status: "confirmed", sourceIds: [old.id] },
+      { kind: "functional", statement: "Print the letter.", priority: "should", status: "confirmed", sourceIds: [] },
+    ]);
+    const story = (id: string, requirementIds: string[], priority?: "wont") => ({ id, type: "story" as const, summary: `Story ${id}`, persona: "Agent", want: "to send", benefit: "clients renew", acceptanceCriteria: [{ given: "a", when: "b", then: "c" }], requirementIds, ...(priority ? { priority } : {}) });
+    const linkedBacklog = saveBacklog(contexts, "c", { title: "Linked backlog", epics: [{ id: "E1", summary: "Letters", outcome: "Clients renew on time", stories: [story("S1", ["R1"]), story("S2", ["R2"], "wont")] }] });
+    updateArtifactMeta(contexts, "c", linkedBacklog, () => ({ jira: { projectKey: "PORT", items: { S1: { key: "PORT-12", url: "" } }, links: [] } }));
+    const dd = {
+      title: "Letters",
+      scope: { summary: "", backlogId: linkedBacklog.id, stories: [{ ref: "PORT-12", summary: "Send", requirementIds: ["R1"], acceptanceCriteria: [] }, { ref: "S2", summary: "Print", requirementIds: ["R2"], acceptanceCriteria: [] }] },
+    };
+    const design = saveArtifact(contexts, "c", { kind: "design", title: "Letters DD", content: "# DD", artifactType: "detailed", extra: { design: dd } });
+    // Newer, but not the one the design builds on.
+    saveBacklog(contexts, "c", { title: "Newer backlog", epics: [{ id: "E1", summary: "Other", outcome: "Something else entirely", stories: [story("S9", ["R2"])] }] });
+
+    const m = buildTrace(contexts, requirements, "c", { detailed: design.id });
+    expect(m.from.backlog?.id).toBe(linkedBacklog.id);
+    expect(m.rows[0]!.stories).toEqual([{ id: "S1", summary: "Story S1", jiraKey: "PORT-12" }]);
+    expect(m.rows[0]!.sources).toEqual([{ id: old.id }]);
+    expect(m.rows[1]).toMatchObject({ stories: [], status: "not covered" });
+    expect(renderTrace(m, "Matrix")).not.toContain("Karim");
+  });
 });
+

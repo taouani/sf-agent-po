@@ -55,7 +55,8 @@ export function buildTrace(
   context: string,
   pick: { highLevel?: string; detailed?: string; backlog?: string } = {},
 ): TraceMatrix {
-  const docs = contexts.documents(context);
+  // Masked documents only: an input imported from 0.x and not masked yet has its title in clear.
+  const docs = contexts.documents(context).filter((d) => d.masked);
   const byId = (id: string | undefined, kind: string, key: string, type?: string) => {
     if (id === undefined) return newest(docs, kind, key, type);
     const doc = docs.find((d) => d.id === id);
@@ -63,10 +64,17 @@ export function buildTrace(
     if (!(doc.metadata as Record<string, unknown>)[key]) throw new Error(`${id} was not written by a workflow, so it carries no requirement ids to trace.`);
     return doc;
   };
+  const detailed = byId(pick.detailed, "design", "design", "detailed");
+  // A detailed design names the backlog and the high-level design it builds on: they are its defaults.
+  const scope = (detailed?.metadata as { design?: DetailedDesign } | undefined)?.design?.scope;
+  const linked = (id: string | undefined, kind: string, key: string, type?: string) => {
+    const doc = id ? docs.find((d) => d.id === id) : undefined;
+    return doc && isArtifact(doc, kind, type) && (doc.metadata as Record<string, unknown>)[key] ? doc.id : undefined;
+  };
   const from = {
-    highLevel: byId(pick.highLevel, "design", "design", "high-level"),
-    detailed: byId(pick.detailed, "design", "design", "detailed"),
-    backlog: byId(pick.backlog, "backlog", "backlog"),
+    highLevel: byId(pick.highLevel ?? linked(scope?.highLevelDesignId, "design", "design", "high-level"), "design", "design", "high-level"),
+    detailed,
+    backlog: byId(pick.backlog ?? linked(scope?.backlogId, "backlog", "backlog"), "backlog", "backlog"),
   };
   const hld = from.highLevel && ((from.highLevel.metadata as { design: HighLevelDesign & { gaps?: Gap[] } }).design);
   const dd = from.detailed && ((from.detailed.metadata as { design: DetailedDesign & { gaps?: { story: string; reason: string }[] } }).design);
@@ -78,8 +86,11 @@ export function buildTrace(
   const ddItems = dd ? ddTracedItems(dd) : [];
   const ddStories = dd?.scope?.stories ?? [];
   const ddBuilt = dd ? storyItems(dd) : [];
-  const published = backlog ? allStories(backlog).filter(({ epic, story }) => story.priority !== "wont" && epic.priority !== "wont") : [];
+  const everyStory = backlog ? allStories(backlog) : [];
+  const published = everyStory.filter(({ epic, story }) => story.priority !== "wont" && epic.priority !== "wont");
   const jiraKey = (id: string, own?: string) => backlogMeta?.jira?.items[id]?.key ?? own;
+  // The backlog's stories by id and by Jira key: a detailed design may cite either.
+  const inBacklog = new Set(everyStory.flatMap(({ story }) => [story.id, jiraKey(story.id, story.jiraKey)].filter((x): x is string => Boolean(x))));
   const hasDesign = Boolean(hld || dd);
   const hasStories = Boolean(backlog || ddStories.length);
 
@@ -100,8 +111,8 @@ export function buildTrace(
       const stories = new Map<string, TraceRow["stories"][number]>();
       for (const { story } of published.filter(({ story }) => story.requirementIds?.includes(r.id)))
         stories.set(story.id, { id: story.id, summary: story.summary, ...(jiraKey(story.id, story.jiraKey) ? { jiraKey: jiraKey(story.id, story.jiraKey) } : {}) });
-      // A story of the detailed design that is not in the backlog: its ref may be its Jira key.
-      for (const s of ddStories.filter((s) => s.requirementIds.includes(r.id) && !stories.has(s.ref))) stories.set(s.ref, { id: s.ref, summary: s.summary });
+      // A story of the detailed design the backlog does not know (the backlog decides for its own: won't have, or no longer citing it).
+      for (const s of ddStories.filter((s) => s.requirementIds.includes(r.id) && !inBacklog.has(s.ref))) stories.set(s.ref, { id: s.ref, summary: s.summary });
       const gaps = [
         ...(hld?.gaps ?? []).filter((g) => g.requirementId === r.id).map((g) => `HLD: ${g.reason}`),
         ...(backlog?.gaps ?? []).filter((g) => g.requirementId === r.id).map((g) => `Backlog: ${g.reason}`),

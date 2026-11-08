@@ -289,8 +289,19 @@ describe("traceability matrix", () => {
     expect(again.text).toContain("pages/101");
     expect(seen.at(-1)!.kind === "publish" && (seen.at(-1) as { target: string }).target).toContain('replace the content of its traceability matrix page "VIP flag for Karim Benali: traceability matrix"');
     expect(confluence.pages.size).toBe(2);
-    // Left out on request, and for a design not written by a workflow.
-    await call("confluence_publish", { context: "acme", artifactId: design.id, traceability: false });
+    // Left out on request: the user is told the page is now stale.
+    const without = await call("confluence_publish", { context: "acme", artifactId: design.id, traceability: false });
     expect(confluence.writes).toHaveLength(5);
+    expect(without.text).toMatch(/Its traceability matrix page \(https:\/\/acme\.atlassian\.net\/wiki\/spaces\/ENG\/pages\/101\S*\) was not updated\./);
+    // Deleted in Confluence: created again under the design's page.
+    confluence.pages.delete("101");
+    const recreated = await call("confluence_publish", { context: "acme", artifactId: design.id });
+    expect(recreated.text).toContain("pages/102");
+    expect(seen.at(-1)!.kind === "publish" && (seen.at(-1) as { target: string }).target).toContain("a new page under it for its traceability matrix");
+    // A design saved by hand carries no ids: no matrix.
+    const byHand = await call("design_save", { context: "acme", title: "Hand design", designType: "high-level", content: "# Hand" });
+    await call("confluence_publish", { context: "acme", artifactId: /as (doc-\w+)/.exec(byHand.text)![1]!, spaceKey: "ENG" });
+    expect(confluence.writes.at(-1)!.title).toBe("Hand design");
+    expect(confluence.pages.size).toBe(3);
   });
 });
