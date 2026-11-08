@@ -2,6 +2,13 @@ import type { IndexedComponent, Requirement } from "@sf-agent-po/core";
 import { describe, expect, it } from "vitest";
 import {
   automationSection,
+  checkDdAutomation,
+  checkDdDataModel,
+  ddAutomationSection,
+  ddDataModelSection,
+  ddTestsSection,
+  renderDetailedDesign,
+  type DetailedDesign,
   checkDataModel,
   checkSecurity,
   dataModelSection,
@@ -222,6 +229,49 @@ describe("design checks review fixes", () => {
     expect(md).toContain('  n1["[ORG_1] portal"]');
     expect(md).toContain('  n1 -->|"read #124; write"| n2');
     expect(md).not.toContain("erDiagram");
+  });
+});
+
+describe("detailed design checks", () => {
+  const ddEnv = (extra: Partial<DesignCheckEnv<DetailedDesign>> = {}): DesignCheckEnv<DetailedDesign> => ({ ...(env() as unknown as DesignCheckEnv<DetailedDesign>), design: { title: "" }, ...extra });
+
+  it("refuse unknown keys at the top of a section too", () => {
+    expect(contextSection.safeParse({ goals: ["g"], inScope: ["s"], personas: [{ name: "Agent", internal: true, does: "x" }], scope: "all" }).success).toBe(false);
+    expect(ddTestsSection.safeParse({ acceptance: [], extra: 1 }).success).toBe(false);
+  });
+
+  it("ask each field type for what it needs", () => {
+    const field = (type: string, extra: Record<string, unknown> = {}) => ({ name: "X__c", label: "X", type, status: "new", helpText: "h", access: [{ permissionSet: "P" }], ...extra });
+    const model = ddDataModelSection.parse({
+      objects: [
+        {
+          name: "Policy__c",
+          status: "new",
+          fields: [field("Text"), field("Number", { name: "N__c", precision: 4, scale: 6 }), field("Lookup", { name: "L__c" }), field("Text", { name: "Ok__c", length: 80 }), field("Email", { name: "E__c", access: [] })],
+        },
+      ],
+    });
+    expect(lines(checkDdDataModel(model, ddEnv()))).toEqual([
+      "error Policy__c.X__c: A Text field needs a length from 1 to 255.",
+      "error Policy__c.N__c: The scale (decimal places) cannot be more than the precision.",
+      "error Policy__c.L__c: A relationship field needs relationship: the object it points to, lookup or master-detail, and why.",
+      "warning Policy__c.E__c: No permission set gives access to it: list the field-level security in access.",
+    ]);
+  });
+
+  it("keep one trigger per object and order the flows that share a slot", () => {
+    const trigger = (id: string) => ({ id, name: `T${id}`, kind: "trigger", status: "new", object: "Policy__c", events: ["after update"], responsibility: "r", sharing: "with sharing", userMode: true, bulk: "b", testClass: "Tests", why: "w" });
+    const flow = (id: string) => ({ id, name: `Flow_${id}`, kind: "record-triggered", status: "new", object: "Policy__c", event: "update", timing: "after-save", runAs: "user", steps: ["s"], faultHandling: "f" });
+    const s = ddAutomationSection.parse({ flows: [flow("F1"), flow("F2")], apex: [trigger("AP1"), trigger("AP2")], orderNotes: "n" });
+    const found = lines(checkDdAutomation(s, ddEnv({ lookup: () => component("CustomObject", "Policy__c") })));
+    expect(found).toContain("warning F1, F2: 2 flows run on Policy__c after-save: give each its order (trigger order), or merge them.");
+    expect(found).toContain("warning AP1, AP2: Keep one trigger per object, and put the logic in a handler class.");
+  });
+
+  it("render the sections that failed as not written", () => {
+    const md = renderDetailedDesign({ title: "T" }, []);
+    for (let n = 1; n <= 10; n++) expect(md).toMatch(new RegExp(`^## ${n}\\. `, "m"));
+    expect(md).toContain("## 3. Automation\n\n_Not written");
   });
 });
 

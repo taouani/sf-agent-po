@@ -1,7 +1,7 @@
-// The steps every workflow shares, and the four workflows. The high-level design is written
-// section by section (design-steps.ts); the detailed design and the backlog become steps of
-// their own in later PRs, and until then end with one step that follows the agent's full
-// method and points to the saved design or backlog.
+// The steps every workflow shares, and the four workflows. The designs are written section by
+// section (design-steps.ts, detailed-steps.ts); the backlog becomes steps of its own in a later
+// PR, and until then ends with one step that follows the agent's full method and points to the
+// saved backlog. The method step also ends design runs started before the section steps.
 
 import type { SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { readySources } from "../metadata-tools.js";
 import { backlogSchema, checkBacklog, type Finding } from "../backlog.js";
 import { contextLanguage } from "../checks.js";
 import { assembleStep, hldSectionSteps } from "./design-steps.js";
+import { ddAssembleStep, ddSectionSteps } from "./detailed-steps.js";
 import type { StepDefinition, StepOutcome, StepState, WorkflowDefinition, WorkflowKit } from "./engine.js";
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
@@ -215,8 +216,9 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     id: "sa_detailed_design",
     title: WORKFLOWS.sa_detailed_design.title,
     next: "Show the user the design, and offer to publish it to Confluence with confluence_publish.",
-    steps: (kit) => [requirementsStep, ...withScope(kit), methodStep("sa_detailed_design", { kind: "design", type: "detailed" })] as StepDefinition[],
-    optional: [scopeStep as StepDefinition],
+    steps: (kit) => [requirementsStep, ...withScope(kit), ...ddSectionSteps, ddAssembleStep] as StepDefinition[],
+    // A run started before the design had its section steps ends the old way, with a saved design.
+    optional: [scopeStep as StepDefinition, methodStep("sa_detailed_design", { kind: "design", type: "detailed" }) as StepDefinition],
   },
   po_backlog: {
     id: "po_backlog",

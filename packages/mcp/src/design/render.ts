@@ -10,21 +10,21 @@ export interface RequirementGap {
 }
 
 /** A table cell: one line, with its pipes escaped. */
-const cell = (v: string | number | undefined) => (v === undefined || v === "" ? "" : String(v).replace(/\r?\n+/g, " ").replace(/\|/g, "\\|"));
+export const cell = (v: string | number | undefined) => (v === undefined || v === "" ? "" : String(v).replace(/\r?\n+/g, " ").replace(/\|/g, "\\|"));
 
-function table(head: readonly string[], rows: readonly (readonly (string | number | undefined)[])[]): string {
+export function table(head: readonly string[], rows: readonly (readonly (string | number | undefined)[])[]): string {
   return [`| ${head.join(" | ")} |`, `|${head.map(() => " --- ").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)].join("\n");
 }
 
-const bullets = (items: readonly string[]) => items.map((i) => `- ${i}`).join("\n");
-const ids = (list: readonly string[]) => (list.length ? list.join(", ") : "");
-const NOT_DONE = "_Not written: this step failed its checks or was left out._";
+export const bullets = (items: readonly string[]) => items.map((i) => `- ${i}`).join("\n");
+export const ids = (list: readonly string[]) => (list.length ? list.join(", ") : "");
+export const NOT_DONE = "_Not written: this step failed its checks or was left out._";
 
 /**
  * A Mermaid label, quoted: a quote or a pipe would end it. Brackets stay, inside the quotes, so
  * pseudonyms such as [ORG_1] are still found and replaced by their values when it is published.
  */
-const label = (s: string) => `"${s.replace(/"/g, "#quot;").replace(/\|/g, "#124;").replace(/\s+/g, " ").trim()}"`;
+export const label = (s: string) => `"${s.replace(/"/g, "#quot;").replace(/\|/g, "#124;").replace(/\s+/g, " ").trim()}"`;
 
 const SHAPE = { salesforce: ["[", "]"], external: ["[[", "]]"], user: ["([", "])"], data: ["[(", ")]"] } as const;
 
