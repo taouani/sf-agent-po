@@ -58,13 +58,15 @@ export interface WorkflowDefinition {
   /** What the run ends with, for the model to offer next. */
   next: string;
   steps(kit: WorkflowKit): StepDefinition[];
+  /** Steps a run may hold that `steps` leaves out with this kit (the scope step without metadata). */
+  optional?: StepDefinition[];
 }
 
 const SYMBOL = { passed: "done", warned: "done, with warnings", failed: "FAILED after the last attempt; the user should look at it", pending: "to do" } as const;
 
 /** The steps of a run, by their definitions; a run started by another version may name steps this one lacks. */
 export function stepsOf(workflow: WorkflowDefinition, kit: WorkflowKit, run: WorkflowRun): { def: StepDefinition; state: WorkflowStep }[] {
-  const defs = new Map(workflow.steps(kit).map((d) => [d.id, d]));
+  const defs = new Map([...(workflow.optional ?? []), ...workflow.steps(kit)].map((d) => [d.id, d]));
   return run.steps.map((state) => {
     const def = defs.get(state.step);
     if (!def) throw new Error(`Run ${run.id} has a step "${state.step}" this version does not know. Start the workflow again with restart set to true.`);

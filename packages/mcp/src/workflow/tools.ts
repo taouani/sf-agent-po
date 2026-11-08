@@ -38,14 +38,17 @@ async function maskFindings(kit: WorkflowKit, context: string, findings: readonl
   return findings.map((f, i) => ({ level: f.level, where: texts[2 * i]!, message: texts[2 * i + 1]! }));
 }
 
-/** Parses an answer a host may send as a JSON string. */
+/** Parses an answer a host may send as a JSON string, encoded once or twice. */
 function parseAnswer(answer: unknown): unknown {
-  if (typeof answer !== "string") return answer;
-  try {
-    return JSON.parse(answer) as unknown;
-  } catch {
-    return answer;
+  let value = answer;
+  for (let i = 0; i < 2 && typeof value === "string"; i++) {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      break;
+    }
   }
+  return value;
 }
 
 /**
@@ -56,7 +59,11 @@ export async function submitStep(kit: WorkflowKit, call: CallContext, run: Workf
   const s = stateOf(kit, run, call);
   const steps = stepsOf(s.workflow, kit, run);
   const i = currentStep(run);
-  if (i < 0) return `Every step of run ${run.id} is done. Start a new run with workflow_start (restart true) to do the work again.`;
+  if (i < 0) {
+    // Every step is decided but the run was left open (a run from before runs ended themselves).
+    kit.runs.finish(run.id, "done");
+    return `Every step of run ${run.id} is done. Start a new run with workflow_start to do the work again.`;
+  }
   const { def, state } = steps[i]!;
   if (stepId !== def.id) {
     const known = steps.some((x) => x.def.id === stepId);
@@ -65,25 +72,26 @@ export async function submitStep(kit: WorkflowKit, call: CallContext, run: Workf
   const parsed = def.schema.safeParse(parseAnswer(answer));
   const outcome: StepOutcome = parsed.success ? await def.submit(parsed.data, s) : { kind: "retry", attempt: true, findings: shapeFindings(parsed.error) };
   const findings = await maskFindings(kit, run.context, outcome.findings);
+  // The step must still be as it was when the answer came in: another chat may have moved it.
+  const expected = { status: state.status, attempts: state.attempts };
   const message = outcome.message ? `\n\n${(await kit.masker.maskOutputs(run.context, [outcome.message])).texts[0]}` : "";
 
   if (outcome.kind === "passed") {
     const warned = findings.some((f) => f.level === "warning");
     const summary = (await kit.masker.maskOutputs(run.context, [outcome.summary])).texts[0]!;
-    const next = kit.runs.record(run.id, def.id, { status: warned ? "warned" : "passed", findings, summary, ...(outcome.saved !== undefined ? { answer: outcome.saved } : {}) });
-    const done = currentStep(next) < 0 ? kit.runs.finish(run.id, "done") : next;
+    const done = kit.runs.record(run.id, def.id, { status: warned ? "warned" : "passed", findings, summary, ...(outcome.saved !== undefined ? { answer: outcome.saved } : {}) }, expected);
     const lead = `Step "${def.id}" passed${warned ? " with warnings: tell the user about them" : ""}. ${summary}${findings.length ? `\n${findingsText(findings)}` : ""}${message}`;
     return briefText({ ...s, run: done }, lead);
   }
 
   const attempts = state.attempts + (outcome.attempt ? 1 : 0);
   if (outcome.attempt && attempts >= MAX_ATTEMPTS) {
-    const next = kit.runs.record(run.id, def.id, { status: "failed", attempts, findings, summary: `Failed its checks ${attempts} times; saved with its findings for the user to look at.` });
-    const done = currentStep(next) < 0 ? kit.runs.finish(run.id, "done") : next;
+    const done = kit.runs.record(run.id, def.id, { status: "failed", attempts, findings, summary: `Failed its checks ${attempts} times; saved with its findings for the user to look at.` }, expected);
     const lead = `Step "${def.id}" failed its checks ${attempts} times, so the run goes on without it. Tell the user what is still wrong:\n${findingsText(findings)}${message}`;
     return briefText({ ...s, run: done }, lead);
   }
-  kit.runs.record(run.id, def.id, { status: "pending", attempts, findings });
+  // A retry that does not count keeps the last attempt's findings: the brief shows them.
+  kit.runs.record(run.id, def.id, { status: "pending", attempts, findings: outcome.attempt ? findings : state.findings }, expected);
   const left = MAX_ATTEMPTS - attempts;
   const head = outcome.attempt
     ? `Step "${def.id}" was sent back (attempt ${attempts} of ${MAX_ATTEMPTS}; ${left} left). Fix every ERROR, then submit the whole answer again.`
@@ -99,7 +107,7 @@ function openRun(kit: WorkflowKit, context: string, workflow: WorkflowId): Workf
 
 export function registerWorkflowTools(server: McpServer, kit: WorkflowToolsKit): void {
   const { guard, contextName, runs } = kit;
-  // Two submits to one run at once would both count an attempt on the same step.
+  // Two starts at once would each close the other's run.
   const lock = new KeyedLock();
 
   server.registerTool(
@@ -157,12 +165,13 @@ export function registerWorkflowTools(server: McpServer, kit: WorkflowToolsKit):
         context: contextName,
         workflow: workflowArg,
         step: z.string().min(1).describe('The current step\'s id, as the brief names it, e.g. "requirements".'),
-        answer: z.unknown().describe("The answer, in the shape the brief gives (a JSON object)."),
+        answer: z.union([z.record(z.string(), z.unknown()), z.string()]).describe("The answer, in the shape the brief gives: a JSON object (or the same object as a JSON string)."),
       },
       annotations: { readOnlyHint: false },
     },
+    // No lock: the user may take minutes on the page. The record checks the step did not move meanwhile.
     guard(async ({ context, workflow, step, answer }: { context: string; workflow: WorkflowId; step: string; answer: unknown }, call) =>
-      lock.run(`${context}/${workflow}`, async () => text(await submitStep(kit, call, openRun(kit, context, workflow), step, answer))),
+      text(await submitStep(kit, call, openRun(kit, context, workflow), step, answer)),
     ),
   );
 

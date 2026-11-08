@@ -6,9 +6,9 @@ import type { SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
 import { WORKFLOWS } from "../prompts.js";
 import { isInputDocument, proposeRequirements, requirementProposalSchema, requirementsToText, type ProposedRequirement } from "../requirements.js";
-import { confirmScope, storedScope } from "../scope-tools.js";
+import { confirmScope, SourceGoneError, storedScope } from "../scope-tools.js";
 import { readySources } from "../metadata-tools.js";
-import type { Finding } from "../backlog.js";
+import { backlogSchema, checkBacklog, type Finding } from "../backlog.js";
 import type { StepDefinition, StepOutcome, StepState, WorkflowDefinition, WorkflowKit } from "./engine.js";
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
@@ -132,8 +132,8 @@ export const scopeStep: StepDefinition<ScopeAnswer> = {
     try {
       out = await confirmScope({ ...kit, index: kit.index }, call, context, answer);
     } catch (err) {
-      // An unknown object or source: the model can fix it.
-      return { kind: "retry", attempt: true, findings: [error("objects", (await kit.masker.maskOutput(context, (err as Error).message)).text)] };
+      // The source went while the user decided: not the model's doing. An unknown object or source is.
+      return { kind: "retry", attempt: !(err instanceof SourceGoneError), findings: [error("objects", (await kit.masker.maskOutput(context, (err as Error).message)).text)] };
     }
     if (out.status === "confirmed") return { kind: "passed", findings: [], summary: `Scope confirmed: ${out.stored!.objects.join(", ")}.`, saved: out.stored, message: out.text };
     if (out.status === "expired") return { kind: "retry", attempt: false, findings: [], message: out.text };
@@ -178,16 +178,25 @@ export function methodStep(workflow: keyof typeof WORKFLOWS, expects: { kind: "d
         return { kind: "passed", findings: [], summary: `No stories saved: ${why}` };
       }
       const doc = kit.contexts.getDocument(context, answer.artifactId);
-      const meta = doc?.metadata as { artifact?: boolean; artifactType?: string; version?: number } | undefined;
+      const meta = doc?.metadata as { artifact?: boolean; artifactType?: string; version?: number; savedAt?: string; backlog?: unknown } | undefined;
       if (!doc) return { kind: "retry", attempt: true, findings: [error("artifactId", `No document ${answer.artifactId} in context "${context}".`)] };
       const right = meta?.artifact && doc.kind === expects.kind && (expects.kind !== "design" || meta.artifactType === expects.type);
       if (!right) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} is not a ${what}: submit the id that ${save} returned.`)] };
-      if (doc.updatedAt < run.createdAt) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} was saved before this run started: save the new version with ${save}, then submit its id.`)] };
+      // Saved in this run: a save with unchanged content, or a publish, keeps the earlier time.
+      if (!meta?.savedAt || meta.savedAt < run.createdAt) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} was written before this run started: save the new version with ${save}, then submit its id.`)] };
+      if (expects.kind === "backlog") {
+        const parsed = backlogSchema.safeParse(meta.backlog);
+        if (!parsed.success) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} holds no backlog the check can read: save it again with backlog_save.`)] };
+        const errors = checkBacklog(parsed.data, kit.contexts.documents(context).filter((d) => d.masked)).filter((f) => f.level === "error");
+        if (errors.length) return { kind: "retry", attempt: true, findings: [...errors, error("artifactId", "The backlog's quality check has errors: fix them, save it again with backlog_save, then submit its id.")] };
+      }
       return { kind: "passed", findings: [], summary: `Saved as ${doc.id}, version ${meta?.version ?? 1}: ${doc.title}.`, saved: { artifactId: doc.id, version: meta?.version ?? 1 } };
     },
   } as StepDefinition<ArtifactAnswer>;
 }
 
+// A run started with metadata on keeps its scope step if it is resumed with metadata off: the
+// step then says nothing is indexed and can be skipped.
 const withScope = (kit: WorkflowKit) => (kit.index ? [scopeStep] : []);
 
 export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefinition> = {
@@ -196,12 +205,14 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     title: WORKFLOWS.sa_high_level_design.title,
     next: "Show the user the design, and offer to publish it to Confluence with confluence_publish.",
     steps: (kit) => [requirementsStep, ...withScope(kit), methodStep("sa_high_level_design", { kind: "design", type: "high-level" })] as StepDefinition[],
+    optional: [scopeStep as StepDefinition],
   },
   sa_detailed_design: {
     id: "sa_detailed_design",
     title: WORKFLOWS.sa_detailed_design.title,
     next: "Show the user the design, and offer to publish it to Confluence with confluence_publish.",
     steps: (kit) => [requirementsStep, ...withScope(kit), methodStep("sa_detailed_design", { kind: "design", type: "detailed" })] as StepDefinition[],
+    optional: [scopeStep as StepDefinition],
   },
   po_backlog: {
     id: "po_backlog",

@@ -122,6 +122,13 @@ async function describeScope(pieces: Pieces, snap: SnapshotInfo, scope: Metadata
   return out.join("\n\n");
 }
 
+/** The source was indexed again or removed while the user decided: the user's choice could not be kept. */
+export class SourceGoneError extends Error {
+  constructor(source: string) {
+    super(`${source} is not indexed any more, so the scope could not be kept. Index it again with metadata_index.`);
+  }
+}
+
 /** What a scope proposal came to: `confirmed` when the user kept objects and the scope was stored. */
 export interface ScopeOutcome {
   status: "confirmed" | "rejected" | "expired" | "empty";
@@ -163,7 +170,7 @@ export async function confirmScope(
   }
   // The source may have been indexed again while the user decided: use its newest snapshot.
   const now = readySources(index).find((x) => x.source === snap.source);
-  if (!now) throw new Error(`${snap.source} is not indexed any more, so the scope could not be kept. Index it again with metadata_index.`);
+  if (!now) throw new SourceGoneError(snap.source);
   const chosen = [...(decision.selected ?? []), ...(decision.added ?? [])];
   const confirmed = index.scope(now.id, chosen, { hops: 2 });
   const typedUnknown = (decision.added ?? []).filter((a) => confirmed.unknown.includes(a)).length;

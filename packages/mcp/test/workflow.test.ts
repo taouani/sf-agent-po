@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { BackgroundIndexer } from "@sf-agent-po/connectors";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
 import {
   ContextRepository,
   Database,
@@ -13,11 +14,12 @@ import {
   RequirementRepository,
   Vault,
   WorkflowRepository,
+  WorkflowRunChangedError,
   type EntityDetector,
   type Span,
 } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, requestDigest, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
+import { ApprovalServer, createServer, requestDigest, submitStep, type ApprovalRequest, type Decision, type RequirementsRequest } from "../src/index.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -34,18 +36,44 @@ afterEach(() => {
 
 type Decide = (req: ApprovalRequest) => Partial<Decision>;
 
-async function connect({ metadata = false }: { metadata?: boolean } = {}) {
+interface Store {
+  db: Database;
+  masker: Masker;
+  contexts: ContextRepository;
+  requirements: RequirementRepository;
+  runs: WorkflowRepository;
+  index: MetadataIndex;
+}
+
+function store(): Store {
   const db = new Database(":memory:");
-  const masker = new Masker({ vault: new Vault(db, newVaultKey()), model: fakeModel(["Karim Haddad"]) });
-  const contexts = new ContextRepository(db);
-  const requirements = new RequirementRepository(db);
-  const runs = new WorkflowRepository(db);
+  return {
+    db,
+    masker: new Masker({ vault: new Vault(db, newVaultKey()), model: fakeModel(["Karim Haddad"]) }),
+    contexts: new ContextRepository(db),
+    requirements: new RequirementRepository(db),
+    runs: new WorkflowRepository(db),
+    index: new MetadataIndex(db),
+  };
+}
+
+/** A project with one object, Policy__c. */
+function project(): string {
+  const root = mkdtempSync(path.join(tmpdir(), "sf-agent-wfp-"));
+  dirs.push(root);
+  mkdirSync(path.join(root, "objects"));
+  writeFileSync(path.join(root, "objects/Policy__c.object"), `<?xml version="1.0"?><CustomObject><label>Policy</label><fields><fullName>Status__c</fullName><label>Status</label><type>Text</type></fields></CustomObject>`);
+  return root;
+}
+
+async function connect({ metadata = false, shared }: { metadata?: boolean; shared?: Store } = {}) {
+  const st = shared ?? store();
+  const { masker, contexts, requirements, runs, index } = st;
   const seen: ApprovalRequest[] = [];
   // Approves with every item kept unless a test says otherwise.
   let decide: Decide = () => ({});
   const workspace = mkdtempSync(path.join(tmpdir(), "sf-agent-wf-"));
   dirs.push(workspace);
-  const index = new MetadataIndex(db);
   const server = createServer({
     contexts,
     masker,
@@ -59,7 +87,7 @@ async function connect({ metadata = false }: { metadata?: boolean } = {}) {
     reviewer: () => ({
       review: async (req) => {
         seen.push(structuredClone(req));
-        const selected = req.kind === "requirements" ? (req as RequirementsRequest).items.map((i) => i.key) : [];
+        const selected = req.kind === "requirements" ? (req as RequirementsRequest).items.map((i) => i.key) : req.kind === "scope" ? req.proposed.map((o) => o.name) : [];
         return { status: "approved", choice: "approved", missed: [], selected, digest: requestDigest(req), ...decide(req) };
       },
     }),
@@ -71,10 +99,14 @@ async function connect({ metadata = false }: { metadata?: boolean } = {}) {
     const r = (await client.callTool({ name, arguments: args })) as { content: { type: string; text?: string }[]; isError?: boolean };
     return { ...r, text: r.content.map((c) => c.text ?? "").join("\n") };
   };
-  const [notes] = await masker.addDocuments(contexts, "renewals", [
-    { kind: "meeting-notes", title: "Workshop with Karim Haddad", source: "notes.md", content: "Karim Haddad wants the renewal letter sent 30 days before the end date." },
-  ]);
-  return { call, seen, runs, requirements, contexts, notes: notes!, setDecide: (d: Decide) => (decide = d), client };
+  const notes =
+    contexts.documents("renewals").find((d) => d.source.includes("notes")) ??
+    (
+      await masker.addDocuments(contexts, "renewals", [
+        { kind: "meeting-notes", title: "Workshop with Karim Haddad", source: "notes.md", content: "Karim Haddad wants the renewal letter sent 30 days before the end date." },
+      ])
+    )[0]!;
+  return { call, seen, runs, requirements, contexts, notes, setDecide: (d: Decide) => (decide = d), client, store: st };
 }
 
 const wf = { context: "renewals", workflow: "sa_high_level_design" };
@@ -191,6 +223,78 @@ describe("workflow tools", () => {
     expect(skipped.text).toContain("Step 3 of 3: Draft the high-level design");
     // The backlog has no scope step.
     expect((await call("workflow_start", { ...wf, workflow: "po_backlog" })).text).toContain("Step 1 of 2: Requirements");
+  });
+
+  it("resumes a run with a scope step on a server without metadata, where the step can be skipped", async () => {
+    const first = await connect({ metadata: true });
+    await first.call("workflow_start", wf);
+    await first.call("workflow_submit", { ...wf, step: "requirements", answer: proposal(first.notes.id) });
+    const again = await connect({ shared: first.store });
+    const resumed = await again.call("workflow_start", wf);
+    expect(resumed.isError).toBeFalsy();
+    expect(resumed.text).toContain("Step 2 of 3: Scope");
+    expect((await again.call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No metadata here." } })).text).toContain("Step 3 of 3");
+  });
+
+  it("confirms the scope of an indexed project through the step, and masks an unknown object's name", async () => {
+    const { call, notes, store: st } = await connect({ metadata: true });
+    await indexProject(st.index, project());
+    await call("workflow_start", wf);
+    await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
+    const unknown = await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Karim Haddad"] } });
+    expect(unknown.text).toContain("attempt 1 of 3");
+    expect(unknown.text).toMatch(/None of these objects is in .*: \[PERSON_\d+\]/);
+    expect(unknown.text).not.toContain("Karim");
+    expect((await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "No time." } })).text).toContain("propose the objects instead of skipping");
+    const ok = await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Policy__c"], reason: "Renewals change policies." } });
+    expect(ok.text).toContain('Step "scope" passed. Scope confirmed: Policy__c.');
+    expect(ok.text).toContain("Step 3 of 3: Draft the high-level design");
+  });
+
+  it("refuses a record built on a step that moved meanwhile", async () => {
+    const { call, runs, notes, store: st } = await connect();
+    await call("workflow_start", wf);
+    const before = runs.open("renewals", "sa_high_level_design")!;
+    await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
+    const kit = { contexts: st.contexts, masker: st.masker, requirements: st.requirements, runs, reviewerFor: () => ({ review: async () => ({ status: "expired" as const, missed: [], digest: "" }) }) };
+    await expect(submitStep(kit, {} as never, before, "requirements", { keep: true })).rejects.toThrow(WorkflowRunChangedError);
+    expect(runs.open("renewals", "sa_high_level_design")!.steps[0]).toMatchObject({ status: "passed", attempts: 0 });
+  });
+
+  it("takes only a design of the right type written in the run, and a backlog whose check has no error", async () => {
+    const { call, notes } = await connect();
+    const save = (designType: string, content: string) => call("design_save", { context: "renewals", title: `Renewals ${designType}`, designType, content });
+    const idOf = (t: string) => /as (doc-[0-9a-f]{10})/.exec(t)![1]!;
+    const old = idOf((await save("high-level", "# Old design")).text);
+    await new Promise((r) => setTimeout(r, 5));
+    await call("workflow_start", wf);
+    await call("workflow_submit", { ...wf, step: "requirements", answer: proposal(notes.id) });
+    // Saved again unchanged: still the old version.
+    await save("high-level", "# Old design");
+    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: old } })).text).toContain("was written before this run started");
+    const detailed = idOf((await save("detailed", "# Detailed")).text);
+    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: detailed } })).text).toContain("is not a high-level design");
+    await save("high-level", "# New design, R1");
+    expect((await call("workflow_submit", { ...wf, step: "design", answer: { artifactId: old } })).text).toContain("Every step is done");
+
+    const pb = { context: "renewals", workflow: "po_backlog" };
+    await call("workflow_start", pb);
+    await call("workflow_submit", { ...pb, step: "requirements", answer: { keep: true } });
+    const story = (id: string) => ({ id, summary: "Send the letter", persona: "Renewals agent", want: "to send the letter", benefit: "clients renew", acceptanceCriteria: [{ given: "a policy", when: "30 days left", then: "a letter is sent" }], sourceIds: [notes.id] });
+    const saved = await call("backlog_save", { context: "renewals", backlog: { title: "Renewals backlog", epics: [{ id: "E1", summary: "Renewal letters", outcome: "Clients renew on time", stories: [story("S1"), story("S1")] }] } });
+    const sent = await call("workflow_submit", { ...pb, step: "backlog", answer: { artifactId: idOf(saved.text) } });
+    expect(sent.text).toContain("ERROR [S1] Id S1 is used 2 times");
+    expect(sent.text).toContain("quality check has errors");
+  });
+
+  it("reads an answer encoded twice, and masks a real name in an unknown key", async () => {
+    const { call, notes } = await connect();
+    await call("workflow_start", wf);
+    const odd = await call("workflow_submit", { ...wf, step: "requirements", answer: { ...proposal(notes.id), "Karim Haddad": 1 } });
+    expect(odd.text).toContain("attempt 1 of 3");
+    expect(odd.text).not.toContain("Karim");
+    const twice = await call("workflow_submit", { ...wf, step: "requirements", answer: JSON.stringify(JSON.stringify(proposal(notes.id))) });
+    expect(twice.text).toContain('Step "requirements" passed');
   });
 
   it("lets a story review end without saved stories", async () => {

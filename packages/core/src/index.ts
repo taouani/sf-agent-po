@@ -29,6 +29,7 @@ export {
 export {
   WORKFLOW_STEP_STATUSES,
   WorkflowRepository,
+  WorkflowRunChangedError,
   type StepFinding,
   type StepUpdate,
   type WorkflowRun,

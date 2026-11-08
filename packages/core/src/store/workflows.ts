@@ -74,6 +74,13 @@ interface StepRow {
 
 const RUN_ID = /^run-[0-9a-f]{12}$/;
 
+/** A step changed since the state a record was based on: another chat or process submitted it. */
+export class WorkflowRunChangedError extends Error {
+  constructor(runId: string, step: string) {
+    super(`Step "${step}" of run ${runId} changed while this answer was checked (from another chat?). Read the current step with workflow_step.`);
+  }
+}
+
 /** The workflow runs of each context and their steps, in order. */
 export class WorkflowRepository {
   constructor(private readonly database: Database) {}
@@ -142,8 +149,11 @@ export class WorkflowRepository {
     return this.get(id)!;
   }
 
-  /** Records a step's new state in an open run. */
-  record(runId: string, step: string, update: StepUpdate): WorkflowRun {
+  /**
+   * Records a step's new state in an open run, and ends the run (`done`) once no step is
+   * pending. With `expected`, the step must still be in that state (WorkflowRunChangedError).
+   */
+  record(runId: string, step: string, update: StepUpdate, expected?: { status: WorkflowStepStatus; attempts: number }): WorkflowRun {
     this.database.write(() => {
       const run = this.db.prepare("SELECT status FROM workflow_run WHERE id = ?").get(runId) as { status: string } | undefined;
       if (!run) throw new Error(`No workflow run ${runId}.`);
@@ -154,9 +164,16 @@ export class WorkflowRepository {
       if (update.attempts !== undefined) (sets.push("attempts = ?"), values.push(update.attempts));
       if (update.answer !== undefined) (sets.push("answer = ?"), values.push(JSON.stringify(update.answer)));
       if (update.summary !== undefined) (sets.push("summary = ?"), values.push(update.summary));
-      const done = this.db.prepare(`UPDATE workflow_step SET ${sets.join(", ")} WHERE run = ? AND step = ?`).run(...values, runId, step);
-      if (!done.changes) throw new Error(`Run ${runId} has no step "${step}".`);
-      this.db.prepare("UPDATE workflow_run SET updated_at = ? WHERE id = ?").run(now, runId);
+      const where = expected ? " AND status = ? AND attempts = ?" : "";
+      const done = this.db
+        .prepare(`UPDATE workflow_step SET ${sets.join(", ")} WHERE run = ? AND step = ?${where}`)
+        .run(...values, runId, step, ...(expected ? [expected.status, expected.attempts] : []));
+      if (!done.changes) {
+        const exists = this.db.prepare("SELECT 1 FROM workflow_step WHERE run = ? AND step = ?").get(runId, step);
+        throw exists ? new WorkflowRunChangedError(runId, step) : new Error(`Run ${runId} has no step "${step}".`);
+      }
+      const pending = this.db.prepare("SELECT count(*) AS n FROM workflow_step WHERE run = ? AND status = 'pending'").get(runId) as { n: number };
+      this.db.prepare(`UPDATE workflow_run SET updated_at = ?${pending.n ? "" : ", status = 'done'"} WHERE id = ?`).run(now, runId);
     });
     return this.get(runId)!;
   }
