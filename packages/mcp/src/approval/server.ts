@@ -10,6 +10,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { REQUIREMENT_PRIORITIES, type RequirementKind, type RequirementPriority } from "@sf-agent-po/core";
 import { donePage, requestPage } from "./page.js";
 
 /** A rectangle in image pixels (x1 and y1 exclusive), as the masking reports it. */
@@ -83,7 +84,35 @@ export interface ScopeChoice {
   detail: string;
 }
 
-export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest | ScopeRequest;
+/**
+ * The requirements of a context to confirm (decision D1): what the agent extracted from the
+ * inputs, with the real values, and the requirements kept from before. The user unticks what
+ * is wrong, changes priorities and types in what is missing.
+ */
+export interface RequirementsRequest {
+  kind: "requirements";
+  /** The requirement context. */
+  title: string;
+  items: RequirementItem[];
+  /** What the checks found, for the user to weigh. */
+  warnings: string[];
+}
+
+export interface RequirementItem {
+  /** The form key: the requirement's id ("R3"), or "n1", "n2"... for a new one. */
+  key: string;
+  /** The requirement's id, once it has one. */
+  id?: string;
+  kind: RequirementKind;
+  priority: RequirementPriority;
+  statement: string;
+  /** The titles of the documents it comes from. */
+  sources: string[];
+  /** "New", "Changed", "Unchanged", "Kept from before"... */
+  note: string;
+}
+
+export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest | ScopeRequest | RequirementsRequest;
 
 /**
  * What the user decided.
@@ -100,10 +129,14 @@ export interface Decision {
   choice?: "approved" | "rejected" | "text-only" | "redact-uncertain";
   missed: string[];
   comment?: string;
-  /** For a scope: the objects the user kept ticked, among those offered. */
+  /** For a scope: the objects the user kept ticked, among those offered. For requirements: the keys of the items kept ticked. */
   selected?: string[];
   /** For a scope: other objects the user typed, as API names (not checked against the index here). */
   added?: string[];
+  /** For requirements: the priority the user chose for each item, by key. */
+  priorities?: Record<string, RequirementPriority>;
+  /** For requirements: the requirements the user typed, one per line, in clear. */
+  lines?: string[];
   digest: string;
 }
 
@@ -133,11 +166,15 @@ const CHOICES: Record<ApprovalRequest["kind"], readonly NonNullable<Decision["ch
   image: ["approved", "text-only", "redact-uncertain", "rejected"],
   input: ["approved", "rejected"],
   scope: ["approved", "rejected"],
+  requirements: ["approved", "rejected"],
 };
 
 /** Objects a user can type in on a scope page. */
 const MAX_ADDED = 50;
 const API_NAME = /^[A-Za-z][\w.]{0,120}$/;
+/** Requirements a user can type in on a requirements page, and how long each can be. */
+export const MAX_TYPED_LINES = 50;
+export const MAX_LINE = 1_000;
 
 const MAX_FORM = 64 * 1024;
 const MAX_MISSED = 200;
@@ -344,6 +381,18 @@ export class ApprovalServer {
       const selected = [...new Set(form.getAll("object"))].filter((o) => offered.has(o));
       const added = [...new Set((form.get("added") ?? "").split(/[\s,;]+/).map((v) => v.trim()).filter((v) => API_NAME.test(v) && !offered.has(v)))].slice(0, MAX_ADDED);
       entry.finish({ status: choice, choice, missed: [], selected, added, ...(comment ? { comment } : {}) });
+      return send(303, "", "text/plain", { location: action });
+    }
+    if (entry.req.kind === "requirements") {
+      const keys = new Set(entry.req.items.map((i) => i.key));
+      const selected = [...new Set(form.getAll("item"))].filter((k) => keys.has(k));
+      const priorities: Record<string, RequirementPriority> = {};
+      for (const k of keys) {
+        const p = form.get(`priority-${k}`) as RequirementPriority | null;
+        if (p && REQUIREMENT_PRIORITIES.includes(p)) priorities[k] = p;
+      }
+      const lines = [...new Set((form.get("added") ?? "").split(/\r?\n/).map((v) => v.trim().slice(0, MAX_LINE)).filter((v) => v.length >= 5))].slice(0, MAX_TYPED_LINES);
+      entry.finish({ status: choice, choice, missed: [], selected, priorities, lines, ...(comment ? { comment } : {}) });
       return send(303, "", "text/plain", { location: action });
     }
     // Values still in clear come first: unless the input is rejected, it is checked again once they are hidden.

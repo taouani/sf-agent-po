@@ -1,5 +1,6 @@
 // The approval page's HTML: plain forms, no script, every value escaped.
 
+import { REQUIREMENT_PRIORITIES } from "@sf-agent-po/core";
 import type { ApprovalRequest } from "./server.js";
 
 export const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -68,6 +69,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .choices label { display: flex; gap: 10px; align-items: baseline; font-weight: 400; margin: 0; padding: 8px 12px; cursor: pointer; }
 .choices code { font: 13px ui-monospace, Menlo, Consolas, monospace; }
 .choices .detail { color: var(--muted); font-size: 13px; }
+.choices .tag { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.choices .row { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; }
+.choices .row label { padding: 0; flex: 1; }
+select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 input[type="text"] { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 `;
 
@@ -143,6 +148,34 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
             `<label for="added">Other objects (API names, separated by spaces or commas)</label><input type="text" id="added" name="added" autocomplete="off" placeholder="Account, Claim__c">` +
             `<label for="comment">Comment for the agent (optional)</label><textarea id="comment" name="comment"></textarea>`,
           `<button class="primary" name="decision" value="approved">Confirm the scope</button><button name="decision" value="rejected">Reject</button>`,
+        ),
+      opts.nonce,
+    );
+  }
+
+  if (req.kind === "requirements") {
+    const priorityNames: Record<string, string> = { must: "Must have", should: "Should have", could: "Could have", wont: "Won't have" };
+    const items = req.items
+      .map((it, i) => {
+        const options = REQUIREMENT_PRIORITIES.map((p) => `<option value="${p}"${p === it.priority ? " selected" : ""}>${priorityNames[p]}</option>`).join("");
+        const sources = it.sources.length ? ` · from ${it.sources.map(escapeHtml).join(", ")}` : "";
+        return (
+          `<li><div class="row"><label for="r${i}"><input type="checkbox" id="r${i}" name="item" value="${escapeHtml(it.key)}" checked>` +
+          `<span>${it.id ? `<code>${escapeHtml(it.id)}</code> ` : ""}${markPseudonyms(it.statement)}<br><span class="detail"><span class="tag">${escapeHtml(it.kind)}</span> · ${escapeHtml(it.note)}${sources}</span></span></label>` +
+          `<select name="priority-${escapeHtml(it.key)}" aria-label="Priority">${options}</select></div></li>`
+        );
+      })
+      .join("");
+    const warnings = req.warnings.length ? `<div class="warn"><strong>The checks found:</strong><ul>${req.warnings.map((w) => `<li>${markPseudonyms(w)}</li>`).join("")}</ul></div>` : "";
+    return layout(
+      `Confirm requirements: ${req.title}`,
+      `<h1>Confirm the requirements</h1><p class="sub">${escapeHtml(req.title)}</p>${warnings}` +
+        `<p>The design and the backlog are built on these requirements and traced back to them. Untick what is wrong or not wanted, and set each priority.</p>` +
+        form(
+          `<ul class="choices">${items}</ul>` +
+            `<label for="added">Requirements to add (one per line)</label><textarea id="added" name="added" placeholder="The renewal letter is sent 30 days before the end date"></textarea><p class="hint">They are added as functional, must have. Ask the agent to change their type or priority later.</p>` +
+            `<label for="comment">Comment for the agent (optional)</label><textarea id="comment" name="comment"></textarea>`,
+          `<button class="primary" name="decision" value="approved">Confirm the requirements</button><button name="decision" value="rejected">Reject</button>`,
         ),
       opts.nonce,
     );

@@ -207,4 +207,28 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE metadata_snapshot ADD COLUMN heartbeat_at TEXT;
     `,
   },
+  {
+    version: 9,
+    name: "requirements",
+    sql: `
+      -- The requirements of a context (phase 4): what designs and stories trace back to. Ids
+      -- (R1, R2...) are never reused, so a link to a dropped requirement still names it.
+      -- statement is masked, like every document.
+      CREATE TABLE requirement (
+        context      TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        id           TEXT NOT NULL,
+        seq          INTEGER NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('functional', 'non-functional', 'constraint', 'compliance')),
+        statement    TEXT NOT NULL,
+        priority     TEXT NOT NULL CHECK (priority IN ('must', 'should', 'could', 'wont')),
+        status       TEXT NOT NULL CHECK (status IN ('proposed', 'confirmed', 'dropped')),
+        origin       TEXT NOT NULL CHECK (origin IN ('agent', 'user')),
+        source_ids   TEXT NOT NULL DEFAULT '[]',   -- JSON array of document ids
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        PRIMARY KEY (context, id),
+        UNIQUE (context, seq)
+      );
+    `,
+  },
 ];

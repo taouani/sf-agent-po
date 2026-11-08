@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ContextRepository, Database, MIGRATIONS, documentId, schemaVersion } from "../src/index.js";
+import { ContextRepository, Database, MIGRATIONS, RequirementRepository, RequirementsChangedError, documentId, schemaVersion } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "sf-agent-core-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -173,6 +173,71 @@ describe("ContextRepository", () => {
   it("rejects unsafe context names", () => {
     const db = freshDb();
     expect(() => new ContextRepository(db).ensure("../etc")).toThrow(/Invalid context name/);
+    db.close();
+  });
+});
+
+describe("RequirementRepository", () => {
+  const change = (statement: string, extra: object = {}) => ({ kind: "functional" as const, statement, priority: "must" as const, status: "confirmed" as const, sourceIds: ["doc-0123456789"], ...extra });
+
+  it("numbers new requirements, never reuses an id, and updates in place", () => {
+    const db = freshDb();
+    const repo = new RequirementRepository(db);
+    const [r1, r2] = repo.save("c", [change("Send the letter"), change("Log the call", { sourceIds: ["doc-0123456789", "doc-0123456789"], origin: "user" })]);
+    expect([r1!.id, r2!.id]).toEqual(["R1", "R2"]);
+    expect(r2).toMatchObject({ origin: "user", sourceIds: ["doc-0123456789"], status: "confirmed" });
+    expect(new ContextRepository(db).get("c")).toBeDefined();
+
+    repo.save("c", [{ ...change("Log the call"), id: "R2", status: "dropped" }]);
+    expect(repo.list("c").map((r) => r.id)).toEqual(["R1"]);
+    expect(repo.list("c", { dropped: true }).map((r) => [r.id, r.status, r.origin])).toEqual([["R1", "confirmed", "agent"], ["R2", "dropped", "user"]]);
+
+    // R2 is dropped, not deleted: the next one is R3.
+    const [r3, again] = repo.save("c", [change("Archive after 7 years", { kind: "compliance", priority: "should" }), { ...change("Send the letter by post"), id: "R1" }]);
+    expect(r3).toMatchObject({ id: "R3", kind: "compliance", priority: "should" });
+    expect(again).toMatchObject({ id: "R1", statement: "Send the letter by post", createdAt: r1!.createdAt });
+    expect(repo.get("c", "R1")?.statement).toBe("Send the letter by post");
+    expect(repo.save("c", [])).toEqual([]);
+    db.close();
+  });
+
+  it("saves nothing when one change names a requirement the context does not have", () => {
+    const db = freshDb();
+    const repo = new RequirementRepository(db);
+    repo.save("c", [change("Send the letter")]);
+    expect(() => repo.save("c", [change("New one"), { ...change("x"), id: "R9" }])).toThrow(/R9 is not in context "c"/);
+    expect(() => repo.save("other", [{ ...change("x"), id: "R1" }])).toThrow(/R1 is not in context "other"/);
+    expect(repo.list("c").map((r) => r.id)).toEqual(["R1"]);
+    expect(() => repo.save("../x", [change("x")])).toThrow(/Invalid context name/);
+    db.close();
+  });
+
+  it("saves against a snapshot only while the context and its requirements are unchanged", () => {
+    const db = freshDb();
+    const repo = new RequirementRepository(db);
+    const contexts = new ContextRepository(db);
+    repo.save("c", [change("One")]);
+    const snapshot = () => ({ contextCreatedAt: contexts.get("c")?.createdAt ?? "", requirements: repo.list("c", { dropped: true }) });
+    const before = snapshot();
+    expect(repo.save("c", [change("Two")], { expected: before }).map((r) => r.id)).toEqual(["R2"]);
+    // R2 was added since `before`.
+    expect(() => repo.save("c", [change("Three")], { expected: before })).toThrow(RequirementsChangedError);
+    const now = snapshot();
+    contexts.delete("c");
+    expect(() => repo.save("c", [change("Three")], { expected: now })).toThrow(/changed while the user was deciding/);
+    expect(contexts.get("c")).toBeUndefined();
+    db.close();
+  });
+
+  it("keeps ids per context and goes with its context", () => {
+    const db = freshDb();
+    const repo = new RequirementRepository(db);
+    repo.save("a", [change("One"), change("Two")]);
+    expect(repo.save("b", [change("One")])[0]!.id).toBe("R1");
+    expect(() => db.db.prepare("UPDATE requirement SET kind = 'wish' WHERE context = 'a'").run()).toThrow();
+    new ContextRepository(db).delete("a");
+    expect(repo.list("a", { dropped: true })).toEqual([]);
+    expect(repo.list("b")).toHaveLength(1);
     db.close();
   });
 });

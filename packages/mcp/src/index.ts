@@ -10,6 +10,8 @@ export {
   type InputRequest,
   type PendingApproval,
   type PublishRequest,
+  type RequirementItem,
+  type RequirementsRequest,
   requestDigest,
 } from "./approval/server.js";
 export { isPrerelease, reviewsInputs } from "./approval/settings.js";
@@ -38,6 +40,19 @@ export {
   type Finding,
   type Story,
 } from "./backlog.js";
+export {
+  checkRequirements,
+  isInputDocument,
+  MAX_REQUIREMENTS,
+  normalizeStatement,
+  proposedRequirementSchema,
+  proposeRequirements,
+  requirementProposalSchema,
+  requirementsToText,
+  type ProposedRequirement,
+  type RequirementsKit,
+  type RequirementsOutcome,
+} from "./requirements.js";
 export { registerAgentPrompts, WORKFLOWS } from "./prompts.js";
 export { EVIDENCE_RULES, PRIVACY_RULES, PUBLISH_RULES } from "./agents/common.js";
 export { INDUSTRIES, INDUSTRY_IDS, industryGuidance, resolveIndustry } from "./agents/industries.js";
