@@ -31,6 +31,7 @@ import { registerMetadataTools } from "./metadata-tools.js";
 import { registerAgentPrompts } from "./prompts.js";
 import { registerPublishTools } from "./publish.js";
 import { registerWorkflowTools } from "./workflow/tools.js";
+import { loadCheckRules } from "./checks.js";
 import { callReviewer, PROGRESS_EVERY_MS, startProgress, type CallContext, type Progress } from "./review.js";
 
 export interface ServerOptions {
@@ -125,6 +126,8 @@ async function imagesAt(target: string): Promise<string[]> {
 }
 
 export function createServer(opts: ServerOptions): McpServer {
+  // A broken word list stops the server here, not in the middle of a save.
+  loadCheckRules();
   const server = new McpServer({ name: "sf-agent-po", version: opts.version });
   const { contexts, masker, approval } = opts;
   const progressOf = new WeakMap<CallContext, Progress>();

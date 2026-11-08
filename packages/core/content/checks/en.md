@@ -39,6 +39,8 @@ Personas that name nobody in particular, with or without an article.
 - a
 - an
 - the
+- any
+- every
 
 ## Compliance terms
 

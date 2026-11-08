@@ -24,13 +24,26 @@ export interface CheckRules {
 let library: ContentLibrary | undefined;
 const content = () => (library ??= new ContentLibrary());
 
+/** Reads every word list now, so a broken content file stops the server at start, not a check later. */
+export function loadCheckRules(): void {
+  for (const l of OUTPUT_LANGUAGES) checkRules(l);
+}
+
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** One entry as a pattern: spaces match any spacing, a final "*" the rest of the word. */
+/** Typographic apostrophes (’ from Word, macOS and models) read as the plain one. */
+export const plainApostrophes = (text: string) => text.replace(/[\u2019\u02BC]/g, "'");
+
+/**
+ * One entry as a pattern: spaces match any spacing, an apostrophe any apostrophe, and a final
+ * "*" the rest of the word, API names included ("audit*" matches Audit_Log__c).
+ */
 function pattern(entry: string): string {
   const prefix = entry.endsWith("*");
-  const body = escape(prefix ? entry.slice(0, -1) : entry).replace(/\s+/g, "\\s+");
-  return prefix ? `${body}[\\p{L}\\p{N}]*` : body;
+  const body = escape(prefix ? entry.slice(0, -1) : entry)
+    .replace(/\s+/g, "\\s+")
+    .replace(/'/g, "['\u2019\u02BC]");
+  return prefix ? `${body}[\\p{L}\\p{N}_]*` : body;
 }
 
 /** Any of the words, as whole words, in any case: letters with accents count as letters. */
@@ -52,7 +65,7 @@ export function checkRules(language: OutputLanguage = "en"): CheckRules {
     name: words.name,
     vague: wordsPattern(words.vague),
     genericPersona(persona) {
-      let p = persona.trim().toLowerCase().replace(/\s+/g, " ");
+      let p = plainApostrophes(persona).trim().toLowerCase().replace(/\s+/g, " ");
       // "the user", "l'utilisateur": the article goes, with the space after it unless it ends in an apostrophe.
       for (const a of articles) {
         if (a.endsWith("'") ? p.startsWith(a) : p.startsWith(`${a} `)) {
@@ -77,7 +90,8 @@ export function contextLanguage(contexts: ContextRepository, context: string): O
 
 /** The language a text reads as, by its common words, or undefined when it is too short to tell. */
 export function detectLanguage(text: string): OutputLanguage | undefined {
-  const tokens = text.toLowerCase().match(/[\p{L}]+(?:'[\p{L}]+)?/gu) ?? [];
+  // An elided article or pronoun is a word of its own: "l'utilisateur" is "l'" and "utilisateur".
+  const tokens = plainApostrophes(text).toLowerCase().match(/\p{L}+'|\p{L}+/gu) ?? [];
   if (tokens.length < 12) return undefined;
   const scores = OUTPUT_LANGUAGES.map((l) => {
     const common = new Set(content().checks(l).common);
