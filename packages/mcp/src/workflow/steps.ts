@@ -38,7 +38,7 @@ export const requirementsStep: StepDefinition<RequirementsAnswer> = {
     const existing = kit.requirements.list(context, { dropped: true });
     const confirmed = existing.filter((r) => r.status === "confirmed");
     return [
-      "List the requirements the inputs state or imply. Read every input with context_get first.",
+      "List the requirements the inputs state or imply. Read every input with context_read first.",
       `Inputs (${inputs.length}):\n${inputs.length ? inputs.map(docLine).join("\n") : "- none: ask the user to add the meeting notes, emails or documents with the context_add tools"}`,
       ...(others.length ? [`Also in the context, not inputs (do not cite them as sources):\n${others.map(docLine).join("\n")}`] : []),
       existing.length

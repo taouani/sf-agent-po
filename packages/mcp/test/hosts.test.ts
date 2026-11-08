@@ -5,12 +5,11 @@ import path from "node:path";
 import { HOSTS, hostFiles } from "../src/hosts/files.js";
 import { parseInitArgs, runInit } from "../src/hosts/init.js";
 import { INDUSTRY_IDS, industryGuidance, resolveIndustry } from "../src/agents/industries.js";
-import { poBacklogPrompt } from "../src/agents/product-owner.js";
-import { saHighLevelDesignPrompt } from "../src/agents/solution-architect.js";
+import { guidedPrompt } from "../src/agents/guided.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackgroundIndexer } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, Vault } from "@sf-agent-po/core";
+import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, RequirementRepository, Vault, WorkflowRepository } from "@sf-agent-po/core";
 import { ApprovalServer, createServer } from "../src/index.js";
 
 async function connect() {
@@ -25,6 +24,7 @@ async function connect() {
     reviewer: () => ({ review: async () => Promise.reject(new Error("no review in these tests")) }),
     // As the real server has: the agents' files name the metadata tools.
     metadata: { index: new MetadataIndex(db), indexer: new BackgroundIndexer(new MetadataIndex(db), { workspace: os.tmpdir() }) },
+    workflows: { requirements: new RequirementRepository(db), runs: new WorkflowRepository(db) },
   });
   const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -78,17 +78,19 @@ describe("host files", () => {
     expect(file("cursor", "rules/salesforce-product-owner.mdc")).toMatch(/^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
 
     // The workflow text is the same as the MCP prompt's, apart from the context sentence.
-    const mcp = saHighLevelDesignPrompt({ context: "x" });
+    const mcp = guidedPrompt("sa_high_level_design", { context: "x" });
     const tail = mcp.slice(mcp.indexOf("Your task:"));
     for (const host of HOSTS) expect(file(host, host === "copilot" ? "sa-hld.prompt.md" : "sa-hld.md")).toContain(tail);
 
     const agent = file("claude-code", "agents/salesforce-solution-architect.md");
     expect(agent).toMatch(/^---\nname: "salesforce-solution-architect"\ndescription: ".+"\n---\n/);
     expect(agent).toContain("industry_guidance");
-    expect(agent).toContain('`agent_workflow` tool with `workflow: "sa_high_level_design"`');
+    expect(agent).toContain("`sa_high_level_design`");
+    expect(agent).toContain("Call `workflow_start` with the workflow's id as `workflow` and the context");
+    expect(file("claude-code", "commands/po-review.md")).toContain('Call `workflow_start` with `workflow: "po_review_stories"`');
   });
 
-  it("only names tools the server has, says how publishing works now, and matches the agent_workflow tool", async () => {
+  it("only names tools and prompts the server has, says how publishing works now, and sends the agents to the guided workflows", async () => {
     const s = await connect();
     try {
       const tools = new Set((await s.client.listTools()).tools.map((t) => t.name));
@@ -96,13 +98,14 @@ describe("host files", () => {
       const prompts = new Set((await s.client.listPrompts()).prompts.map((p) => p.name));
       const unknown = [...named].filter((n) => !tools.has(n) && !prompts.has(n) && !n.startsWith("context_add_"));
       expect(unknown).toEqual([]);
-      expect(named.has("agent_workflow")).toBe(true);
+      expect(named.has("workflow_start") && named.has("workflow_submit")).toBe(true);
+      expect(named.has("agent_workflow")).toBe(false);
       for (const f of HOSTS.flatMap((h) => hostFiles(h))) {
         expect(f.content, f.path).not.toMatch(/preview|approval token/i);
         expect(f.content, f.path).toContain("[PERSON_1]");
+        // The workflows save the documents: the rule for a tool the agent saves with itself is replaced.
+        expect(f.content, f.path).not.toContain("Save your work with the save tool");
       }
-      const text = await s.call("agent_workflow", { workflow: "po_backlog", context: "ins", focus: "phase 1", industry: "Insurance" });
-      expect(text).toBe(poBacklogPrompt({ context: "ins", scope: "phase 1", industry: "Insurance" }));
     } finally {
       await s.close();
     }

@@ -1,7 +1,8 @@
-import { EVIDENCE_RULES, PRIVACY_RULES, PUBLISH_RULES } from "../agents/common.js";
+import { EVIDENCE_RULES, PRIVACY_RULES } from "../agents/common.js";
+import { type GuidedWorkflow, guidedHowTo, guidedPrompt, guidedPublishRules } from "../agents/guided.js";
 import { INDUSTRY_IDS } from "../agents/industries.js";
-import { PO_PRACTICES, PO_ROLE, poBacklogPrompt, poReviewStoriesPrompt } from "../agents/product-owner.js";
-import { SA_PRINCIPLES, SA_ROLE, saDetailedDesignPrompt, saHighLevelDesignPrompt } from "../agents/solution-architect.js";
+import { PO_PRACTICES, PO_ROLE } from "../agents/product-owner.js";
+import { SA_PRINCIPLES, SA_ROLE } from "../agents/solution-architect.js";
 
 /**
  * Native agent files for each host, generated from the same text as the MCP
@@ -20,10 +21,11 @@ export interface HostFile {
 
 interface Workflow {
   id: string;
+  /** The server's workflow the command starts. */
+  workflow: GuidedWorkflow;
   agent: AgentDef;
   description: string;
   argumentHint: string;
-  build: (contextText: string) => string;
 }
 
 interface AgentDef {
@@ -35,7 +37,7 @@ interface AgentDef {
 
 const INDUSTRY_NOTE = `## Industry templates
 
-If the user names an industry, or the inputs make it clear, call the \`industry_guidance\` tool with one of: ${INDUSTRY_IDS.join(", ")}. Apply its guidance and confirm industry objects and features against the org before relying on them.`;
+If the user names an industry, or the inputs make it clear, pass it as \`industry\` to \`workflow_start\` (one of: ${INDUSTRY_IDS.join(", ")}): the steps then carry its guidance. Outside a workflow, the \`industry_guidance\` tool returns the same guidance. Confirm industry objects and features against the org before relying on them.`;
 
 const SA_AGENT: AgentDef = {
   id: "salesforce-solution-architect",
@@ -44,9 +46,11 @@ const SA_AGENT: AgentDef = {
     "Salesforce Solution Architect. Use for high-level or detailed Salesforce solution designs built from meeting notes, emails, PI planning output, Jira, Confluence and the org's metadata, and for publishing designs to Confluence after approval.",
   body: `${SA_ROLE}
 
-You work through the sf-agent-po MCP server. Inputs live in a named requirement context, masked (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools to add files, notes, Jira issues and Confluence pages). The existing org is in the metadata index (\`metadata_summary\`, \`metadata_search\`, \`metadata_component\`), the scope the user confirmed for the work is in \`scope_show\` (\`scope_propose\` to set it), and \`metadata_impact\` lists what depends on the components you change. You save designs with \`design_save\` and publish them with \`confluence_publish\`, which waits for the user's approval in their browser.
+You work through the sf-agent-po MCP server. Inputs live in a named requirement context, masked (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools to add files, notes, Jira issues and Confluence pages). The existing org is in the metadata index (\`metadata_summary\`, \`metadata_search\`, \`metadata_component\`), the scope the user confirmed for the work is in \`scope_show\` (\`scope_propose\` to set it), and \`metadata_impact\` lists what depends on the components you change.
 
-You produce two kinds of design: a **high-level design** from raw inputs (often the first deliverable, which the Product Owner then turns into a backlog), and a **detailed design** for stories or epics, fitted exactly to the existing metadata. Before you draft either, call the \`agent_workflow\` tool with \`workflow: "sa_high_level_design"\` or \`workflow: "sa_detailed_design"\`, the context name and the industry if one applies, and follow the steps and the template it returns.
+You produce two kinds of design: a **high-level design** from raw inputs (often the first deliverable, which the Product Owner then turns into a backlog), and a **detailed design** for stories or epics, fitted exactly to the existing metadata. The server guides both, one section at a time, with the workflows \`sa_high_level_design\` and \`sa_detailed_design\`, and saves the design when the last step passes. \`trace_show\` shows which confirmed requirements a design covers, and \`confluence_publish\` publishes it, with its traceability matrix, after the user approves it in their browser.
+
+${guidedHowTo(undefined)}
 
 ${EVIDENCE_RULES}
 
@@ -54,7 +58,7 @@ ${PRIVACY_RULES}
 
 ${SA_PRINCIPLES}
 
-${PUBLISH_RULES}
+${guidedPublishRules()}
 
 ${INDUSTRY_NOTE}`,
 };
@@ -66,9 +70,11 @@ const PO_AGENT: AgentDef = {
     "Salesforce Product Owner. Use to turn requirements and the Solution Architect's design into epics and user stories with Given/When/Then acceptance criteria, to review Jira stories for readiness, and to publish backlogs to Jira and Confluence after approval.",
   body: `${PO_ROLE}
 
-You work through the sf-agent-po MCP server. Inputs live in a named requirement context, masked (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools). The existing org is in the metadata index (\`metadata_summary\`, \`metadata_search\`, \`metadata_component\`), the scope the user confirmed for the work is in \`scope_show\` (\`scope_propose\` to set it), and \`metadata_impact\` lists what depends on the components you change. When the Solution Architect has saved a design in the context, it is one of your inputs. You save backlogs with \`backlog_save\` (which runs a quality check), revise them with \`backlog_get\`, and publish with \`jira_publish\` and \`confluence_publish\`, which wait for the user's approval in their browser.
+You work through the sf-agent-po MCP server. Inputs live in a named requirement context, masked (\`context_show\`, \`context_read\`, and the \`context_add_*\` tools). The existing org is in the metadata index (\`metadata_summary\`, \`metadata_search\`, \`metadata_component\`), the scope the user confirmed for the work is in \`scope_show\` (\`scope_propose\` to set it), and \`metadata_impact\` lists what depends on the components you change. When the Solution Architect has saved a design in the context, it is one of your inputs.
 
-Before you build a backlog or review stories, call the \`agent_workflow\` tool with \`workflow: "po_backlog"\` or \`workflow: "po_review_stories"\`, the context name and the industry if one applies, and follow the steps it returns.
+The server guides your work with the workflows \`po_backlog\` (the requirements, then the epics, then the stories one epic at a time, then the whole backlog, which it saves) and \`po_review_stories\`. \`backlog_get\` returns a saved backlog. \`backlog_save\` saves the stories of a review, and a revision the user asks for after a run, with the same quality check. \`trace_show\` shows which confirmed requirements the stories deliver. You publish with \`jira_publish\` (with the sub-tasks of the detailed design) and \`confluence_publish\`, which wait for the user's approval in their browser.
+
+${guidedHowTo(undefined)}
 
 ${EVIDENCE_RULES}
 
@@ -76,7 +82,7 @@ ${PRIVACY_RULES}
 
 ${PO_PRACTICES}
 
-${PUBLISH_RULES}
+${guidedPublishRules()}
 
 ${INDUSTRY_NOTE}`,
 };
@@ -84,37 +90,37 @@ ${INDUSTRY_NOTE}`,
 const WORKFLOWS: Workflow[] = [
   {
     id: "sa-hld",
+    workflow: "sa_high_level_design",
     agent: SA_AGENT,
     description: "Draft a high-level Salesforce solution design from the inputs in a requirement context.",
     argumentHint: "[context] [focus]",
-    build: (contextText) => saHighLevelDesignPrompt({ contextText }),
   },
   {
     id: "sa-detailed",
+    workflow: "sa_detailed_design",
     agent: SA_AGENT,
     description: "Draft a detailed design for stories or epics, fitted to the existing metadata.",
     argumentHint: "[context] [stories or epics in scope]",
-    build: (contextText) => saDetailedDesignPrompt({ contextText }),
   },
   {
     id: "po-backlog",
+    workflow: "po_backlog",
     agent: PO_AGENT,
     description: "Build epics and user stories with acceptance criteria from a requirement context and the SA's design.",
     argumentHint: "[context] [scope]",
-    build: (contextText) => poBacklogPrompt({ contextText }),
   },
   {
     id: "po-review",
+    workflow: "po_review_stories",
     agent: PO_AGENT,
     description: "Review the Jira stories in a requirement context for readiness and propose rewrites and splits.",
     argumentHint: "[context] [Jira keys or epic]",
-    build: (contextText) => poReviewStoriesPrompt({ contextText }),
   },
 ];
 
 const AGENTS = [SA_AGENT, PO_AGENT];
 
-const INDUSTRY_LINE = `If an industry applies, call \`industry_guidance\` (${INDUSTRY_IDS.join(", ")}) and apply it.`;
+const INDUSTRY_LINE = `The industry templates are: ${INDUSTRY_IDS.join(", ")}.`;
 
 function frontmatter(fields: Record<string, string | boolean | undefined>): string {
   const lines = Object.entries(fields)
@@ -131,7 +137,7 @@ export function hostFiles(host: Host): HostFile[] {
         ...AGENTS.map((a) => ({ path: `.claude/agents/${a.id}.md`, content: frontmatter({ name: a.id, description: a.description }) + a.body + "\n" })),
         ...WORKFLOWS.map((w) => ({
           path: `.claude/commands/${w.id}.md`,
-          content: frontmatter({ description: w.description, "argument-hint": w.argumentHint }) + w.build(contextText) + "\n",
+          content: frontmatter({ description: w.description, "argument-hint": w.argumentHint }) + guidedPrompt(w.workflow, { contextText }) + "\n",
         })),
       ];
     }
@@ -142,7 +148,7 @@ export function hostFiles(host: Host): HostFile[] {
           path: `.cursor/rules/${a.id}.mdc`,
           content: `---\ndescription: ${a.description}\nglobs:\nalwaysApply: false\n---\n\n${a.body}\n`,
         })),
-        ...WORKFLOWS.map((w) => ({ path: `.cursor/commands/${w.id}.md`, content: w.build(contextText) + "\n" })),
+        ...WORKFLOWS.map((w) => ({ path: `.cursor/commands/${w.id}.md`, content: guidedPrompt(w.workflow, { contextText }) + "\n" })),
       ];
     }
     case "copilot": {
@@ -159,7 +165,7 @@ export function hostFiles(host: Host): HostFile[] {
         })),
         ...WORKFLOWS.map((w) => ({
           path: `.github/prompts/${w.id}.prompt.md`,
-          content: frontmatter({ description: w.description, "argument-hint": `context=<name> ${w.argumentHint.replace("[context] ", "")}`, agent: "agent" }) + w.build(contextText) + "\n",
+          content: frontmatter({ description: w.description, "argument-hint": `context=<name> ${w.argumentHint.replace("[context] ", "")}`, agent: "agent" }) + guidedPrompt(w.workflow, { contextText }) + "\n",
         })),
       ];
     }

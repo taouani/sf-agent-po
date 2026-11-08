@@ -1,10 +1,12 @@
-// The Solution Architect and Product Owner agents: their workflows as MCP prompts, and as a
-// tool for hosts that use agent files (a model cannot start an MCP prompt itself, but it can
-// call a tool to get the same steps and templates), with the industry templates.
+// The Solution Architect and Product Owner agents: their workflows as MCP prompts, with the
+// industry templates. With the guided workflows on, a prompt says to run the workflow with
+// workflow_start, which gives the steps one at a time; `text` stays the full method, which the
+// method step of runs started before v1 (and the stories review) still uses.
 
 import { completable } from "@modelcontextprotocol/sdk/server/completable.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { guidedPrompt } from "./agents/guided.js";
 import { INDUSTRY_IDS, industryGuidance, resolveIndustry } from "./agents/industries.js";
 import { poBacklogPrompt, poReviewStoriesPrompt } from "./agents/product-owner.js";
 import { saDetailedDesignPrompt, saHighLevelDesignPrompt } from "./agents/solution-architect.js";
@@ -57,8 +59,12 @@ const industryArg = () =>
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
-export function registerAgentPrompts(server: McpServer, kit: Pick<PublishKit, "guard" | "contextName">): void {
-  const { guard, contextName } = kit;
+/**
+ * Registers the prompts and the industry tool. `guided`: the server has the workflow tools, and
+ * the prompts send the agent to them; without them, a prompt gives the full method.
+ */
+export function registerAgentPrompts(server: McpServer, kit: Pick<PublishKit, "guard">, { guided }: { guided: boolean }): void {
+  const { guard } = kit;
   // The name goes into the instructions, so it must be one the tools take.
   const contextArg = z
     .string()
@@ -71,11 +77,10 @@ export function registerAgentPrompts(server: McpServer, kit: Pick<PublishKit, "g
       name,
       // The second argument keeps its 0.x name: "focus" for the high-level design, "scope" for the others.
       { title: w.title, description: w.description, argsSchema: { context: contextArg, [w.arg]: z.string().optional().describe(w.focus), industry: industryArg() } },
-      (args: Record<string, string | undefined>) => ({
-        messages: [
-          { role: "user" as const, content: { type: "text" as const, text: w.text({ context: args.context || "default", focus: args[w.arg] || undefined, industry: args.industry || undefined }) } },
-        ],
-      }),
+      (args: Record<string, string | undefined>) => {
+        const a = { context: args.context || "default", focus: args[w.arg] || undefined, industry: args.industry || undefined };
+        return { messages: [{ role: "user" as const, content: { type: "text" as const, text: guided ? guidedPrompt(name, a) : w.text(a) } }] };
+      },
     );
   }
 
@@ -91,23 +96,5 @@ export function registerAgentPrompts(server: McpServer, kit: Pick<PublishKit, "g
       if (!resolveIndustry(industry)) throw new Error(`Unknown industry "${industry}". Use one of: ${INDUSTRY_IDS.join(", ")}.`);
       return text(industryGuidance(industry));
     }),
-  );
-
-  server.registerTool(
-    "agent_workflow",
-    {
-      title: "Agent workflow",
-      description:
-        "Returns the full method for a Solution Architect or Product Owner task: the steps, the rules and the document template. " +
-        "Call it before drafting a design or a backlog, and follow what it returns. The text is the same as the MCP prompt of the same name.",
-      inputSchema: {
-        workflow: z.enum(Object.keys(WORKFLOWS) as [Workflow, ...Workflow[]]),
-        context: contextName,
-        focus: z.string().optional().describe("Optional focus or scope: an area, or the stories, epics or Jira keys in scope."),
-        industry: z.string().optional().describe(`Optional industry template: ${INDUSTRY_IDS.join(", ")}.`),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    guard(async ({ workflow, ...args }: WorkflowArgs & { workflow: Workflow }) => text(WORKFLOWS[workflow].text(args))),
   );
 }

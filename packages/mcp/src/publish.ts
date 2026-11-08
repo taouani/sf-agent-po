@@ -94,6 +94,8 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
     {
       title: "Save design",
       description:
+        "Deprecated: the guided workflows (workflow_start) write and save designs section by section; use this only when a workflow step asks for it, " +
+        "or to save a design the user wrote or revised outside a workflow. " +
         "Saves a solution design (Markdown) as a versioned draft in the requirement context, where the Product Owner agent can read it. " +
         "Saving again with the same title creates a new version of the same design. Keep the pseudonyms from the inputs (such as [PERSON_1]) as they are: " +
         "their real values are put back when the user approves a publish. Personal data written in clear is masked when the design is saved.",
