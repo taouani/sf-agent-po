@@ -12,6 +12,18 @@ export {
   type NewDocument,
   type SourceDocument,
 } from "./store/contexts.js";
+export {
+  REQUIREMENT_ID,
+  REQUIREMENT_KINDS,
+  REQUIREMENT_PRIORITIES,
+  REQUIREMENT_STATUSES,
+  RequirementRepository,
+  type Requirement,
+  type RequirementChange,
+  type RequirementKind,
+  type RequirementPriority,
+  type RequirementStatus,
+} from "./store/requirements.js";
 export { importLegacyWorkspace, parseLegacyContext, type ImportReport } from "./store/import.js";
 export {
   BUILTIN_CONTENT_DIR,

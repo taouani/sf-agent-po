@@ -179,9 +179,9 @@ export interface Finding {
 
 const SCALE = new Set([1, 2, 3, 5, 8, 13]);
 // "quick" is not listed because Quick Actions are a Salesforce feature.
-const VAGUE = /\b(fast|user[- ]friendly|easy|easily|intuitive|appropriate(ly)?|etc\.?|and so on|as needed|seamless(ly)?|robust)\b/i;
+export const VAGUE = /\b(fast|user[- ]friendly|easy|easily|intuitive|appropriate(ly)?|etc\.?|and so on|as needed|seamless(ly)?|robust)\b/i;
 const GENERIC_PERSONA = /^(a |an |the )?(user|users|someone|customer|person)$/i;
-const SENSITIVE = /\b(security|secure|encrypt\w*|gdpr|hipaa|pci|sox|mfa|sso|privacy|personal data|pii|compliance|audit\w*|retention|consent)\b/i;
+export const SENSITIVE = /\b(security|secure|encrypt\w*|gdpr|hipaa|pci|sox|mfa|sso|privacy|personal data|pii|compliance|audit\w*|retention|consent)\b/i;
 
 /**
  * Deterministic quality checks on a backlog: structure, INVEST signals, testable acceptance

@@ -232,6 +232,34 @@ describe("approval page", () => {
     expect(await pending.decision).toEqual({ status: "approved", choice: "approved", missed: [], selected: ["Claim__c"], added: ["Account", "Invoice__c"], digest: pending.digest });
   });
 
+  it("confirms requirements: ticked items among those offered, known priorities, and typed lines", async () => {
+    const s = server();
+    const pending = await s.request({
+      kind: "requirements",
+      title: "renewals",
+      items: [
+        { key: "R1", id: "R1", kind: "functional", priority: "must", statement: "Send <the> letter", sources: ["Notes & more"], note: "Changed" },
+        { key: "n1", kind: "compliance", priority: "could", statement: "Keep [SECRET_1] safe", sources: [], note: "New" },
+      ],
+      warnings: ["new 1: <b>vague</b>"],
+    });
+    const tab = await open(pending.url);
+    const html = (await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString();
+    expect(html).toContain('name="item" value="R1" checked>');
+    expect(html).toContain('<code>R1</code> Send &#60;the&#62; letter');
+    expect(html).toContain("from Notes &#38; more");
+    expect(html).toContain("<mark>[SECRET_1]</mark>");
+    expect(html).toContain('<option value="could" selected>');
+    expect(html).toContain("new 1: &#60;b&#62;vague&#60;/b&#62;");
+    expect(html).not.toMatch(/<script|style="/i);
+    const page = await call(tab.page, { headers: { cookie: tab.cookie } });
+    const lines = ["Send a reminder", "", "Send a reminder", "ok", "x".repeat(1_200)].join("\r\n");
+    const body = `csrf=${encodeURIComponent(csrfOf(page.body.toString()))}&decision=approved&item=n1&item=R9&priority-R1=wont&priority-n1=urgent&priority-R9=must&added=${encodeURIComponent(lines)}`;
+    const posted = await call(tab.page, { method: "POST", body, headers: { origin: s.origin!, cookie: tab.cookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" } });
+    expect(posted.status).toBe(303);
+    expect(await pending.decision).toEqual({ status: "approved", choice: "approved", missed: [], selected: ["n1"], priorities: { R1: "wont" }, lines: ["Send a reminder", "x".repeat(1_000)], digest: pending.digest });
+  });
+
   it("expires requests that wait too long, are cancelled, or are open when the server closes", async () => {
     const s = server({ timeoutMs: 50 });
     const late = await s.request(publish);
