@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { Approver } from "./approver.js";
 import { checkOpenRouterModels, createModel } from "./models.js";
 import { reportMarkdown } from "./report.js";
 import { runScenario, stdioServer, type ScenarioResult } from "./run.js";
@@ -18,13 +19,16 @@ the output against each scenario's rubric, and writes report.md and results.json
   --judge      Judge model (default: the first model)
   --scenarios  Scenario ids, comma-separated (default: all)
   --server     Command that starts the MCP server, split on spaces, or a JSON array
-               such as '["C:/Program Files/nodejs/node.exe","dist/index.js"]'
-               (default: today's server, node dist/index.js)
+               such as '["C:/Program Files/nodejs/node.exe","dist/main.js"]'
+               (default: the v1 server, node packages/mcp/dist/main.js)
+  --baseline   Run against the 0.x server (node dist/index.js) instead, for comparison
   --out        Output folder (default: eval-results/<date>)
-  --max-turns  Turn limit per task (default: 40)
+  --max-turns  Turn limit per task (default: 80)
   --list       List the scenarios and exit
 
-Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY.`;
+Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY.
+The runner answers the approval pages a v1 server opens (input review, requirements,
+scope) as a user would, approving what they propose; run "npm run build" first.`;
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -33,6 +37,7 @@ async function main(): Promise<number> {
       judge: { type: "string" },
       scenarios: { type: "string" },
       server: { type: "string" },
+      baseline: { type: "boolean" },
       out: { type: "string" },
       "max-turns": { type: "string" },
       list: { type: "boolean" },
@@ -54,6 +59,7 @@ async function main(): Promise<number> {
   }
   const wanted = values.scenarios?.split(",").map((s) => s.trim()).filter(Boolean);
   const scenarios = wanted ? wanted.map((id) => all.find((s) => s.id === id) ?? fail(`Unknown scenario "${id}". Known: ${all.map((s) => s.id).join(", ")}`)) : all;
+  if (values.server && values.baseline) fail("Give --server or --baseline, not both.");
   const specs = values.models.split(",").map((m) => m.trim());
   const models = specs.map((m) => createModel(m));
   const judge = values.judge ? createModel(values.judge) : models[0]!;
@@ -61,9 +67,13 @@ async function main(): Promise<number> {
   await checkOpenRouterModels([...specs, ...(values.judge ? [values.judge] : [])]);
 
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  const [command, ...args] = values.server ? serverCommand(values.server) : [process.execPath, join(repoRoot, "dist", "index.js")];
-  const connect = stdioServer(command!, args);
-  const serverName = values.server ?? "0.x (dist/index.js)";
+  const [command, ...args] = values.server
+    ? serverCommand(values.server)
+    : [process.execPath, values.baseline ? join(repoRoot, "dist", "index.js") : join(repoRoot, "packages", "mcp", "dist", "main.js")];
+  // Answers the pages the server opens; the server finds it through SF_AGENT_PO_BROWSER.
+  const approver = new Approver();
+  const connect = stdioServer(command!, args, await approver.listen());
+  const serverName = values.server ?? (values.baseline ? "0.x (dist/index.js)" : "v1 (packages/mcp/dist/main.js)");
   // UTC to the second, without colons so the folder name works on Windows.
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z").replaceAll(":", "-");
   const out = resolve(values.out ?? join("eval-results", date));
@@ -76,7 +86,7 @@ async function main(): Promise<number> {
   for (const model of models) {
     for (const scenario of scenarios) {
       console.log(`Running ${scenario.id} with ${model.id}...`);
-      const r = await runScenario(scenario, model, judge, connect, { maxTurns });
+      const r = await runScenario(scenario, model, judge, connect, { maxTurns, approver });
       console.log(r.error ? `  failed: ${r.error}` : `  ${r.sections.map((s) => `${s.task} ${s.error ? `failed: ${s.error}` : `${s.score}/10`}`).join(", ")}`);
       results.push(r);
       // Written after every run, so a run cut short (for example by a CI timeout) keeps what it measured.
@@ -85,6 +95,7 @@ async function main(): Promise<number> {
       await writeFile(join(out, "report.md"), report);
     }
   }
+  await approver.close();
   console.log(`\n${report}\nWritten to ${out}`);
   return results.some((r) => r.error || r.sections.some((s) => s.error)) ? 1 : 0;
 }

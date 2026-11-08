@@ -19,6 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@sf-agent-po/core": "0.0.0",
     "openai": "^7.53.0"
   }
 }

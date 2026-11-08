@@ -1,6 +1,11 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { defaultModelDir, KEYCHAIN_SERVICE } from "@sf-agent-po/core";
+import type { Approver, ApprovalRecord } from "./approver.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AgentRun, CallTool, Model, ToolSpec } from "./models.js";
@@ -10,24 +15,68 @@ import { TASKS, type RubricSection, type Scenario, type Task } from "./scenario.
 export type Connect = (workspaceDir: string) => Promise<Client>;
 
 /**
- * Starts the server under test as hosts do, over stdio. By default that is
- * today's 0.x server (`dist/index.js` after `npm run build`), which gives the
- * baseline; the v1 server plugs in the same way.
+ * Starts the server under test as hosts do, over stdio: by default the v1 server, or today's 0.x
+ * server for the baseline. Each run gets its own home folder inside its throwaway workspace, so
+ * the masking key the server creates goes there (a key file) and not into the user's keychain;
+ * the detection model stays in the usual cache, so it is downloaded once.
  */
+const SERVER_ENV = [
+  "PATH",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  ...["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"].flatMap((k) => [k, k.toLowerCase()]),
+  "NODE_USE_ENV_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "NODE_OPTIONS",
+  "SSL_CERT_FILE",
+];
+
 export function stdioServer(command: string, args: string[], env: Record<string, string> = {}): Connect {
   return async (workspaceDir) => {
     const client = new Client({ name: "sf-agent-eval", version: "0" });
-    // Only what the server needs: no model keys or other secrets reach it. Its stderr goes to
-    // ours, so a server that fails to start says why.
-    const baseEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TEMP", "TMP"].flatMap((k) => (process.env[k] ? [[k, process.env[k]!]] : [])));
-    await client.connect(new StdioClientTransport({ command, args, env: { ...baseEnv, ...env, SF_AGENT_WORKSPACE: workspaceDir }, stderr: "inherit" }));
+    // Only what the server needs: no model keys or other secrets reach it, but the proxy and
+    // certificate settings do, for the detection model's download. Its stderr goes to ours, so a
+    // server that fails to start says why.
+    const baseEnv = Object.fromEntries(SERVER_ENV.flatMap((k) => (process.env[k] ? [[k, process.env[k]!]] : [])));
+    const home = join(workspaceDir, "home");
+    const isolated = { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local") };
+    await client.connect(
+      new StdioClientTransport({
+        command,
+        args,
+        env: { ...baseEnv, ...isolated, SF_AGENT_PO_MODEL_DIR: defaultModelDir(), ...env, SF_AGENT_WORKSPACE: workspaceDir },
+        stderr: "inherit",
+      }),
+    );
     return client;
   };
 }
 
-/** Tools the model under test may use: no publishing, and no new inputs beyond the scenario's. */
+/**
+ * On macOS the server keeps its masking key in the login keychain whatever the home folder; the
+ * key of a throwaway workspace is removed with it. Elsewhere the key file is in the workspace.
+ */
+export function forgetVaultKey(workspaceDir: string, platform: NodeJS.Platform = process.platform): void {
+  // The v1 server's database (startup.ts databaseFile); 0.x has none.
+  const file = join(workspaceDir, "sf-agent.db");
+  if (platform !== "darwin" || !existsSync(file)) return;
+  let keyId: string | undefined;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT key_check FROM vault WHERE id = 1").get() as { key_check: Uint8Array } | undefined;
+    keyId = row && Buffer.from(row.key_check).subarray(0, 16).toString("hex");
+  } catch {
+    // No vault table: the server stopped before it made one.
+  } finally {
+    db.close();
+  }
+  if (keyId) spawnSync("/usr/bin/security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", keyId], { stdio: "ignore" });
+}
+
+/** Tools the model under test may use: no publishing, and no new inputs or metadata beyond the scenario's. */
 export function allowedTool(name: string): boolean {
-  return !/publish|^context_add_|^context_remove_/.test(name);
+  return !/publish|^context_add_|^context_remove_|^metadata_index$/.test(name);
 }
 
 export interface CriterionVerdict {
@@ -46,6 +95,10 @@ export interface SectionResult {
   artifact: string;
   /** Missing when the agent's run failed before it ended. */
   agent?: AgentRun;
+  /** With the v1 server: each workflow step the agent submitted, and how many tries the server sent back. */
+  steps?: StepTries[];
+  /** The approval pages the runner answered during the task. */
+  approvals?: ApprovalRecord[];
   /** Why the task or its judging failed; the section then scores 0. */
   error?: string;
 }
@@ -61,24 +114,58 @@ export interface ScenarioResult {
   score: number;
   /** Why the scenario could not run at all (for example its inputs failed to load). */
   error?: string;
+  /** The approval pages the runner answered while it loaded the inputs (the input review). */
+  approvals?: ApprovalRecord[];
+}
+
+/** A workflow step as the agent went through it. */
+export interface StepTries {
+  step: string;
+  /** Answers the server sent back, each counting as an attempt. */
+  sentBack: number;
+  /** Whether an answer was accepted (passed, or saved part of the step). */
+  accepted: boolean;
+  /** The step failed its checks after the last attempt allowed, and the run went on without it. */
+  failed?: boolean;
+}
+
+/** The share of steps whose first counted answer was accepted, or undefined with no steps. */
+export function firstTryShare(steps: readonly StepTries[]): number | undefined {
+  const tried = steps.filter((s) => s.accepted || s.sentBack);
+  return tried.length ? tried.filter((s) => s.accepted && !s.sentBack).length / tried.length : undefined;
 }
 
 const CONTEXT = "eval";
 
-export async function runScenario(scenario: Scenario, model: Model, judge: Model, connect: Connect, opts: { maxTurns?: number } = {}): Promise<ScenarioResult> {
+export interface RunOptions {
+  maxTurns?: number;
+  /** Answers the approval pages the server opens; its records are split by task. */
+  approver?: Approver;
+}
+
+export async function runScenario(scenario: Scenario, model: Model, judge: Model, connect: Connect, opts: RunOptions = {}): Promise<ScenarioResult> {
   const started = Date.now();
   const result: ScenarioResult = { scenario: scenario.id, model: model.id, judge: judge.id, startedAt: new Date(started).toISOString(), durationMs: 0, sections: [], score: 0 };
   const workspace = await mkdtemp(join(tmpdir(), "sf-agent-eval-"));
+  const approvalsAtStart = opts.approver?.records.length ?? 0;
+  let loaded = false;
   let client: Client | undefined;
   try {
     client = await connect(workspace);
     // The runner's own calls may load inputs; the model's calls go through allowedTool.
-    const raw = toolCaller(client);
-    await mustCall(raw, "context_add_file", { context: CONTEXT, path: scenario.inputsDir });
-    if (scenario.metadataDir) await mustCall(raw, "context_add_metadata", { context: CONTEXT, provider: "local", location: scenario.metadataDir });
-    const inputs = (await mustCall(raw, "context_read", { context: CONTEXT })).text;
-
+    const raw = toolCaller(client, opts.approver);
     const { tools } = await client.listTools();
+    const offered = new Set(tools.map((t) => t.name));
+    await mustCall(raw, "context_add_file", { context: CONTEXT, path: scenario.inputsDir });
+    if (scenario.metadataDir) {
+      // 0.x adds the metadata to the context; v1 indexes it.
+      if (offered.has("context_add_metadata")) await mustCall(raw, "context_add_metadata", { context: CONTEXT, provider: "local", location: scenario.metadataDir });
+      else await indexMetadata(raw, scenario.metadataDir);
+    }
+    const inputs = (await mustCall(raw, "context_read", { context: CONTEXT })).text;
+    if (opts.approver) result.approvals = opts.approver.records.slice(approvalsAtStart);
+    loaded = true;
+
     const specs: ToolSpec[] = tools
       .filter((t) => allowedTool(t.name))
       .map((t) => ({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema as Record<string, unknown> }));
@@ -87,13 +174,23 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
     const order = Object.keys(TASKS) as Task[];
     const sections = [...scenario.sections].sort((a, b) => order.indexOf(a.task as Task) - order.indexOf(b.task as Task));
     for (const section of sections) {
-      result.sections.push(await runSection(client, raw, scenario, section, model, judge, specs, inputs, opts));
+      result.sections.push(await runSection(client, raw, scenario, section, model, judge, specs, inputs, offered.has("workflow_start"), opts));
     }
     result.score = round(result.sections.reduce((s, x) => s + x.score, 0) / (result.sections.length || 1));
   } catch (err) {
     result.error = message(err);
+    // A page that could not be answered while loading says why the load failed.
+    if (!loaded && opts.approver) {
+      await opts.approver.settled();
+      result.approvals = opts.approver.records.slice(approvalsAtStart);
+    }
   } finally {
     await client?.close().catch(() => undefined);
+    try {
+      forgetVaultKey(workspace);
+    } catch {
+      // The workspace goes anyway; a key left behind opens nothing without it.
+    }
     await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
     result.durationMs = Date.now() - started;
   }
@@ -101,9 +198,10 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
 }
 
 /**
- * Runs one task and judges what it saved. The judged artifact is the last one this
- * task saved with its own save tool, so an earlier draft, or something saved by
- * another task, is never scored in its place. A failure here costs this section only.
+ * Runs one task and judges what it saved. The judged artifact is the last one this task saved:
+ * with its workflow's last step (v1), or with its own save tool (0.x, or a revision), so an
+ * earlier draft, or something saved by another task, is never scored in its place. A failure
+ * here costs this section only.
  */
 async function runSection(
   client: Client,
@@ -114,28 +212,46 @@ async function runSection(
   judge: Model,
   specs: ToolSpec[],
   inputs: string,
-  opts: { maxTurns?: number },
+  guided: boolean,
+  opts: RunOptions,
 ): Promise<SectionResult> {
   const { saveTool, getTool } = TASKS[section.task as Task];
   const out: SectionResult = { title: section.title, task: section.task, score: 0, verdicts: [], artifact: "" };
-  let saved: { id: string; result: string } | undefined;
+  let saved: { id: string; tool: string; result: string } | undefined;
+  const steps = new Map<string, StepTries>();
+  const approvalsBefore = opts.approver?.records.length ?? 0;
   const call: CallTool = async (name, args) => {
     if (!allowedTool(name)) return { text: `The tool ${name} is not available in this evaluation.`, isError: true };
     const r = await raw(name, args);
-    const id = name === saveTool && !r.isError ? r.text.match(/ as (\S+), version /)?.[1] : undefined;
-    if (id) saved = { id, result: r.text };
+    if (r.isError) return r;
+    if (name === saveTool && args.context === CONTEXT) {
+      const id = r.text.match(/ as (\S+), version /)?.[1];
+      if (id) saved = { id, tool: saveTool, result: r.text };
+    } else if (name === "workflow_submit" && args.context === CONTEXT && args.workflow === section.task && typeof args.step === "string") {
+      const step = steps.get(args.step) ?? { step: args.step, sentBack: 0, accepted: false };
+      steps.set(args.step, step);
+      const outcome = submitOutcome(args.step, r.text);
+      if (outcome === "sent back") step.sentBack++;
+      else if (outcome === "failed") (step.sentBack++, (step.failed = true));
+      else if (outcome !== "not counted") step.accepted = true;
+      const id = outcome === "passed" ? workflowSave(args.step, r.text) : undefined;
+      if (id) saved = { id, tool: "workflow_submit", result: r.text };
+    }
     return r;
   };
   try {
     const prompt = await client.getPrompt({ name: section.task, arguments: { context: CONTEXT, ...(scenario.industry ? { industry: scenario.industry } : {}) } });
     const text = prompt.messages.map((m) => (m.content.type === "text" ? m.content.text : "")).join("\n\n");
-    out.agent = await model.runAgent(`${withLanguage(text, scenario.language)}\n\n${UNATTENDED}`, specs, call, opts);
+    out.agent = await model.runAgent(`${withLanguage(text, scenario.language)}\n\n${UNATTENDED}${guided ? ` ${UNATTENDED_PAGES}` : ""}`, specs, call, opts);
+    if (guided) out.steps = [...steps.values()];
     if (saved) {
       const doc = await mustRead(raw, "context_read", { context: CONTEXT, ids: [saved.id] });
       // The structured form shows fields the Markdown leaves out (for example Jira keys), and the
-      // save tool's answer carries the server's own quality check, which some criteria refer to.
+      // save's answer carries the server's own quality check, which some criteria refer to.
       const structured = getTool ? `\n\n<structured tool="${getTool}">\n${(await mustRead(raw, getTool, { context: CONTEXT, artifactId: saved.id })).text}\n</structured>` : "";
-      out.artifact = `${doc.text}${structured}\n\n<last_save_result tool="${saveTool}">\n${saved.result}\n</last_save_result>`;
+      // The newest run only: a run closed by a restart is not what was saved.
+      const status = guided ? `\n\n<workflow_status>\n${newestRun((await mustRead(raw, "workflow_status", { context: CONTEXT, workflow: section.task })).text)}\n</workflow_status>` : "";
+      out.artifact = `${doc.text}${structured}\n\n<last_save_result tool="${saved.tool}">\n${saved.result}\n</last_save_result>${status}`;
     }
     out.verdicts = await judgeSection(judge, scenario, section, out.artifact, inputs);
     out.score = score(out.verdicts);
@@ -144,7 +260,51 @@ async function runSection(
     out.verdicts = section.criteria.map((criterion) => ({ criterion, pass: false, reason: "The task or its judging failed." }));
     out.score = 0;
   }
+  if (opts.approver) {
+    await opts.approver.settled();
+    out.approvals = opts.approver.records.slice(approvalsBefore);
+    // A page the runner could not answer is the runner's fault, not the model's: the task counts as failed, not scored.
+    const failed = out.approvals.filter((a) => !a.ok);
+    if (failed.length && !out.error) {
+      out.error = `The runner could not answer ${failed.length} approval page(s): ${failed.map((a) => a.error ?? a.page).join("; ")}`;
+      out.score = 0;
+    }
+  }
   return out;
+}
+
+/** What the server made of a step's answer, from the first words of workflow_submit's reply (workflow/tools.ts). */
+export function submitOutcome(step: string, reply: string): "passed" | "progress" | "sent back" | "failed" | "not counted" {
+  const head = `Step "${step}" `;
+  if (reply.startsWith(`${head}passed`)) return "passed";
+  if (reply.startsWith(`${head}was sent back`)) return "sent back";
+  if (reply.startsWith(`${head}failed its checks`)) return "failed";
+  if (reply.startsWith(`${head}is still open`) || reply.startsWith("Every step of run")) return "not counted";
+  return "progress";
+}
+
+/** The document a workflow's last step saved, from its "passed" reply: "Saved as doc-..., version N". */
+export function workflowSave(step: string, reply: string): string | undefined {
+  const first = reply.split("\n", 1)[0]!;
+  return first.startsWith(`Step "${step}" passed`) ? first.match(/Saved as (doc-[0-9a-f]+), version \d+/)?.[1] : undefined;
+}
+
+/** The first run workflow_status lists, the newest. */
+export function newestRun(status: string): string {
+  return status.split(/\n\n(?=Run run-)/)[0]!;
+}
+
+/** Indexes a scenario's metadata folder with v1's metadata_index, and waits for it to finish. */
+async function indexMetadata(call: CallTool, dir: string, timeoutMs = 10 * 60_000): Promise<void> {
+  await mustCall(call, "metadata_index", { project: dir });
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const { text } = await mustCall(call, "metadata_sources", { context: CONTEXT });
+    if (/\bfailed\b/i.test(text)) throw new Error(`Loading the scenario failed at metadata_index: ${text}`);
+    if (text.startsWith("Indexed:")) return;
+    if (Date.now() > until) throw new Error("Loading the scenario failed at metadata_index: the index was not ready in time.");
+    await new Promise((r) => setTimeout(r, 500));
+  }
 }
 
 /**
@@ -155,9 +315,13 @@ async function runSection(
 export const UNATTENDED =
   "No one is available to answer questions during this task. Where you would ask the user, make the most reasonable assumption, state it, list it as an open question, and finish the task, including saving the result.";
 
+/** Added with the v1 server, whose steps open pages for the user to confirm. */
+export const UNATTENDED_PAGES = "A page that opens in the browser for the user to confirm is confirmed as it is proposed.";
+
 /**
- * 0.x has no output language setting (FE3 comes in v1), so for a scenario in
- * another language the runner says which language to write in, the way a user would.
+ * For a scenario in another language the runner says which language to write in, the way a
+ * user would. 0.x has no language setting; with v1 the agent is told to pass it to
+ * workflow_start when the user names the language, and the rubrics check the output's language.
  */
 export function withLanguage(prompt: string, language: string): string {
   if (language === "en") return prompt;
@@ -174,14 +338,24 @@ function languageName(language: string): string {
   return LANGUAGE_NAMES[language] ?? new Intl.DisplayNames(["en"], { type: "language" }).of(language) ?? language;
 }
 
+const CALL_TIMEOUTS = { timeout: 120_000, resetTimeoutOnProgress: true, onprogress: () => undefined, maxTotalTimeout: 30 * 60_000 };
+
 /** Calls any tool. Only the runner uses it directly; the model's calls are filtered first. */
-function toolCaller(client: Client): CallTool {
+function toolCaller(client: Client, approver?: Approver): CallTool {
   return async (name, args) => {
+    // A page the approver could not answer would keep the call waiting: it is given up, and the
+    // server withdraws the page.
+    const abort = new AbortController();
+    const off = approver?.onFailure((error) => abort.abort(new Error(`an approval page could not be answered (${error})`)));
     try {
-      const r = (await client.callTool({ name, arguments: args })) as { content?: { type: string; text?: string }[]; isError?: boolean };
+      // A call may wait minutes: the first one loads the detection model (a download on a fresh
+      // cache), and a page waits for the approver. The server reports progress meanwhile.
+      const r = (await client.callTool({ name, arguments: args }, undefined, { ...CALL_TIMEOUTS, signal: abort.signal })) as { content?: { type: string; text?: string }[]; isError?: boolean };
       return { text: (r.content ?? []).map((c) => c.text ?? "").join("\n"), isError: Boolean(r.isError) };
     } catch (err) {
       return { text: `Tool call failed: ${(err as Error).message}`, isError: true };
+    } finally {
+      off?.();
     }
   };
 }
