@@ -212,10 +212,11 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
   if (source.length > MAX_APEX_LENGTH) return { type, name, file, attrs: { ...attrs, tooLarge: true }, text: "" };
   // One space for every run of whitespace (blanked comments included): the patterns below
   // then never meet a long run, where backtracking would cost quadratic time.
-  let code = apexCode(source).replace(/\s+/g, " ");
+  const blanked = apexCode(source);
+  let code = blanked.replace(/\s+/g, " ");
   const seen = new Set<string>();
   const add = (ref: Ref) => {
-    const id = ("type" in ref ? `${ref.kind}|${String(ref.type)}|${ref.name}` : `${ref.kind}||${ref.object}|${ref.path ?? ""}`).toLowerCase();
+    const id = ("field" in ref ? `${ref.kind}|||${ref.field}` : "type" in ref ? `${ref.kind}|${String(ref.type)}|${ref.name}` : `${ref.kind}||${ref.object}|${ref.path ?? ""}`).toLowerCase();
     if (!seen.has(id)) {
       seen.add(id);
       refs.push(ref);
@@ -334,10 +335,17 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     const path = m[2]!.replace(/ /g, "").slice(1);
     const lower = head.toLowerCase();
     const declared = typeOf(head, m.index);
-    if (lower === "schema") {
-      // Schema.SObjectType.Policy__c.fields.Status__c, Schema.Policy__c.Status__c; not
-      // describe properties (Schema.SObjectType.Account.keyPrefix).
-      const s = /^sobjecttype\./i.test(path) ? /^sobjecttype\.([A-Za-z_]\w*)(?:\.fields\.([A-Za-z_]\w*))?/i.exec(path) : /^([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?/.exec(path);
+    if (lower === "schema" || (lower === "sobjecttype" && !declared)) {
+      // Schema.SObjectType.Policy__c.fields.Status__c, Schema.Policy__c.Status__c,
+      // SObjectType.Account.FieldSets.Card; not describe properties
+      // (Schema.SObjectType.Account.keyPrefix).
+      const full = lower === "schema" ? path : `sobjecttype.${path}`;
+      const set = /^(?:sobjecttype\.)?([A-Za-z_]\w*)\.fieldsets\.([A-Za-z_]\w*)/i.exec(full);
+      if (set) {
+        add({ kind: "reads", type: "FieldSet", name: `${set[1]}.${set[2]}` });
+        continue;
+      }
+      const s = /^sobjecttype\./i.test(full) ? /^sobjecttype\.([A-Za-z_]\w*)(?:\.fields\.([A-Za-z_]\w*))?/i.exec(full) : /^([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?/.exec(full);
       if (s) objectRef("reads", s[1]!, s[2] && !/^sobjecttype$/i.test(s[2]) ? s[2] : undefined);
       continue;
     }
@@ -359,6 +367,16 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
       const field = /^(?:fields|sobjectfield)$/i.test(segments[0]!) ? segments[1] : segments[0];
       objectRef("reads", head, field && !/^sobjecttype$/i.test(field) ? field : undefined);
     }
+  }
+  // Fields reached through what the code does not type (a method's result, a map's value,
+  // an untyped variable) or named in strings (record.get('Foo__c'), queries built from
+  // strings): linked by name when one object alone has the field. A name after FROM is an
+  // object.
+  for (const m of code.matchAll(/\. ?([A-Za-z_]\w*__(?:c|pc))\b(?! ?\()/gi)) add({ kind: "reads", field: m[1]! });
+  // The strings are where the blanked code has quotes around spaces; comments are not.
+  for (const m of blanked.matchAll(/'( {1,5000})'/g)) {
+    const text = source.slice(m.index + 1, m.index + 1 + m[1]!.length);
+    for (const w of text.matchAll(/(?<!\w)(?<!\bfrom\s+)([A-Za-z_]\w*__(?:c|pc))\b/gi)) add({ kind: "reads", field: w[1]! });
   }
   // Custom settings and metadata read by method: Settings__c.getInstance().
   for (const m of code.matchAll(/(?<![\w.])([A-Za-z_]\w*__(?:c|mdt)) ?\. ?get\w* ?\(/gi)) objectRef("reads", m[1]!);
