@@ -23,6 +23,7 @@ import {
   storyDescription,
 } from "./backlog.js";
 import { atlassianCall, decisionComment, type PublishKit } from "./publish.js";
+import { contextLanguage } from "./checks.js";
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
@@ -141,7 +142,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       const note = hidden ? ` ${hidden} value(s) written in clear were masked; use the pseudonyms in later versions.` : "";
       return text(
         `Saved backlog "${doc.title}" as ${doc.id}, version ${meta.version} (${backlog.epics.length} epics, ${stories} stories, status ${meta.status}).${note}\n\n` +
-          findingsToText(checkBacklog(backlog, maskedDocs(context))),
+          findingsToText(checkBacklog(backlog, maskedDocs(context), contextLanguage(contexts, context))),
       );
     }),
   );
@@ -175,7 +176,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     },
     guard(async ({ context, artifactId }: { context: string; artifactId: string }) => {
       const { backlog } = loadBacklog(context, artifactId);
-      return text(findingsToText(checkBacklog(backlog, maskedDocs(context))));
+      return text(findingsToText(checkBacklog(backlog, maskedDocs(context), contextLanguage(contexts, context))));
     }),
   );
 

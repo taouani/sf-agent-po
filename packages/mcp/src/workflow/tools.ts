@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { WorkflowRun } from "@sf-agent-po/core";
 import { z } from "zod";
 import { INDUSTRY_IDS, resolveIndustry } from "../agents/industries.js";
+import { OUTPUT_LANGUAGES, type OutputLanguage } from "../checks.js";
 import { KeyedLock } from "../artifacts.js";
 import type { Finding } from "../backlog.js";
 import type { CallContext } from "../review.js";
@@ -123,11 +124,17 @@ export function registerWorkflowTools(server: McpServer, kit: WorkflowToolsKit):
         focus: z.string().max(1_000).optional().describe("Optional focus or scope: an area, or the stories, epics or Jira keys in scope."),
         industry: z.string().optional().describe(`Optional industry template: ${INDUSTRY_IDS.join(", ")}.`),
         restart: z.boolean().optional().describe("Start over even if a run is open; the open run is closed."),
+        language: z.enum(OUTPUT_LANGUAGES).optional().describe("The language to write in: en (English, the default) or fr (French). Kept with the context for every later run."),
       },
       annotations: { readOnlyHint: false },
     },
-    guard(async ({ context, workflow, focus, industry, restart }: { context: string; workflow: WorkflowId; focus?: string; industry?: string; restart?: boolean }, call) =>
+    guard(
+      async (
+        { context, workflow, focus, industry, restart, language }: { context: string; workflow: WorkflowId; focus?: string; industry?: string; restart?: boolean; language?: OutputLanguage },
+        call,
+      ) =>
       lock.run(`${context}/${workflow}`, async () => {
+        if (language) kit.contexts.updateSettings(context, { language });
         const open = runs.open(context, workflow);
         if (open && !restart) {
           const changed = focus !== undefined || industry !== undefined ? " It keeps the focus and industry it was started with; set restart to true to change them." : "";

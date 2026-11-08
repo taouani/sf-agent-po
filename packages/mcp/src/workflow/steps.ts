@@ -9,6 +9,7 @@ import { isInputDocument, proposeRequirements, requirementProposalSchema, requir
 import { confirmScope, SourceGoneError, storedScope } from "../scope-tools.js";
 import { readySources } from "../metadata-tools.js";
 import { backlogSchema, checkBacklog, type Finding } from "../backlog.js";
+import { contextLanguage } from "../checks.js";
 import type { StepDefinition, StepOutcome, StepState, WorkflowDefinition, WorkflowKit } from "./engine.js";
 
 const docLine = (d: SourceDocument) => `- [${d.id}] ${d.kind}: ${d.title}`;
@@ -187,7 +188,7 @@ export function methodStep(workflow: keyof typeof WORKFLOWS, expects: { kind: "d
       if (expects.kind === "backlog") {
         const parsed = backlogSchema.safeParse(meta.backlog);
         if (!parsed.success) return { kind: "retry", attempt: true, findings: [error("artifactId", `${answer.artifactId} holds no backlog the check can read: save it again with backlog_save.`)] };
-        const errors = checkBacklog(parsed.data, kit.contexts.documents(context).filter((d) => d.masked)).filter((f) => f.level === "error");
+        const errors = checkBacklog(parsed.data, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context)).filter((f) => f.level === "error");
         if (errors.length) return { kind: "retry", attempt: true, findings: [...errors, error("artifactId", "The backlog's quality check has errors: fix them, save it again with backlog_save, then submit its id.")] };
       }
       return { kind: "passed", findings: [], summary: `Saved as ${doc.id}, version ${meta?.version ?? 1}: ${doc.title}.`, saved: { artifactId: doc.id, version: meta?.version ?? 1 } };

@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import * as legacy from "../../../src/agents/industries.js";
 import { HIGH_LEVEL_DESIGN_TEMPLATE, DETAILED_DESIGN_TEMPLATE, SA_PRINCIPLES, SA_ROLE } from "../../../src/agents/solution-architect.js";
 import { PO_PRACTICES, PO_ROLE } from "../../../src/agents/product-owner.js";
-import { ContentLibrary, parseIndustry } from "../src/index.js";
+import { CHECK_SECTIONS, ContentLibrary, parseChecks, parseIndustry } from "../src/index.js";
 
 const library = new ContentLibrary();
 const dir = mkdtempSync(join(tmpdir(), "sf-agent-content-"));
@@ -43,6 +43,41 @@ describe("built-in content", () => {
     expect(library.industryGuidance("luxury")).toContain("## Industry: Luxury");
     expect(t.regulations).toContain("PIPL");
     expect(library.industries()).toHaveLength(legacy.INDUSTRIES.length + 1);
+  });
+});
+
+describe("check word lists", () => {
+  it("has English and French lists with every section", () => {
+    expect(library.checkLanguages()).toEqual(["en", "fr"]);
+    const en = library.checks("en");
+    const fr = library.checks("fr");
+    expect(en.name).toBe("English");
+    expect(fr.name).toBe("French");
+    for (const key of Object.keys(CHECK_SECTIONS) as (keyof typeof CHECK_SECTIONS)[]) {
+      expect(en[key].length, key).toBeGreaterThan(0);
+      expect(fr[key].length, key).toBeGreaterThan(0);
+    }
+    expect(en.compliance).toContain("encrypt*");
+    expect(fr.vague).toContain("rapidement");
+    expect(fr.articles).toContain("l'");
+    // A common word of both languages would not tell them apart.
+    expect(en.common.filter((w) => fr.common.includes(w))).toEqual([]);
+    expect(() => library.checks("de")).toThrow(/No check word lists for "de". Available: en, fr/);
+  });
+
+  it("refuses a list file that is not right", () => {
+    const sections = (skip = "") =>
+      Object.values(CHECK_SECTIONS)
+        .filter((h) => h !== skip)
+        .map((h) => `## ${h}\n\nWhat it is.\n\n- word`)
+        .join("\n\n");
+    const file = (lang: string, body: string) => `---\nlanguage: ${lang}\nname: Test\n---\n\n${body}\n`;
+    expect(parseChecks(file("de", sections()), "/x/de.md").vague).toEqual(["word"]);
+    expect(() => parseChecks(file("de", sections()), "/x/fr.md")).toThrow(/file name must be de.md/);
+    expect(() => parseChecks(file("de", sections("Articles")), "/x/de.md")).toThrow(/"## Articles" is missing/);
+    expect(() => parseChecks(file("de", `${sections()}\n\n## Other\n\n- x`), "/x/de.md")).toThrow(/unknown section\(s\) "Other"/);
+    expect(() => parseChecks(file("de", sections().replace("- word", "- *word")), "/x/de.md")).toThrow(/"\*" may only end it/);
+    expect(() => parseChecks(file("German", sections()), "/x/German.md")).toThrow(/language code/);
   });
 });
 

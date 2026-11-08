@@ -44,7 +44,11 @@ export {
   INDUSTRY_SECTIONS,
   normaliseIndustry,
   parseFrontMatter,
+  parseChecks,
   parseIndustry,
+  CHECK_SECTIONS,
+  type CheckSection,
+  type CheckWords,
   type IndustrySection,
   type IndustryTemplate,
 } from "./content/library.js";

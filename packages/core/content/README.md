@@ -11,6 +11,13 @@ without touching code. The tests check every file when they run.
   lines, because the agents receive it as one bullet.
 - `agents/<id>.md`: the agents' roles and practices, used as written.
 - `templates/<id>.md`: document templates (high-level and detailed design), used as written.
+- `checks/<language>.md`: the word lists the quality checks use when a context's output language
+  is that one (`en.md`, `fr.md`). The front matter gives the `language` code (the same as the file
+  name) and its `name`. Then come exactly these sections, each a list of `- ` entries, lowercase,
+  one word or phrase each: `Vague words` (not testable), `Generic personas`, `Articles` (allowed
+  before a generic persona), `Compliance terms`, `Joining words` (that join two needs) and
+  `Common words` (to tell the language of a text). An entry ending in `*` also matches the
+  words it starts. Inputs are checked for compliance terms in every language.
 
 Product and object names change between Salesforce releases and licences, so the agents are told
 to confirm them against the org's metadata before relying on them.
