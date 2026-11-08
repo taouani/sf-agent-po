@@ -329,6 +329,10 @@ export function sectionJson(value: unknown): string {
   return json.length > 20_000 ? `${json.slice(0, 20_000)}... (cut here: the section is long)` : json;
 }
 
+/** The rule against inventing the org: the eval's judge found designs and stories naming components no input shows. */
+export const NO_UNSEEN_COMPONENTS =
+  "This holds in every text, reasons and technical notes included: do not state that an org component, process or catalogue exists, or who uses it, unless an input, the index or the design shows it; name anything else as new.";
+
 export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T, D>, kind: DesignKind<D>): StepDefinition<T> {
   return {
     id: spec.id,
@@ -354,7 +358,7 @@ export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T,
         ...earlier.map((k) => `The ${k} section, as saved:\n${sectionJson((design as Record<string, unknown>)[k])}`),
         `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
         "Write only what the inputs, the index or the earlier sections support; mark the rest as an assumption or an open question. " +
-          "This holds in every text, reasons included: do not state that an org component, process or catalogue exists, or who uses it, unless an input or the index shows it. " +
+          `${NO_UNSEEN_COMPONENTS} ` +
           "Give API names as the index has them. Leave out an optional field rather than filling it with a placeholder.",
       ].join("\n\n");
     },

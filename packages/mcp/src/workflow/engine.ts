@@ -120,8 +120,68 @@ export async function briefText(s: Omit<StepState, "run"> & { run: WorkflowRun }
   return (
     `${header}\nStep ${i + 1} of ${steps.length}: ${def.title}${done}${retry}\n\n${await def.brief(s)}\n\n` +
     `Answer shape:\n${def.shape}\n\n` +
+    limitsText(def.schema) +
     `Submit it with workflow_submit (context "${s.context}", workflow "${s.workflow.id}", step "${def.id}", answer as above). Keep pseudonyms such as [PERSON_1] as they are.`
   );
+}
+
+/** The longest text the default allows: fields under it are listed. */
+const LONG_TEXT = 4_000;
+
+/**
+ * The text fields of a schema with a length limit under LONG_TEXT, by path ("components[].type"),
+ * as zod checks them. In a union, the fields of every branch.
+ */
+export function lengthLimits(schema: z.ZodType, path = "", out = new Map<string, number>()): Map<string, number> {
+  const t = schema as unknown as { maxLength?: number | null; _zod: { def: Record<string, any> } };
+  const def = t._zod.def;
+  const at = (k: string) => (path ? `${path}.${k}` : k);
+  switch (def.type) {
+    case "object":
+      for (const [k, v] of Object.entries(def.shape as Record<string, z.ZodType>)) lengthLimits(v, at(k), out);
+      break;
+    case "array":
+      lengthLimits(def.element, `${path}[]`, out);
+      break;
+    case "union":
+      for (const o of def.options as z.ZodType[]) lengthLimits(o, path, out);
+      break;
+    case "intersection":
+      lengthLimits(def.left, path, out);
+      lengthLimits(def.right, path, out);
+      break;
+    case "nonoptional":
+    case "optional":
+    case "default":
+    case "prefault":
+    case "nullable":
+    case "readonly":
+    case "catch":
+      lengthLimits(def.innerType, path, out);
+      break;
+    case "pipe":
+      // Either side may hold the limit: the input, or what follows a preprocess or a transform.
+      lengthLimits(def.in, path, out);
+      lengthLimits(def.out, path, out);
+      break;
+    case "string":
+      if (typeof t.maxLength === "number" && t.maxLength < LONG_TEXT && path) out.set(path, Math.min(out.get(path) ?? Infinity, t.maxLength));
+      break;
+  }
+  return out;
+}
+
+/** The limits as the brief shows them, grouped by what holds them, so that an answer is not sent back for a long field. */
+export function limitsText(schema: z.ZodType): string {
+  const groups = new Map<string, string[]>();
+  for (const [path, n] of lengthLimits(schema)) {
+    const cut = path.lastIndexOf(".");
+    const [parent, field] = cut < 0 ? ["", path] : [path.slice(0, cut), path.slice(cut + 1)];
+    groups.set(parent, [...(groups.get(parent) ?? []), `${field} ${n}`]);
+  }
+  if (!groups.size) return "";
+  const list = [...groups].map(([parent, fields]) => (parent ? `${parent}: ${fields.join(", ")}` : fields.join(", "))).join("; ");
+  return `Length limits, in characters for each text (each item of a list on its own); keep names and types short, and put the detail in the longer fields: ${list}.\n\n`;
 }
 
 type Issue = { code: string; path: PropertyKey[]; message: string; errors?: Issue[][] };
