@@ -243,7 +243,9 @@ describe("runScenario with the v1 server", () => {
     expect(r.approvals!.every((a) => a.ok && a.page === "Looks right")).toBe(true);
     expect(r.sections[0]!.approvals).toEqual([{ page: "Confirm the requirements", ok: true }]);
     expect(model.replies.some((t) => t.startsWith('Step "requirements" passed'))).toBe(true);
-    expect(r.sections[0]!.steps).toEqual([{ step: "requirements", sentBack: 1, accepted: true }]);
+    expect(r.sections[0]!.steps).toMatchObject([{ step: "requirements", sentBack: 1, accepted: true }]);
+    expect(r.sections[0]!.steps![0]!.errors!.length).toBeGreaterThan(0);
+    expect(r.sections[0]!.steps![0]!.errors!.every((e) => e.startsWith("ERROR ["))).toBe(true);
     expect(r.sections[1]!.steps).toEqual([{ step: "requirements", sentBack: 0, accepted: true }]);
     // The work saved with the save tool, with the workflow's status for the judge.
     expect(r.sections[0]!.artifact).toContain("The PAS stays the system of record.");
@@ -252,6 +254,7 @@ describe("runScenario with the v1 server", () => {
     const md = reportMarkdown([r], { server: "v1", judge: "fake:judge", date: "today" });
     expect(md).toContain("| fake:guided | 10 | 50% |");
     expect(md).toContain("Workflow steps: 1, 0% passed on the first try; sent back: requirements 1×.");
+    expect(md).toMatch(/Why answers were sent back:\n\n- requirements: ERROR \[/);
     expect(md).toContain("Approval pages answered: Confirm the requirements.");
     expect(model.prompts[0]).toContain("A page that opens in the browser for the user to confirm is confirmed as it is proposed.");
 

@@ -20,7 +20,12 @@ export interface AgentRun {
   finalText: string;
   toolCalls: { name: string; args: Record<string, unknown>; isError: boolean }[];
   turns: number;
+  /** Every input token, cached or not. */
   inputTokens: number;
+  /** The input tokens read from the provider's prompt cache, which cost a tenth or so of the others. */
+  cachedInputTokens?: number;
+  /** The input tokens written to the cache, which Anthropic bills at 1.25 times the others. */
+  cacheWriteTokens?: number;
   outputTokens: number;
   /** Why the loop ended: the model finished, hit the turn limit, or stopped for another reason. */
   stop: "done" | "max_turns" | "max_tokens" | "refusal" | "other";
@@ -69,7 +74,7 @@ export function createModel(spec: string, env: NodeJS.ProcessEnv = process.env, 
     new OpenAI({ apiKey, baseURL: "baseURL" in p ? p.baseURL : undefined, fetch: fetchImpl }),
     // OpenRouter passes max_tokens on to every vendor (max_completion_tokens is OpenAI's own
     // name), and streams, so that a long answer from any vendor stays under HTTP timeouts.
-    provider === "openrouter" ? { maxTokensParam: "max_tokens", stream: true } : {},
+    provider === "openrouter" ? { maxTokensParam: "max_tokens", stream: true, autoCache: /^~?anthropic\//.test(model) } : {},
   );
 }
 
@@ -131,9 +136,16 @@ export class AnthropicModel implements Model {
     const run: AgentRun = { finalText: "", toolCalls: [], turns: 0, inputTokens: 0, outputTokens: 0, stop: "max_turns" };
     while (run.turns < (opts.maxTurns ?? DEFAULT_MAX_TURNS)) {
       run.turns++;
-      // Streaming keeps long answers (a full design) under HTTP timeouts.
-      const response = await this.client.messages.stream({ model: this.model, max_tokens: MAX_TOKENS, tools, messages }).finalMessage();
-      run.inputTokens += response.usage.input_tokens;
+      // Streaming keeps long answers (a full design) under HTTP timeouts. The cache marker moves
+      // to the end of the conversation at each turn, so each turn reads the turns before it.
+      const response = await this.client.messages
+        .stream({ model: this.model, max_tokens: MAX_TOKENS, tools, messages, cache_control: { type: "ephemeral" } })
+        .finalMessage();
+      const read = response.usage.cache_read_input_tokens ?? 0;
+      const written = response.usage.cache_creation_input_tokens ?? 0;
+      run.inputTokens += response.usage.input_tokens + read + written;
+      run.cachedInputTokens = (run.cachedInputTokens ?? 0) + read;
+      run.cacheWriteTokens = (run.cacheWriteTokens ?? 0) + written;
       run.outputTokens += response.usage.output_tokens;
       const text = response.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n").trim();
       if (text) run.finalText = text;
@@ -168,12 +180,21 @@ export class OpenAICompatibleModel implements Model {
     readonly id: string,
     private readonly model: string,
     private readonly client: OpenAI,
-    private readonly options: { maxTokensParam?: "max_tokens" | "max_completion_tokens"; stream?: boolean } = {},
+    /**
+     * `autoCache`: Anthropic's models through OpenRouter cache only when asked; OpenRouter's
+     * top-level cache_control moves the breakpoint to the end of the conversation at each turn.
+     * The other vendors cache on their own.
+     */
+    private readonly options: { maxTokensParam?: "max_tokens" | "max_completion_tokens"; stream?: boolean; autoCache?: boolean } = {},
   ) {}
 
   /** One completion: streamed and put together when the provider streams, else in one answer. */
   private async chat(body: Pick<OpenAI.Chat.ChatCompletionCreateParamsNonStreaming, "model" | "messages" | "tools">): Promise<OpenAI.Chat.ChatCompletion> {
-    const limit = { [this.options.maxTokensParam ?? "max_completion_tokens"]: MAX_TOKENS };
+    const limit = {
+      [this.options.maxTokensParam ?? "max_completion_tokens"]: MAX_TOKENS,
+      // OpenRouter's own field, passed through as it is.
+      ...(this.options.autoCache ? { cache_control: { type: "ephemeral" } } : {}),
+    };
     if (!this.options.stream) return this.client.chat.completions.create({ ...body, ...limit });
     const done = await this.client.chat.completions.stream({ ...body, ...limit, stream_options: { include_usage: true } }).finalChatCompletion();
     // The helper adds fields of its own to the message, which is sent back in the next turn.
@@ -191,6 +212,9 @@ export class OpenAICompatibleModel implements Model {
       run.turns++;
       const response = await this.chat({ model: this.model, tools, messages });
       run.inputTokens += response.usage?.prompt_tokens ?? 0;
+      const details = response.usage?.prompt_tokens_details as { cached_tokens?: number; cache_write_tokens?: number } | undefined;
+      if (details?.cached_tokens !== undefined) run.cachedInputTokens = (run.cachedInputTokens ?? 0) + details.cached_tokens;
+      if (details?.cache_write_tokens !== undefined) run.cacheWriteTokens = (run.cacheWriteTokens ?? 0) + details.cache_write_tokens;
       run.outputTokens += response.usage?.completion_tokens ?? 0;
       const choice = response.choices[0];
       if (!choice) {

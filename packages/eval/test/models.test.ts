@@ -10,9 +10,9 @@ const callTool: CallTool = async (name, args) => ({ text: `${name} saved ${Strin
 type Block = { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
 /** One Messages API answer as the server-sent events the SDK's stream reads. */
-function sse(content: Block[], stopReason: string): Response {
+function sse(content: Block[], stopReason: string, usage: Record<string, number> = {}): Response {
   const events: [string, unknown][] = [
-    ["message_start", { type: "message_start", message: { id: "msg", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } }],
+    ["message_start", { type: "message_start", message: { id: "msg", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0, ...usage } } }],
   ];
   content.forEach((b, index) => {
     if (b.type === "text") {
@@ -55,11 +55,21 @@ describe("Anthropic agent loop", () => {
 
     expect(run).toMatchObject({ finalText: "Saved the design.", turns: 2, stop: "done", inputTokens: 20, outputTokens: 10 });
     expect(run.toolCalls).toEqual([{ name: "design_save", args: { title: "HLD" }, isError: false }]);
-    expect(bodies[0]).toMatchObject({ model: "claude-opus-5-5", stream: true, tools: [{ name: "design_save", input_schema: { type: "object" } }] });
+    expect(bodies[0]).toMatchObject({ model: "claude-opus-5-5", stream: true, cache_control: { type: "ephemeral" }, tools: [{ name: "design_save", input_schema: { type: "object" } }] });
     expect(bodies[1].messages.at(-1)).toEqual({
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu_1", content: "design_save saved HLD", is_error: false }],
     });
+  });
+
+  it("counts the input read from the cache and written to it", async () => {
+    const answers = [
+      sse([{ type: "tool_use", id: "tu_1", name: "design_save", input: { title: "HLD" } }], "tool_use", { cache_creation_input_tokens: 1000 }),
+      sse([{ type: "text", text: "Done." }], "end_turn", { cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 }),
+    ];
+    const fakeFetch = (async () => answers.shift()!) as unknown as typeof fetch;
+    const run = await createModel("anthropic:claude-opus-5-5", { ANTHROPIC_API_KEY: "k" }, fakeFetch).runAgent("Draft.", tools, callTool);
+    expect(run).toMatchObject({ inputTokens: 2070, cachedInputTokens: 1000, cacheWriteTokens: 1050 });
   });
 
   it("stops at the turn limit", async () => {
@@ -151,11 +161,34 @@ describe("OpenAI-compatible agent loop", () => {
     expect(urls[0]).toMatch(/^https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
     expect(bodies[0]).toMatchObject({ model: "anthropic/claude-opus-5.5", max_tokens: 32_000, stream: true, stream_options: { include_usage: true } });
     expect(bodies[0].max_completion_tokens).toBeUndefined();
+    // Anthropic's models cache only when asked: OpenRouter's top-level marker, the messages as they are.
+    expect(bodies[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(bodies[0].messages).toEqual([{ role: "user", content: "Draft." }]);
+    expect(bodies[1].messages.at(-1)).toEqual({ role: "tool", tool_call_id: "c1", content: "design_save saved HLD" });
+    expect(createModel("openrouter:~anthropic/claude-opus-latest", { OPENROUTER_API_KEY: "k" }, fakeFetch)).toBeDefined();
     // The assistant turn goes back as the API knows it.
     const assistant = bodies[1].messages.find((m: any) => m.role === "assistant");
     expect(assistant.tool_calls[0]).toMatchObject({ id: "c1", function: { name: "design_save", arguments: '{"title":"HLD"}' } });
     expect(assistant).not.toHaveProperty("parsed");
     expect(() => createModel("openrouter:x-ai/grok", {})).toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  it("leaves the caching to other vendors through OpenRouter, and counts what they read from it", async () => {
+    const bodies: any[] = [];
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices, ...extra })}\n\n`;
+      const body =
+        chunk([{ index: 0, delta: { role: "assistant", content: "Done." }, finish_reason: null }]) +
+        chunk([{ index: 0, delta: {}, finish_reason: "stop" }]) +
+        chunk([], { usage: { prompt_tokens: 900, completion_tokens: 3, total_tokens: 903, prompt_tokens_details: { cached_tokens: 800, cache_write_tokens: 60 } } }) +
+        "data: [DONE]\n\n";
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const run = await createModel("openrouter:x-ai/grok-7.1", { OPENROUTER_API_KEY: "k" }, fakeFetch).runAgent("Draft.", tools, callTool);
+    expect(bodies[0].messages).toEqual([{ role: "user", content: "Draft." }]);
+    expect(bodies[0].cache_control).toBeUndefined();
+    expect(run).toMatchObject({ inputTokens: 900, cachedInputTokens: 800, cacheWriteTokens: 60 });
   });
 });
 

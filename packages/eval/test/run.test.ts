@@ -219,5 +219,10 @@ describe("judging and reporting", () => {
     expect(md).toContain("| fake:scripted | 7.5 | n/a | design 10, backlog 5 |");
     expect(md).toContain("### Backlog: 5/10");
     expect(md).toContain("- Missed: ");
+    expect(md).toContain("100 input and 50 output tokens");
+    // What the input owed to the cache, when the provider says.
+    r.sections[0]!.agent!.cachedInputTokens = 80;
+    r.sections[0]!.agent!.cacheWriteTokens = 15;
+    expect(reportMarkdown([r], { server: "0.x", judge: "j", date: "d" })).toContain("100 input (80 read from the cache, 15 written to it) and 50 output tokens");
   }, 30_000);
 });

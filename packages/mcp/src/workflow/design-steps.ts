@@ -353,7 +353,9 @@ export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T,
         ...(extra ? [extra] : []),
         ...earlier.map((k) => `The ${k} section, as saved:\n${sectionJson((design as Record<string, unknown>)[k])}`),
         `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
-        "Write only what the inputs, the index or the earlier sections support; mark the rest as an assumption or an open question. Give API names as the index has them. Leave out an optional field rather than filling it with a placeholder.",
+        "Write only what the inputs, the index or the earlier sections support; mark the rest as an assumption or an open question. " +
+          "This holds in every text, reasons included: do not state that an org component, process or catalogue exists, or who uses it, unless an input or the index shows it. " +
+          "Give API names as the index has them. Leave out an optional field rather than filling it with a placeholder.",
       ].join("\n\n");
     },
     async submit(answer, s): Promise<StepOutcome> {
