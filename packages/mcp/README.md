@@ -19,6 +19,10 @@ Requires Node.js 24 or later.
 Add the server to your AI tool's MCP configuration, with the command
 `npx -y sf-agent-po@next`. For Jira and Confluence, set `ATLASSIAN_SITE_URL`,
 `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN` in the server's environment.
+The diagrams of a design written by a workflow are attached to its Confluence page as
+draw.io files and shown with the draw.io app; on a site without the app, publish with
+`diagrams: "mermaid"` to keep their Mermaid source in a code block instead (kept for the
+context).
 
 To add the agent files for your tool to a project:
 

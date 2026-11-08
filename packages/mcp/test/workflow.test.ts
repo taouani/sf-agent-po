@@ -554,7 +554,7 @@ describe("workflow tools", () => {
     expect(doc.content).toContain("| R1 | must | Send the renewal letter 30 days before the end date. |");
     expect(doc.content).toContain("Solution: C1 Renewal letters; Automation: A1 Send_Renewal_Letter; Decisions: D1 Flow or Apex for the letter");
     expect(doc.content).toContain("Not addressed: Text messages wait for the SMS provider.");
-    expect(doc.content).toContain("```mermaid\nflowchart LR");
+    expect(doc.content).toContain("```mermaid diagram=solution\nflowchart LR");
     expect(doc.content).toContain("Policy__c ||--|{ Letter__c");
     expect(JSON.stringify(doc)).not.toContain("Karim");
     expect((doc.metadata.design as { solution: { components: unknown[] } }).solution.components).toHaveLength(1);

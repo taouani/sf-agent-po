@@ -7,7 +7,17 @@ export {
   type AtlassianConfig,
   type IssueState,
 } from "./atlassian.js";
-export { markdownToStorage } from "./confluence-storage.js";
+export { diagramNames, markdownToStorage, type StorageOptions } from "./confluence-storage.js";
+export {
+  DRAWIO_MEDIA_TYPE,
+  drawioMacro,
+  drawioText,
+  drawioXml,
+  layoutDiagram,
+  type DiagramGraph,
+  type DiagramKind,
+  type DiagramLayout,
+} from "./drawio-write.js";
 export { run, type ExecResult } from "./exec.js";
 export { decodeText, htmlToText, loadLocalDocuments, MAX_FILE_BYTES, parseDocument, parseEmail, READABLE_EXTENSIONS, textDocument, type LoadError } from "./files.js";
 export * from "./readers/index.js";

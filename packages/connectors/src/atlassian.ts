@@ -52,7 +52,8 @@ export class AtlassianClient {
     const auth = Buffer.from(`${this.config.email}:${this.config.apiToken}`).toString("base64");
     const res = await this.fetchImpl(`${this.config.siteUrl}${path}`, {
       ...init,
-      headers: { Authorization: `Basic ${auth}`, Accept: "application/json", "Content-Type": "application/json", ...init.headers },
+      // A form sets its own content type, with the boundary.
+      headers: { Authorization: `Basic ${auth}`, Accept: "application/json", ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...init.headers },
     });
     if (!res.ok) {
       throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
@@ -182,6 +183,26 @@ export class AtlassianClient {
       throw err;
     }
     return { pageId: input.pageId, url: this.pageUrl(r, input.pageId), version: r.version?.number ?? input.expectedVersion + 1 };
+  }
+
+  /**
+   * Adds a file to a page, or a new version of the page's file with that name. Returns the
+   * file's version, which a macro showing it names. The page's own version does not change.
+   */
+  async attachFile(input: { pageId: string; name: string; mediaType: string; content: string }): Promise<{ version: number }> {
+    const form = new FormData();
+    form.append("file", new Blob([input.content], { type: input.mediaType }), input.name);
+    form.append("minorEdit", "true");
+    const r = await this.request(`/wiki/rest/api/content/${encodeURIComponent(input.pageId)}/child/attachment`, {
+      method: "PUT",
+      headers: { "X-Atlassian-Token": "no-check" },
+      body: form,
+    });
+    const file = (r?.results ?? []).find((f: any) => f?.title === input.name);
+    const version = Number(file?.version?.number);
+    // A macro naming a wrong version would show an old diagram without a word.
+    if (!Number.isInteger(version) || version < 1) throw new Error(`Confluence did not return the version of the attached file ${input.name}.`);
+    return { version };
   }
 
   private pageUrl(page: any, id: string): string {

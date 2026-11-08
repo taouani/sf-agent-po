@@ -1,6 +1,7 @@
 // The high-level design as Markdown, in the template's sixteen sections, from its JSON. The
 // traceability table is computed from the requirement ids the sections cite.
 
+import type { DiagramGraph } from "@sf-agent-po/connectors";
 import type { Requirement } from "@sf-agent-po/core";
 import { tracedItems, type HighLevelDesign } from "./schema.js";
 
@@ -42,7 +43,7 @@ function diagram(d: NonNullable<NonNullable<HighLevelDesign["solution"]>["diagra
     const [from, to] = [ids.get(e.from), ids.get(e.to)];
     if (from && to) lines.push(`  ${from} -->${e.label ? `|${label(e.label)}|` : ""} ${to}`);
   }
-  return `\`\`\`mermaid\n${lines.join("\n")}\n\`\`\``;
+  return `\`\`\`mermaid diagram=solution\n${lines.join("\n")}\n\`\`\``;
 }
 
 /** An ER diagram of the relationships, when every object name is an identifier Mermaid takes as it is. */
@@ -51,7 +52,28 @@ function erDiagram(objects: NonNullable<HighLevelDesign["dataModel"]>["objects"]
   // A name with a pseudonym in it would lose its brackets, and its value on publishing: no diagram then.
   if (!pairs.length || pairs.some((p) => !/^[A-Za-z]\w*$/.test(p.from) || !/^[A-Za-z]\w*$/.test(p.to))) return undefined;
   const lines = pairs.map((p) => `  ${p.from} ${p.r.kind === "master-detail" ? "||--|{" : "|o--o{"} ${p.to} : ${label(p.r.field)}`);
-  return `\`\`\`mermaid\nerDiagram\n${lines.join("\n")}\n\`\`\``;
+  return `\`\`\`mermaid diagram=data-model\nerDiagram\n${lines.join("\n")}\n\`\`\``;
+}
+
+/**
+ * The diagrams of a high-level design by the name its Mermaid blocks carry ("```mermaid
+ * diagram=solution"), as nodes and edges: Confluence shows them with the draw.io app.
+ */
+export function highLevelDiagrams(d: HighLevelDesign): Record<string, DiagramGraph> {
+  const out: Record<string, DiagramGraph> = {};
+  const s = d.solution?.diagram;
+  if (s) out.solution = { nodes: s.nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind })), edges: s.edges.map((e) => ({ from: e.from, to: e.to, label: e.label })) };
+  const objects = d.dataModel?.objects ?? [];
+  const pairs = objects.flatMap((o) => o.relationships.map((r) => ({ child: o.name.trim(), parent: r.to.trim(), r })));
+  if (pairs.length) {
+    const names = [...new Set(pairs.flatMap((p) => [p.parent, p.child]))];
+    out["data-model"] = {
+      nodes: names.map((name) => ({ id: name, label: name, kind: "object" })),
+      // From the object that holds the field to the one it points to, named by the field as in the Mermaid block.
+      edges: pairs.map((p) => ({ from: p.child, to: p.parent, label: p.r.field })),
+    };
+  }
+  return out;
 }
 
 export function renderHighLevelDesign(d: HighLevelDesign, requirements: readonly Requirement[], gaps: readonly RequirementGap[] = []): string {
