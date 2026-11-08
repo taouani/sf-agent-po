@@ -48,7 +48,9 @@ const NOUN: Record<string, string> = {
   quickaction: "quick action",
   listview: "list view",
 };
-const noun = (type: string) => NOUN[type.replace(/[^A-Za-z]/g, "").toLowerCase()] ?? type;
+/** A Metadata API type as one key, whatever its spacing or case ("Custom Field" is CustomField). */
+const typeKey = (type: string) => type.replace(/[^A-Za-z]/g, "").toLowerCase();
+const noun = (type: string) => NOUN[typeKey(type)] ?? type;
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const txt = (text: string): AdfNode => ({ type: "text", text });
@@ -84,7 +86,10 @@ function details(d: DetailedDesign, type: string, name: string): string[] {
     return [`${a.kind}${a.object ? ` on ${a.object}` : ""}.`, ...(a.responsibility ? [a.responsibility] : []), ...(a.testClass ? [`Test class: ${a.testClass}.`] : [])];
   }
   if (t === "validation rule") {
-    const v = d.dataModel?.objects.flatMap((o) => o.validationRules).find((x) => same(x.name, name.split(".").pop() ?? name));
+    // "Object.Rule": the rule of that object; a bare name only when no other object has a rule by it.
+    const [object, rule] = name.includes(".") ? name.split(".") : [undefined, name];
+    const found = (d.dataModel?.objects ?? []).filter((o) => !object || same(o.name, object)).flatMap((o) => o.validationRules.filter((x) => rule && same(x.name, rule)));
+    const v = found.length === 1 ? found[0] : undefined;
     return v ? [`Error when: ${v.condition}`, `Message: ${v.message}`] : [];
   }
   return [];
@@ -112,9 +117,10 @@ export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTit
         unmatched.add(ref);
         continue;
       }
-      const id = `${story.id}:${c.type.trim()}:${c.name.trim()}`;
-      if (seen.has(id.toLowerCase())) continue;
-      seen.add(id.toLowerCase());
+      // Stable across rewordings Salesforce treats as the same component: the type's letters and the name, in lower case.
+      const id = `${story.id}:${typeKey(c.type)}:${c.name.trim().toLowerCase()}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
       const summary = `${VERB[c.change]} ${noun(c.type)} ${c.name.trim()}`;
       const lines = [`${VERB[c.change]} the ${c.type} ${c.name.trim()}.`, ...details(design, c.type, c.name.trim()), ...(c.notes ? [c.notes] : [])];
       subtasks.push({

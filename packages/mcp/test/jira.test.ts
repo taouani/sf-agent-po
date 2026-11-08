@@ -422,10 +422,10 @@ describe("Jira sub-tasks", () => {
     expect(r.isError).toBeFalsy();
     const shown = seen.at(-1)!;
     expect(shown.target).toContain("5 to create");
-    expect(shown.body).toContain("        S1:CustomField:Account.VIP__c · Create field Account.VIP__c: create Sub-task");
-    expect(shown.body).toContain("        S1:Flow:VIP_Notify · Create flow VIP_Notify: create Sub-task");
-    expect(shown.body).toContain("S3:CustomField:Account.VIP__c · Create field Account.VIP__c: skipped, its story S3 is not published");
-    expect(shown.body).toContain('Sub-tasks (Sub-task) come from the detailed design "VIP flag detailed design".');
+    expect(shown.body).toContain("        Create field Account.VIP__c: create Sub-task");
+    expect(shown.body).toContain("        Create flow VIP_Notify: create Sub-task");
+    expect(shown.body).toContain("        Create field Account.VIP__c: skipped, its story S3 is not published");
+    expect(shown.body.startsWith('Sub-tasks (Sub-task) come from the detailed design "VIP flag detailed design" and are listed under their story.')).toBe(true);
     expect(shown.body).toContain("cites stories that are not in this backlog, so they get no sub-task: S9");
     expect(shown.body).toContain("VIP: Checkbox.");
     expect(shown.body).toContain("Help text: Set by Karim Benali");
@@ -439,14 +439,20 @@ describe("Jira sub-tasks", () => {
     ]);
     expect(JSON.stringify(subtasks[0]!.fields.description)).toContain("Ask Lea Martin");
     expect(r.text).not.toMatch(/Karim|Lea/);
+    expect(r.text).toMatch(/Sub-tasks come from the detailed design doc-[0-9a-f]{10}, the newest that builds this backlog\./);
+    expect(r.text).toContain("Skipped 1 won't-have item(s) and 1 sub-task(s) of stories not published");
 
     // Published again unchanged: nothing to do. A changed note updates the sub-task in place.
     expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" })).text).toContain("Nothing to publish");
     const changed = ddFor(id);
     changed.deployment.components[0]!.notes = "Ask the owner";
+    // Reworded the way Salesforce reads as the same component: the same sub-task.
+    changed.deployment.components[0]!.type = "Custom Field";
+    changed.deployment.components[0]!.name = "account.VIP__c";
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD v2", artifactType: "detailed", extra: { design: changed } });
     const again = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
-    expect(again.text).toMatch(/Updated PORT-\d+ Create field Account\.VIP__c/);
+    expect(again.text).toMatch(/Updated PORT-\d+ Create field account\.VIP__c/);
+    expect(seen.at(-1)!.body).not.toContain("not planned");
     const last = jira.writes.at(-1)!;
     expect(last).toMatchObject({ op: "update" });
     expect(last.fields.parent).toBeUndefined();
@@ -455,6 +461,10 @@ describe("Jira sub-tasks", () => {
     changed.deployment.components[0]!.notes = "Third version";
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD v3", artifactType: "detailed", extra: { design: changed } });
     expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtasks: false })).text).toContain("Nothing to publish");
+    // A backlog no design builds: none is used by default, and the model is told.
+    const other = await call("backlog_save", { context: "acme", backlog: { ...backlog(input.id), title: "Other backlog" } });
+    const otherId = /as (doc-\w+)/.exec(other.text)![1]!;
+    expect((await call("jira_publish", { context: "acme", artifactId: otherId, projectKey: "PORT" })).text).toContain("No detailed design names this backlog in its scope");
   });
 
   it("publishes the stories without sub-tasks when the project has no sub-task type", async () => {
