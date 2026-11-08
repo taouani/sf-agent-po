@@ -139,3 +139,4 @@ export { INDUSTRIES, INDUSTRY_IDS, industryGuidance, resolveIndustry } from "./a
 export { PO_PRACTICES, PO_ROLE, poBacklogPrompt, poReviewStoriesPrompt } from "./agents/product-owner.js";
 export { DETAILED_DESIGN_TEMPLATE, HIGH_LEVEL_DESIGN_TEMPLATE, SA_PRINCIPLES, SA_ROLE, saDetailedDesignPrompt, saHighLevelDesignPrompt } from "./agents/solution-architect.js";
 export { buildTrace, registerTraceTools, renderTrace, traceSummary, type TraceMatrix, type TraceRow, type TraceStatus } from "./trace.js";
+export { planSubtasks, type PlannedSubtask, type SubtaskPlan } from "./subtasks.js";
