@@ -12,7 +12,23 @@ export const DOMAIN_ALLOWLIST: readonly string[] = [
   "MuleSoft", "Tableau", "Slack", "Jira", "Confluence", "Atlassian", "GitHub", "GitLab", "Azure DevOps",
   "Account", "Contact", "Lead", "Opportunity", "Case", "Order", "Product", "Pricebook", "Campaign",
   "Knowledge", "Omni-Channel", "CPQ", "Revenue Cloud", "Field Service", "Shield", "Platform Events",
+  "Person Account", "Record Type", "Validation Rule", "Permission Set", "Field Set",
+  // Field types: the server writes them in its briefs and checks, and the model names them.
+  "AutoNumber", "Checkbox", "Currency", "Date", "DateTime", "Email", "EncryptedText", "ExternalLookup", "Formula",
+  "Geolocation", "Html", "IndirectLookup", "Location", "LongTextArea", "Lookup", "MasterDetail", "MetadataRelationship",
+  "MultiselectPicklist", "Number", "Percent", "Phone", "Picklist", "Summary", "Text", "TextArea", "Time", "Url",
+  "Hierarchy", "Address", "Id", "Name",
+  // The same types as Setup and people write them.
+  "Auto Number", "Date/Time", "Text Area", "Long Text Area", "Rich Text Area", "Encrypted Text", "Roll-Up Summary",
+  "Master-Detail", "Master-Detail Relationship", "Lookup Relationship", "Multi-Select Picklist", "External Lookup",
+  "Indirect Lookup",
 ];
+
+/**
+ * How a term is compared with the allowlist: case, spaces and punctuation left out, so that
+ * "Roll-Up Summary", "rollup summary" and a tagged "Currency," all match.
+ */
+export const allowKey = (term: string) => term.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
 /** A detection model: finds names (and other entities) that no rule can. */
 export type EntityDetector = (text: string) => Promise<Span[]>;
@@ -34,9 +50,9 @@ export interface DetectOptions {
  * the model tagged.
  */
 export function applyPolicy(text: string, spans: readonly Span[], allowlist: readonly string[] = DOMAIN_ALLOWLIST): Span[] {
-  const allowed = new Set(allowlist.map((a) => a.toLowerCase()));
+  const allowed = new Set(allowlist.map(allowKey));
   return spans.filter(
-    (s) => !VISIBLE_TYPES.has(normaliseType(s.type)) && !(s.source === "ner" && allowed.has(text.slice(s.start, s.end).trim().toLowerCase())),
+    (s) => !VISIBLE_TYPES.has(normaliseType(s.type)) && !(s.source === "ner" && allowed.has(allowKey(text.slice(s.start, s.end)))),
   );
 }
 

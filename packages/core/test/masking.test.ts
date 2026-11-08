@@ -178,6 +178,16 @@ describe("the policy (MA1)", () => {
     expect(kept.map((s) => text.slice(s.start, s.end))).toEqual(["Kenji Watanabe"]);
   });
 
+  it("never takes a field type for a person (the eval saw Currency masked)", () => {
+    const text = "Premium__c is a Currency field, Rate__c a Percent";
+    const ner = (word: string): Span => ({ start: text.indexOf(word), end: text.indexOf(word) + word.length, type: "PERSON", source: "ner" });
+    expect(applyPolicy(text, [ner("Currency"), ner("Percent")])).toEqual([]);
+    // As Setup writes them, and with punctuation the model took into the span; a name around one stays masked.
+    const more = "A Roll-Up Summary, a Master-Detail and a Date/Time, Rose Currency";
+    const at = (word: string): Span => ({ start: more.indexOf(word), end: more.indexOf(word) + word.length, type: "PERSON", source: "ner" });
+    expect(applyPolicy(more, [at("Roll-Up Summary,"), at("Master-Detail"), at("Date/Time,"), at("Rose Currency")]).map((s) => more.slice(s.start, s.end))).toEqual(["Rose Currency"]);
+  });
+
   it("runs the model and merges its spans with the rules", async () => {
     const text = "Call Emily Carter at emily@example.com";
     const model = async (t: string): Promise<Span[]> => [{ start: t.indexOf("Emily"), end: t.indexOf(" at"), type: "PERSON", source: "ner" }];

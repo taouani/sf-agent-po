@@ -204,3 +204,12 @@ describe("requirement coverage", () => {
     expect(checkBacklog(draft, docs).map((f) => f.message)).toContain("Epic has no stories.");
   });
 });
+
+describe("field types and masking", () => {
+  it("keeps every field type the checks name out of masking", async () => {
+    const { DOMAIN_ALLOWLIST } = await import("@sf-agent-po/core");
+    const { FIELD_TYPES } = await import("../src/design/schema.js");
+    const allowed = new Set(DOMAIN_ALLOWLIST.map((a) => a.toLowerCase()));
+    expect(FIELD_TYPES.filter((t) => !allowed.has(t.toLowerCase()))).toEqual([]);
+  });
+});
