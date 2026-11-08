@@ -62,17 +62,62 @@ export interface DownloadOptions {
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+/** The reasons Node gives for a failed request, from the error and its causes: "fetch failed" alone says nothing. */
+function networkReason(err: unknown): string {
+  const parts: string[] = [];
+  const add = (e: unknown, depth: number): void => {
+    if (!e || depth > 5) return;
+    const { code, message, errors, cause } = e as { code?: unknown; message?: unknown; errors?: unknown; cause?: unknown };
+    const text = typeof message === "string" ? message : typeof e === "object" ? "" : String(e);
+    for (const part of [text, typeof code === "string" ? code : ""]) if (part && !parts.includes(part)) parts.push(part);
+    // A host with IPv4 and IPv6 addresses fails with an AggregateError of one error per address.
+    if (Array.isArray(errors)) for (const one of errors) add(one, depth + 1);
+    add(cause, depth + 1);
+  };
+  add(err, 0);
+  // A code is left out when a message already says it.
+  return parts.filter((p) => !parts.some((q) => q !== p && q.includes(p))).join(": ") || "unknown error";
+}
+
+const CERTIFICATE = /CERT|certificate/i;
+
+/** How to place a model file by hand when it cannot be downloaded. */
+const byHand = (url: string, path: string) =>
+  `You can also download ${url} yourself and save it as ${path}: the server checks it against its checksum before using it.`;
+
+/** A connection to huggingface.co that could not be made: the reason, the likely fix, and how to place the file by hand. */
+function connectFailed(url: string, path: string, err: unknown): Error {
+  const reason = networkReason(err);
+  const fix = CERTIFICATE.test(reason)
+    ? "The certificate the server got was not one Node trusts, which happens when a company proxy or an antivirus inspects HTTPS. " +
+      "Add NODE_OPTIONS=--use-system-ca to the server's environment so that Node trusts the certificates of your operating system, or set NODE_EXTRA_CA_CERTS to your company's certificate file."
+    : "If this computer reaches the internet through a proxy, add HTTPS_PROXY (the proxy's address) and NODE_USE_ENV_PROXY=1 to the server's environment: Node does not use the system's proxy on its own. " +
+      "huggingface.co sends the larger files from its download hosts (*.hf.co, *.huggingface.co), so a firewall must allow them too.";
+  return new Error(`Could not download the name detection model from huggingface.co (${reason}). ${fix} ${byHand(url, path)}`, { cause: err });
+}
+
 /** Streams a download into `partial` while hashing it, and stops at the expected size. */
-async function download(url: string, partial: string, file: ModelFile, opts: DownloadOptions): Promise<string> {
-  const res = await (opts.fetch ?? fetch)(url, { headers: { "user-agent": "sf-agent-po" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 15 * 60_000) });
-  if (!res.ok || !res.body) throw new Error(`Could not download the detection model: ${res.status} ${url}`);
+async function download(url: string, path: string, partial: string, file: ModelFile, opts: DownloadOptions): Promise<string> {
+  const res = await (opts.fetch ?? fetch)(url, { headers: { "user-agent": "sf-agent-po" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 15 * 60_000) }).catch((err: unknown) => {
+    throw connectFailed(url, path, err);
+  });
+  if (!res.ok || !res.body) throw new Error(`Could not download the detection model: ${res.status} ${url}. ${byHand(url, path)}`);
   const hash = createHash("sha256");
   const out = await open(partial, "w");
   let size = 0;
   try {
-    for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+    const reader = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await reader.next().catch((err: unknown) => {
+        throw new Error(`The download of the detection model file ${file.path} was cut or timed out (${networkReason(err)}). Try again. ${byHand(url, path)}`, { cause: err });
+      });
+      if (next.done) break;
+      const chunk = next.value;
       size += chunk.length;
-      if (size > file.size) throw new Error(`The detection model file ${file.path} is larger than expected (${file.size} bytes).`);
+      if (size > file.size) {
+        await reader.return?.();
+        throw new Error(`The detection model file ${file.path} is larger than expected (${file.size} bytes).`);
+      }
       hash.update(chunk);
       await out.write(chunk);
     }
@@ -108,8 +153,11 @@ async function loadFile(path: string, manifest: ModelManifest, file: ModelFile, 
   await mkdir(dirname(path), { recursive: true });
   const partial = `${path}.${randomUUID()}.partial`;
   try {
-    const actual = await download(url, partial, file, opts);
-    if (actual !== file.sha256) throw new Error(`The detection model file ${file.path} does not match its checksum (got ${actual}); it was not saved.`);
+    const actual = await download(url, path, partial, file, opts);
+    if (actual !== file.sha256)
+      throw new Error(
+        `The detection model file ${file.path} does not match its checksum (got ${actual}); it was not saved. A company filter may have answered in place of huggingface.co. ${byHand(url, path)}`,
+      );
     try {
       await rename(partial, path);
     } catch (err) {

@@ -183,6 +183,56 @@ describe("model files", () => {
     await expect(modelFile(join(tmp, "offline"), manifest(), file(), { fetch: offline })).rejects.toThrow(/fetch failed/);
   });
 
+  it("names the network's reason behind \"fetch failed\" and the fix for it", async () => {
+    const failing = (cause: unknown): Fetch =>
+      async () => {
+        throw new TypeError("fetch failed", { cause });
+      };
+    const dns = Object.assign(new Error("getaddrinfo ENOTFOUND huggingface.co"), { code: "ENOTFOUND" });
+    const dir = join(tmp, "proxy");
+    const err = (await modelFile(dir, manifest(), file(), { fetch: failing(dns) }).catch((e: Error) => e)) as Error;
+    expect(err.message).toContain("(fetch failed: getaddrinfo ENOTFOUND huggingface.co)");
+    expect(err.message).toContain("NODE_USE_ENV_PROXY=1");
+    expect(err.message).toContain(`save it as ${join(dir, "test/model/abc123/config.json")}`);
+    expect(err.message).toContain("https://huggingface.co/test/model/resolve/abc123/config.json");
+    expect(err.cause).toBeInstanceOf(TypeError);
+    // A host with two addresses fails with one error for each.
+    const both = Object.assign(new AggregateError([Object.assign(new Error("connect ECONNREFUSED 1.2.3.4:443"), { code: "ECONNREFUSED" })], ""), { code: "ECONNREFUSED" });
+    await expect(modelFile(join(tmp, "both"), manifest(), file(), { fetch: failing(both) })).rejects.toThrow("(fetch failed: connect ECONNREFUSED 1.2.3.4:443)");
+    const cert = Object.assign(new Error("unable to get local issuer certificate"), { code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" });
+    const certErr = (await modelFile(join(tmp, "cert"), manifest(), file(), { fetch: failing(cert) }).catch((e: Error) => e)) as Error;
+    expect(certErr.message).toContain("--use-system-ca");
+    expect(certErr.message).not.toContain("NODE_USE_ENV_PROXY");
+  });
+
+  it("says a download was cut, refused or replaced, with no proxy advice, and how to place the file by hand", async () => {
+    const cut: Fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array([1, 2]));
+            c.error(Object.assign(new TypeError("terminated"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }));
+          },
+        }),
+      );
+    const cutErr = (await modelFile(join(tmp, "cut"), manifest(), file(), { fetch: cut }).catch((e: Error) => e)) as Error;
+    expect(cutErr.message).toContain("was cut or timed out (terminated: other side closed: UND_ERR_SOCKET)");
+    expect(cutErr.message).not.toContain("HTTPS_PROXY");
+    expect(cutErr.message).toContain("save it as");
+    expect(files(join(tmp, "cut"))).toEqual([]);
+    await expect(modelFile(join(tmp, "403"), manifest(), file(), { fetch: fakeFetch(body, [], 403) })).rejects.toThrow(/403 .*save it as/);
+    await expect(modelFile(join(tmp, "page"), manifest(), file(), { fetch: fakeFetch(Buffer.from("<html>blocked</html>")) })).rejects.toThrow(/checksum.*company filter.*save it as/);
+  });
+
+  it("leaves the errors of the disk as they are", async () => {
+    const dir = join(tmp, "disk");
+    mkdirSync(join(dir, "test/model"), { recursive: true });
+    writeFileSync(join(dir, "test/model/abc123"), "a file where the folder should be");
+    const err = (await modelFile(dir, manifest(), file(), { fetch: fakeFetch(body) }).catch((e: Error & { code?: string }) => e)) as Error & { code?: string };
+    expect(err.code).toMatch(/^E/);
+    expect(err.message).not.toContain("huggingface.co");
+  });
+
   it("downloads a cached file again when it was changed", async () => {
     const dir = join(tmp, "changed");
     mkdirSync(join(dir, "test/model/abc123"), { recursive: true });
