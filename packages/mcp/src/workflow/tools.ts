@@ -85,6 +85,11 @@ export async function submitStep(kit: WorkflowKit, call: CallContext, run: Workf
     return briefText({ ...s, run: done }, lead);
   }
 
+  if (outcome.kind === "progress") {
+    const done = kit.runs.record(run.id, def.id, { status: "pending", attempts: 0, findings, answer: outcome.saved }, expected);
+    return briefText({ ...s, run: done }, `${message.trim()}${findings.length ? `\n${findingsText(findings)}` : ""}`);
+  }
+
   const attempts = state.attempts + (outcome.attempt ? 1 : 0);
   if (outcome.attempt && attempts >= MAX_ATTEMPTS) {
     const done = kit.runs.record(run.id, def.id, { status: "failed", attempts, findings, summary: `Failed its checks ${attempts} times; saved with its findings for the user to look at.` }, expected);

@@ -15,6 +15,7 @@ export const PO_PRACTICES = `## Backlog practices
 - **Design alignment.** If a high-level or detailed design is in the context, follow its decisions and put pointers to it in the technical notes (for example "Record-triggered flow on Policy__c, see HLD section 6"). If you disagree with the design or find a gap, raise it as an open question for the Solution Architect rather than contradicting it silently.
 - **Open questions** that block estimation become spikes (type "spike") with a clear question and an output. Other questions go in the open questions list with an owner.
 - **Priorities** use MoSCoW. Won't-have items stay in the backlog as a record of what was agreed, but are not published to Jira. Story points are optional estimates on the 1, 2, 3, 5, 8, 13 scale; leave them out rather than guess when the team estimates itself.
+- **Traceability.** When the context has confirmed requirements (R1, R2...), each story cites in requirementIds the ones it delivers, and each epic the ones its stories deliver. Every Must requirement needs a story, or a reason it is left out.
 - **Dependencies** between stories go in dependsOn, so the team can sequence the work.
 - **Stable ids.** Give epics ids like E1 and stories ids like S1. Keep the ids unchanged when you revise the backlog, so republishing updates the same Jira issues instead of creating new ones.`;
 

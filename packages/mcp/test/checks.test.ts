@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ContextRepository, Database } from "@sf-agent-po/core";
 import { checkRules, contextLanguage, detectLanguage, languageFinding, wordsPattern } from "../src/checks.js";
-import { checkBacklog, checkRequirements, type Backlog } from "../src/index.js";
+import { checkBacklog, checkRequirements, coverageFindings, type Backlog } from "../src/index.js";
+import type { Requirement } from "@sf-agent-po/core";
 
 const doc = (id: string, title: string, content: string) => ({ id, kind: "other" as const, title, source: "x", content, metadata: {}, masked: true, addedAt: "", updatedAt: "" });
 
@@ -147,5 +148,59 @@ describe("checks in French", () => {
       "en",
     );
     expect(english.map((f) => f.message)).toContain("This reads as French, but the context's output language is English: write it in English.");
+  });
+});
+
+describe("requirement coverage", () => {
+  const r = (id: string, priority: Requirement["priority"], sourceIds: string[] = []): Requirement => ({
+    context: "c",
+    id,
+    kind: "functional",
+    statement: `Statement ${id}`,
+    priority,
+    status: "confirmed",
+    origin: "agent",
+    sourceIds,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const story = (id: string, requirementIds: string[], priority?: "must" | "wont") => ({
+    id,
+    type: "story" as const,
+    summary: "Send the renewal letter",
+    persona: "Renewals agent",
+    want: "the letter sent",
+    benefit: "clients renew",
+    acceptanceCriteria: [{ given: "a policy", when: "30 days are left", then: "a letter is sent" }],
+    requirementIds,
+    ...(priority ? { priority } : {}),
+  });
+  const backlog: Backlog = {
+    title: "Renewals",
+    epics: [
+      { id: "E1", summary: "Renewal letters", outcome: "Clients renew on time", stories: [story("S1", ["R1"]), story("S2", ["R2"], "wont")] },
+      { id: "E2", summary: "Later work", outcome: "Clients renew on time", priority: "wont", stories: [story("S3", ["R3"])] },
+    ],
+  };
+
+  it("counts only stories that are published, and needs no story for a won't-have requirement", () => {
+    const findings = coverageFindings(backlog, [r("R1", "must"), r("R2", "must"), r("R3", "could"), r("R4", "wont")], "error");
+    expect(findings.map((f) => `${f.level} ${f.where}`)).toEqual(["error R2", "warning R3"]);
+    expect(coverageFindings(backlog, [r("R2", "must")], "error", new Set(["R2"]))).toEqual([]);
+    expect(coverageFindings(backlog, [r("R2", "must")], "warning")[0]!.level).toBe("warning");
+  });
+
+  it("checks requirement ids, traces inputs through them, and leaves whole-backlog checks out of a draft", () => {
+    const docs = [doc("doc-0000000001", "Audit policy", "Keep every letter for 10 years for the audit.")];
+    const cited = checkBacklog(backlog, docs, "en", { requirements: [r("R1", "must", ["doc-0000000001"]), r("R2", "must")] });
+    expect(cited.filter((f) => f.level === "error").map((f) => f.message)).toEqual(["R3 is not a confirmed requirement: cite only the confirmed ids."]);
+    // The audit input is cited through R1, and the stories through their requirements.
+    expect(cited.some((f) => f.where === "doc-0000000001")).toBe(false);
+    expect(cited.some((f) => f.message.startsWith("No source documents"))).toBe(false);
+    // Without the requirements, ids are not checked.
+    expect(checkBacklog(backlog, docs).some((f) => f.message.includes("not a confirmed requirement"))).toBe(false);
+    const draft = { ...backlog, epics: [{ ...backlog.epics[0]!, stories: [] }] };
+    expect(checkBacklog(draft, docs, "en", { draft: true })).toEqual([]);
+    expect(checkBacklog(draft, docs).map((f) => f.message)).toContain("Epic has no stories.");
   });
 });

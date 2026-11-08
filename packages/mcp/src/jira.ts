@@ -7,18 +7,19 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { adfToText, AtlassianError, type AtlassianClient, type IssueState } from "@sf-agent-po/connectors";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
-import { type Artifact, type ArtifactMeta, getArtifact, hash, type JiraMapping, saveArtifact, updateArtifactMeta } from "./artifacts.js";
+import { type Artifact, type ArtifactMeta, getArtifact, hash, type JiraMapping, updateArtifactMeta } from "./artifacts.js";
 import {
   type AdfNode,
   type Backlog,
   backlogSchema,
-  backlogToMarkdown,
   checkBacklog,
+  coverageFindings,
   type Epic,
   epicDescription,
   findingsToText,
   mapAdfText,
   maskBacklog,
+  saveBacklog,
   type Story,
   storyDescription,
 } from "./backlog.js";
@@ -108,6 +109,18 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
   /** The context's masked documents: the only ones the check and the descriptions may quote. */
   const maskedDocs = (context: string) => contexts.documents(context).filter((d) => d.masked);
 
+  /**
+   * The quality check, with the context's confirmed requirements when the server keeps them: an
+   * item may cite only those. A backlog that cites some is told which ones no story delivers; one
+   * that cites none (from before requirements, or of part of the work) is not.
+   */
+  const quality = (context: string, backlog: Backlog) => {
+    const confirmed = kit.requirements?.list(context).filter((r) => r.status === "confirmed");
+    const findings = checkBacklog(backlog, maskedDocs(context), contextLanguage(contexts, context), confirmed ? { requirements: confirmed } : {});
+    const cites = backlog.epics.some((e) => e.requirementIds?.length || e.stories.some((s) => s.requirementIds?.length));
+    return confirmed && cites ? [...findings, ...coverageFindings(backlog, confirmed, "warning")] : findings;
+  };
+
   const loadBacklog = (context: string, artifactId: string) => {
     const doc = getArtifact(contexts, context, artifactId);
     const meta = doc.metadata as BacklogMeta;
@@ -128,21 +141,13 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     },
     guard(async ({ context, backlog: written }: { context: string; backlog: Backlog }) => {
       const { backlog, hidden } = await maskBacklog(masker, context, written);
-      const sourceIds = [...new Set(backlog.epics.flatMap((e) => [...(e.sourceIds ?? []), ...e.stories.flatMap((s) => s.sourceIds ?? [])]))];
-      const doc = saveArtifact(contexts, context, {
-        kind: "backlog",
-        title: backlog.title,
-        content: backlogToMarkdown(backlog),
-        sourceIds,
-        extra: { backlog },
-        fingerprint: hash(JSON.stringify(backlog)),
-      });
+      const doc = saveBacklog(contexts, context, backlog);
       const meta = doc.metadata;
       const stories = backlog.epics.reduce((n, e) => n + e.stories.length, 0);
       const note = hidden ? ` ${hidden} value(s) written in clear were masked; use the pseudonyms in later versions.` : "";
       return text(
         `Saved backlog "${doc.title}" as ${doc.id}, version ${meta.version} (${backlog.epics.length} epics, ${stories} stories, status ${meta.status}).${note}\n\n` +
-          findingsToText(checkBacklog(backlog, maskedDocs(context), contextLanguage(contexts, context))),
+          findingsToText(quality(context, backlog)),
       );
     }),
   );
@@ -176,7 +181,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     },
     guard(async ({ context, artifactId }: { context: string; artifactId: string }) => {
       const { backlog } = loadBacklog(context, artifactId);
-      return text(findingsToText(checkBacklog(backlog, maskedDocs(context), contextLanguage(contexts, context))));
+      return text(findingsToText(quality(context, backlog)));
     }),
   );
 

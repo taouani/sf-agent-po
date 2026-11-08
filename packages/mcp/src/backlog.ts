@@ -3,8 +3,9 @@
 // before it is saved. Every function here works on the masked backlog; the real values are put
 // back only for the write to Jira (jira.ts).
 
-import type { Masker, SourceDocument } from "@sf-agent-po/core";
+import type { ContextRepository, Masker, Requirement, SourceDocument } from "@sf-agent-po/core";
 import { z } from "zod";
+import { hash, saveArtifact, type Artifact } from "./artifacts.js";
 import { checkRules, languageFinding, type OutputLanguage } from "./checks.js";
 
 const localId = z
@@ -20,6 +21,12 @@ const jiraKey = z
 
 /** Context document ids, as the context tools give them: nothing else (a name, a note) fits. */
 const sourceIds = z.array(z.string().regex(/^doc-[0-9a-f]{10}$/, "use a context document id such as doc-1a2b3c4d5e")).optional();
+
+/** The confirmed requirements an item delivers, by their ids (R1, R2...): the traceability links. */
+const requirementIds = z
+  .array(z.string().regex(/^R[1-9]\d{0,5}$/, "use requirement ids such as R1"))
+  .max(40)
+  .optional();
 
 const labels = z.array(z.string().regex(/^\S+$/, "Jira labels cannot contain spaces")).optional();
 
@@ -45,6 +52,7 @@ export const storySchema = z.object({
   storyPoints: z.number().int().positive().optional(),
   labels,
   dependsOn: z.array(localId).optional().describe("Ids of stories that must be done first."),
+  requirementIds: requirementIds.describe("Ids of the confirmed requirements this story delivers, such as R1."),
   sourceIds: sourceIds.describe("Context document ids this story comes from."),
   jiraKey,
 });
@@ -57,6 +65,7 @@ export const epicSchema = z.object({
   scopeNotes: z.string().optional().describe("What is in and out of scope."),
   priority: z.enum(PRIORITIES).optional(),
   labels,
+  requirementIds: requirementIds.describe("Ids of the confirmed requirements the epic's stories deliver, such as R1."),
   sourceIds,
   jiraKey,
   stories: z.array(storySchema),
@@ -124,17 +133,37 @@ export function mapBacklogText(backlog: Backlog, f: (text: string) => string): B
  * the detection for all fields but the title), keeping its pseudonyms.
  */
 export async function maskBacklog(masker: Masker, context: string, backlog: Backlog): Promise<{ backlog: Backlog; hidden: number }> {
+  // The title is masked alone: it names the artifact, so it must not depend on the other fields.
+  const title = await masker.maskOutput(context, backlog.title);
+  const rest = await maskBacklogFields(masker, context, backlog);
+  const hidden = rest.hidden + Object.values(title.report.counts).reduce((a, b) => a + b, 0);
+  return { backlog: { ...rest.backlog, title: title.text }, hidden };
+}
+
+/** Masks every text field but the title, in one run of the detection. */
+export async function maskBacklogFields(masker: Masker, context: string, backlog: Backlog): Promise<{ backlog: Backlog; hidden: number }> {
   const texts: string[] = [];
   mapBacklogText(backlog, (t) => (texts.push(t), t));
   const unique = [...new Set(texts.slice(1))];
-  // The title is masked alone: it names the artifact, so it must not depend on the other fields.
-  const title = await masker.maskOutput(context, backlog.title);
+  if (!unique.length) return { backlog, hidden: 0 };
   const out = await masker.maskOutputs(context, unique);
   const byText = new Map(unique.map((t, i) => [t, out.texts[i]!]));
-  const hidden = [title.report.counts, out.report.counts].flatMap((c) => Object.values(c)).reduce((a, b) => a + b, 0);
+  const hidden = Object.values(out.report.counts).reduce((a, b) => a + b, 0);
   let first = true;
-  const masked = mapBacklogText(backlog, (t) => (first ? ((first = false), title.text) : byText.get(t)!));
-  return { backlog: masked, hidden };
+  return { backlog: mapBacklogText(backlog, (t) => (first ? ((first = false), t) : byText.get(t)!)), hidden };
+}
+
+/** Saves a masked backlog as a versioned artifact: a new version when its content changed. */
+export function saveBacklog(contexts: ContextRepository, context: string, backlog: Backlog): Artifact {
+  const sourceIds = [...new Set(backlog.epics.flatMap((e) => [...(e.sourceIds ?? []), ...e.stories.flatMap((s) => s.sourceIds ?? [])]))];
+  return saveArtifact(contexts, context, {
+    kind: "backlog",
+    title: backlog.title,
+    content: backlogToMarkdown(backlog),
+    sourceIds,
+    extra: { backlog },
+    fingerprint: hash(JSON.stringify(backlog)),
+  });
 }
 
 const PRIORITY_LABEL: Record<(typeof PRIORITIES)[number], string> = { must: "Must have", should: "Should have", could: "Could have", wont: "Won't have (this time)" };
@@ -148,6 +177,7 @@ export function backlogToMarkdown(backlog: Backlog): string {
     if (epic.priority) out.push(`**Priority:** ${PRIORITY_LABEL[epic.priority]}`, "");
     if (epic.successMetrics?.length) out.push("**Success metrics:**", ...epic.successMetrics.map((m) => `- ${m}`), "");
     if (epic.scopeNotes) out.push(`**Scope:** ${epic.scopeNotes}`, "");
+    if (epic.requirementIds?.length) out.push(`Requirements: ${epic.requirementIds.join(", ")}`, "");
     if (epic.sourceIds?.length) out.push(`Sources: ${epic.sourceIds.join(", ")}`, "");
     for (const s of epic.stories) {
       out.push(`### ${s.id}: ${s.summary}${s.type === "spike" ? " (spike)" : ""}`, "", userStoryText(s), "");
@@ -155,6 +185,7 @@ export function backlogToMarkdown(backlog: Backlog): string {
         s.priority ? `Priority: ${PRIORITY_LABEL[s.priority]}` : undefined,
         s.storyPoints ? `Story points: ${s.storyPoints}` : undefined,
         s.dependsOn?.length ? `Depends on: ${s.dependsOn.join(", ")}` : undefined,
+        s.requirementIds?.length ? `Requirements: ${s.requirementIds.join(", ")}` : undefined,
         s.sourceIds?.length ? `Sources: ${s.sourceIds.join(", ")}` : undefined,
       ].filter(Boolean);
       if (facts.length) out.push(facts.join(" · "), "");
@@ -180,6 +211,20 @@ export interface Finding {
 
 const SCALE = new Set([1, 2, 3, 5, 8, 13]);
 
+export interface BacklogCheckOptions {
+  /** The context's confirmed requirements: an item may cite only these. Left out, requirement ids are not checked. */
+  requirements?: readonly Requirement[];
+  /**
+   * A backlog still being written, in a workflow run: what only the whole backlog shows (an epic
+   * with no stories yet, inputs no item cites) is not checked, and a dependency must be on a story
+   * written so far.
+   */
+  draft?: boolean;
+}
+
+/** Whether a story is won't have, by its own priority or its epic's: it is not published to Jira. */
+const isWont = (epic: Epic, story: Story) => story.priority === "wont" || epic.priority === "wont";
+
 /**
  * Deterministic quality checks on a backlog: structure, INVEST signals, testable acceptance
  * criteria, and traceability back to the inputs, especially security and compliance ones.
@@ -187,7 +232,7 @@ const SCALE = new Set([1, 2, 3, 5, 8, 13]);
  * `language` is the context's output language: the word lists are that language's
  * (content/checks), and a backlog written in another one is flagged.
  */
-export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], language: OutputLanguage = "en"): Finding[] {
+export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], language: OutputLanguage = "en", options: BacklogCheckOptions = {}): Finding[] {
   const rules = checkRules(language);
   const findings: Finding[] = [];
   const add = (level: Finding["level"], where: string, message: string) => findings.push({ level, where, message });
@@ -207,7 +252,7 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
   }
 
   const storyIds = new Set(allStories(backlog).map(({ story }) => story.id));
-  const wontIds = new Set(allStories(backlog).filter(({ epic, story }) => story.priority === "wont" || epic.priority === "wont").map(({ story }) => story.id));
+  const wontIds = new Set(allStories(backlog).filter(({ epic, story }) => isWont(epic, story)).map(({ story }) => story.id));
   const docIds = new Set(contextDocs.map((d) => d.id));
   const referenced = new Set<string>();
   const checkSources = (where: string, sourceIds: string[] | undefined) => {
@@ -216,14 +261,27 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
       if (!docIds.has(id)) add("warning", where, `Source ${id} is not a document in this context.`);
     }
   };
+  const requirements = options.requirements && new Map(options.requirements.map((r) => [r.id, r]));
+  const checkRequirements = (where: string, ids: string[] | undefined) => {
+    if (!requirements) return;
+    const unique = [...new Set(ids ?? [])];
+    // A requirement's own sources are cited through it.
+    for (const id of unique) for (const doc of requirements.get(id)?.sourceIds ?? []) referenced.add(doc);
+    const unknown = unique.filter((id) => !requirements.has(id));
+    if (unknown.length) add("error", where, `${unknown.join(", ")} ${unknown.length === 1 ? "is not a confirmed requirement" : "are not confirmed requirements"}: cite only the confirmed ids.`);
+  };
 
   for (const epic of backlog.epics) {
-    if (!epic.stories.length) add("error", epic.id, "Epic has no stories.");
+    if (!epic.stories.length && !options.draft) add("error", epic.id, "Epic has no stories.");
     checkSources(epic.id, epic.sourceIds);
+    checkRequirements(epic.id, epic.requirementIds);
     for (const s of epic.stories) {
       const where = s.id;
       checkSources(where, s.sourceIds);
-      if (!s.sourceIds?.length && !epic.sourceIds?.length) add("warning", where, "No source documents: the story cannot be traced to a requirement.");
+      checkRequirements(where, s.requirementIds);
+      if (!s.sourceIds?.length && !epic.sourceIds?.length && !s.requirementIds?.length) {
+        add("warning", where, "No source documents and no requirement: the story cannot be traced to what was asked.");
+      }
       if (rules.genericPersona(s.persona)) add("warning", where, `Persona "${s.persona}" is generic; name the role, e.g. "Renewals agent".`);
       if (s.storyPoints !== undefined && !SCALE.has(s.storyPoints)) add("warning", where, `Story points ${s.storyPoints} is not on the 1, 2, 3, 5, 8, 13 scale.`);
       if (s.storyPoints !== undefined && s.storyPoints > 8) add("warning", where, `At ${s.storyPoints} points the story is likely too big for a sprint; consider splitting it.`);
@@ -234,7 +292,8 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
       });
       for (const dep of s.dependsOn ?? []) {
         if (dep === s.id) add("error", where, "A story cannot depend on itself.");
-        else if (!storyIds.has(dep)) add("error", where, `Depends on ${dep}, which is not a story in this backlog.`);
+        else if (!storyIds.has(dep))
+          add("error", where, options.draft ? `Depends on ${dep}, which is not a story written so far: write the epic it is in first, or submit this epic again once it is written.` : `Depends on ${dep}, which is not a story in this backlog.`);
         else if (s.priority !== "wont" && epic.priority !== "wont" && wontIds.has(dep)) add("warning", where, `Depends on ${dep}, which is won't have and is not published to Jira.`);
       }
       if (epic.priority === "wont" && s.priority && s.priority !== "wont") {
@@ -248,7 +307,7 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
     add("error", cycle[0]!, `Circular dependency: ${cycle.join(" depends on ")}. None of these stories can start first.`);
   }
 
-  for (const doc of contextDocs) {
+  for (const doc of options.draft ? [] : contextDocs) {
     const isInput = !(doc.metadata as { artifact?: boolean } | undefined)?.artifact && !["metadata", "org"].includes(doc.kind);
     if (!isInput || referenced.has(doc.id)) continue;
     if (rules.sensitive.test(`${doc.title}\n${doc.content}`)) {
@@ -262,10 +321,34 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
   const wrongLanguage = languageFinding([backlog.title, ...backlog.epics.flatMap((e) => [e.summary, e.outcome]), ...written], language, "backlog");
   if (wrongLanguage) findings.push(wrongLanguage);
 
-  if (backlog.openQuestions?.length && !allStories(backlog).some(({ story }) => story.type === "spike")) {
+  if (!options.draft && backlog.openQuestions?.length && !allStories(backlog).some(({ story }) => story.type === "spike")) {
     add("info", "open questions", "There are open questions but no spikes; consider a spike for any question that blocks estimation.");
   }
   return findings;
+}
+
+/**
+ * The confirmed requirements no story delivers. A won't-have requirement needs no story, and a
+ * won't-have story delivers nothing: it is not published.
+ */
+export function uncoveredRequirements(backlog: Backlog, requirements: readonly Requirement[]): Requirement[] {
+  const covered = new Set(allStories(backlog).flatMap(({ epic, story }) => (isWont(epic, story) ? [] : (story.requirementIds ?? []))));
+  return requirements.filter((r) => r.status === "confirmed" && r.priority !== "wont" && !covered.has(r.id));
+}
+
+/**
+ * What the backlog leaves undelivered: a Must requirement as `must` says (an error in a workflow
+ * run, a warning on a backlog saved by hand), a Should or Could one as a warning. `gaps` are the
+ * requirements the user knows are left out, with the reason: they are not reported.
+ */
+export function coverageFindings(backlog: Backlog, requirements: readonly Requirement[], must: "error" | "warning", gaps: ReadonlySet<string> = new Set()): Finding[] {
+  return uncoveredRequirements(backlog, requirements)
+    .filter((r) => !gaps.has(r.id))
+    .map((r) =>
+      r.priority === "must"
+        ? { level: must, where: r.id, message: `Must requirement ${r.id} is delivered by no story: cite it in the stories that deliver it${must === "error" ? ", or give the reason it is left out" : ""}.` }
+        : { level: "warning", where: r.id, message: `${r.priority === "should" ? "Should" : "Could"} requirement ${r.id} is delivered by no story.` },
+    );
 }
 
 /** Each dependency cycle between stories, as the ids along it with the first repeated at the end. */
@@ -322,7 +405,11 @@ export function storyDescription(story: Story, backlog: Backlog, sourceTitles: M
   });
   if (story.nonFunctional?.length) content.push(heading("Non-functional requirements"), bullets(story.nonFunctional));
   if (story.technicalNotes) content.push(heading("Technical notes"), para(txt(story.technicalNotes)));
-  const facts = [story.storyPoints ? `Story points: ${story.storyPoints}` : "", story.priority ? `Priority: ${story.priority}` : ""].filter(Boolean);
+  const facts = [
+    story.storyPoints ? `Story points: ${story.storyPoints}` : "",
+    story.priority ? `Priority: ${story.priority}` : "",
+    story.requirementIds?.length ? `Requirements: ${story.requirementIds.join(", ")}` : "",
+  ].filter(Boolean);
   if (facts.length) content.push(para(txt(facts.join(" · "))));
   content.push(...footer(backlog, story.sourceIds, sourceTitles));
   return adf(content);
