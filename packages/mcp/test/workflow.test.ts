@@ -494,7 +494,7 @@ describe("workflow tools", () => {
     await submit("user-interface", { components: [{ ...panel, name: "renewalPanel" }] });
     await submit("integrations", { integrations: [] });
 
-    expect((await submit("security", {})).text).toContain("ERROR [Renewals_Agent] The data model gives access through permission set Renewals_Agent");
+    expect((await submit("security", {})).text).toContain("ERROR [Renewals_Agent] The data model gives access through Renewals_Agent, which is neither described here");
     const tests = await submit("security", { permissionSets: [{ name: "Renewals_Agent", status: "new", purpose: "Agents renew policies.", grants: ["Policy__c: read, edit"], stories: ["S1"] }] });
     expect(tests.text).toContain("Step 9 of 12: Test approach");
 
@@ -508,6 +508,9 @@ describe("workflow tools", () => {
       acceptance: [test("S1", "AC1"), test("S1", "AC2"), test("S2", "AC1")],
     });
     expect(deployment.text).toContain("Step 10 of 12: Deployment");
+    // The brief lists what needs a deployment entry.
+    expect(deployment.text).toContain("- CustomField Policy__c.Channel__c\n");
+    expect(deployment.text).toContain("- ApexClass RenewalServiceTest\n");
 
     const components = [
       { type: "CustomObject", name: "Policy__c", change: "modify", stories: ["S1"] },
@@ -522,7 +525,9 @@ describe("workflow tools", () => {
     expect(decisions.text).toContain("WARNING [AP1] ApexClass RenewalServiceTest has no deployment entry.");
     expect(decisions.text).toContain("WARNING [renewalPanel] LightningComponentBundle renewalPanel has no deployment entry.");
 
-    await submit("decisions", { decisions: [], openQuestions: [{ question: "Which template?", owner: "Business owner" }] });
+    const decisionsBrief = await submit("decisions", { decisions: [], openQuestions: [{ question: "Which template?", owner: "Business owner" }] });
+    expect(decisionsBrief.text).toContain("Step 12 of 12: Assemble and save the design");
+    expect((await submit("assemble", { title: "Renewal letters: detailed design", gaps: [{ story: "S9", reason: "Not needed." }] })).text).toContain("ERROR [S9] S9 is not a story in scope.");
     const done = await submit("assemble", { title: "Renewal letters: detailed design" });
     expect(done.text).toContain('Step "assemble" passed');
     const doc = contexts.getDocument("renewals", /Saved as (doc-[0-9a-f]{10})/.exec(done.text)![1]!)!;

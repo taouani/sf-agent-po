@@ -6,9 +6,11 @@
 import { z } from "zod";
 import { INTEGRATION_PATTERNS, list, localId, requirementIds, SHARING, STATUS, text, type DecisionsSection } from "./schema.js";
 
-/** A story in scope: a backlog id (S1) or a Jira key (PROJ-12). */
-export const STORY_REF = /^(S[1-9]\d{0,3}|[A-Z][A-Z0-9_]+-[1-9]\d{0,6})$/;
-const storyRef = z.string().trim().regex(STORY_REF, "use a backlog story id such as S1, or a Jira key such as PROJ-12");
+/** A story in scope: its id in the backlog (S1, E1-S2), a Jira key (PROJ-12), or an id of the design's own. */
+export const STORY_REF = /^[A-Za-z][\w-]{0,31}$/;
+/** A Jira issue key. */
+export const JIRA_KEY = /^[A-Z][A-Z0-9_]+-[1-9]\d{0,6}$/;
+const storyRef = z.string().trim().regex(STORY_REF, "use the story's id in the backlog (such as S1), its Jira key (such as PROJ-12), or a short id of your own");
 const stories = z.array(storyRef).max(40).default([]);
 const documentId = z.string().regex(/^doc-[0-9a-f]{10}$/, "use a document id such as doc-1a2b3c4d5e");
 
@@ -46,7 +48,9 @@ export const ddDataModelSection = z.strictObject({
           precision: z.number().int().positive().optional(),
           scale: z.number().int().nonnegative().optional(),
           required: z.boolean().default(false),
-          defaultValue: text(300).optional(),
+          defaultValue: z.union([text(300), z.number(), z.boolean()]).transform(String).optional(),
+          formula: text(3_900).optional().describe("For a formula or roll-up summary field: the formula, or what it sums."),
+          returnType: text(60).optional().describe("For a formula field: the type it returns."),
           picklistValues: list(text(255), 500).default([]),
           valueSet: text(120).optional().describe("A global value set, instead of picklistValues."),
           externalId: z.boolean().default(false),
@@ -82,8 +86,8 @@ export const ddAutomationSection = z.strictObject({
       event: z.enum(["create", "update", "create or update", "delete"]).optional(),
       timing: z.enum(["before-save", "after-save", "async"]).optional(),
       entryCriteria: text(1_000).optional(),
-      runAs: z.enum(["user", "system with sharing", "system without sharing"]),
-      steps: list(text(500), 40).min(1),
+      runAs: z.enum(["user", "system with sharing", "system without sharing"]).optional().describe("Needed for a new or changed flow."),
+      steps: list(text(500), 40).default([]).describe("Needed for a new or changed flow."),
       faultHandling: text(1_000).optional(),
       order: z.number().int().positive().optional(),
       requirementIds,
@@ -99,12 +103,12 @@ export const ddAutomationSection = z.strictObject({
       status: z.enum(STATUS),
       object: text(120).optional(),
       events: list(z.enum(TRIGGER_EVENTS), 7).default([]),
-      responsibility: text(1_000),
-      sharing: z.enum(["with sharing", "without sharing", "inherited sharing"]),
-      userMode: z.boolean().describe("Database operations in user mode (WITH USER_MODE, AccessLevel.USER_MODE)."),
+      responsibility: text(1_000).optional().describe("Needed for a new or changed class."),
+      sharing: z.enum(["with sharing", "without sharing", "inherited sharing"]).optional().describe("Needed for a new or changed class; a trigger has none."),
+      userMode: z.boolean().optional().describe("Database operations in user mode (WITH USER_MODE, AccessLevel.USER_MODE)."),
       async: z.boolean().default(false),
-      bulk: text(500).describe("How it handles 200 records at once."),
-      testClass: text(200),
+      bulk: text(500).optional().describe("How it handles 200 records at once; needed for a new or changed class or trigger."),
+      testClass: text(200).optional().describe("Needed for a new or changed class or trigger."),
       why: text(1_000).optional().describe("Why Apex rather than Flow, and why without sharing when it is."),
       requirementIds,
       stories,
@@ -177,7 +181,7 @@ export const ddSecuritySection = z.strictObject({
     30,
   ).default([]),
   sharing: list(z.strictObject({ object: text(120), internal: z.enum(SHARING), external: z.enum(SHARING).optional(), rules: list(text(500), 20).default([]) }), 40).default([]),
-  customPermissions: list(z.strictObject({ name: text(120), purpose: text(500), stories }), 30).default([]),
+  customPermissions: list(z.strictObject({ name: text(120), status: z.enum(STATUS).default("new"), purpose: text(500), stories }), 30).default([]),
   guestAccess: text(2_000).optional(),
 });
 
@@ -186,7 +190,7 @@ export const ddTestsSection = z.strictObject({
   flows: list(z.strictObject({ flow: text(200), scenarios: list(text(500), 40).min(1) }), 40).default([]),
   acceptance: list(
     z.strictObject({ story: storyRef, criterion: localId("AC"), kind: z.enum(["manual", "apex", "flow test", "ui automation"]), test: text(1_000) }),
-    200,
+    1_200,
   ).default([]),
   data: text(2_000).optional().describe("The test data and how it is created."),
 });

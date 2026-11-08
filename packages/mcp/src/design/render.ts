@@ -16,7 +16,9 @@ export function table(head: readonly string[], rows: readonly (readonly (string 
   return [`| ${head.join(" | ")} |`, `|${head.map(() => " --- ").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)].join("\n");
 }
 
-export const bullets = (items: readonly string[]) => items.map((i) => `- ${i}`).join("\n");
+/** Text on one line: a heading or a list item would end at a line break. */
+export const oneLine = (s: string) => s.replace(/\s*\r?\n\s*/g, " ").trim();
+export const bullets = (items: readonly string[]) => items.map((i) => `- ${oneLine(i)}`).join("\n");
 export const ids = (list: readonly string[]) => (list.length ? list.join(", ") : "");
 export const NOT_DONE = "_Not written: this step failed its checks or was left out._";
 
@@ -53,7 +55,7 @@ function erDiagram(objects: NonNullable<HighLevelDesign["dataModel"]>["objects"]
 }
 
 export function renderHighLevelDesign(d: HighLevelDesign, requirements: readonly Requirement[], gaps: readonly RequirementGap[] = []): string {
-  const out: string[] = [`# ${d.title}`];
+  const out: string[] = [`# ${oneLine(d.title)}`];
   const section = (title: string, body: string | undefined) => out.push(`## ${title}\n\n${body?.trim() ? body.trim() : NOT_DONE}`);
 
   const c = d.context;
@@ -91,7 +93,7 @@ export function renderHighLevelDesign(d: HighLevelDesign, requirements: readonly
     s &&
       [
         s.overview,
-        `**Org strategy:** ${s.orgStrategy}`,
+        `**Org strategy:** ${oneLine(s.orgStrategy)}`,
         table(["Id", "Component", "Type", "Status", "Purpose", "Requirements"], s.components.map((x) => [x.id, x.name, x.type, x.status, x.purpose, ids(x.requirementIds)])),
         s.diagram ? diagram(s.diagram) : "",
       ]
@@ -107,7 +109,7 @@ export function renderHighLevelDesign(d: HighLevelDesign, requirements: readonly
         ? [
             ...dm.objects.map((o) =>
               [
-                `### ${o.name}${o.label ? ` (${o.label})` : ""}: ${o.status}`,
+                `### ${oneLine(`${o.name}${o.label ? ` (${o.label})` : ""}: ${o.status}`)}`,
                 o.whyNotStandard ? `Why not a standard object: ${o.whyNotStandard}` : "",
                 o.volume ? `Volume: ${o.volume}` : "",
                 o.recordTypes.length ? `Record types: ${o.recordTypes.join(", ")}` : "",
@@ -158,7 +160,7 @@ export function renderHighLevelDesign(d: HighLevelDesign, requirements: readonly
         sec.sharing.length
           ? table(["Object", "Internal default", "External default", "Notes"], sec.sharing.map((x) => [x.object, x.internal, x.external, x.notes]))
           : "No sharing setting is changed.",
-        sec.accessByPersona ? `**Access by persona:** ${sec.accessByPersona}` : "",
+        sec.accessByPersona ? `**Access by persona:** ${oneLine(sec.accessByPersona)}` : "",
         sec.measures.length ? table(["Id", "Measure", "Requirements"], sec.measures.map((x) => [x.id, x.measure, ids(x.requirementIds)])) : "",
       ]
         .filter(Boolean)

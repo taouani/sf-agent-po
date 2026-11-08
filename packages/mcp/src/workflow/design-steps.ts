@@ -70,6 +70,10 @@ export interface SectionSpec<T, D = HighLevelDesign> {
   industry?: boolean;
   /** Whether its items cite requirement ids. */
   traces?: boolean;
+  /** Whether the brief shows what the design does not address yet: by default, when it traces. */
+  openNote?: boolean;
+  /** More for the brief, from the design so far. */
+  extra?(design: D): string | undefined;
   /** The earlier sections it builds on, shown in full. */
   uses?: (Exclude<keyof D, "title"> & string)[];
   check(section: T, env: DesignCheckEnv<D>): Finding[];
@@ -334,7 +338,8 @@ export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T,
     brief(s) {
       const confirmed = confirmedOf(s);
       const design = sectionsSoFar<D>(s.run, kind.steps);
-      const open = spec.traces ? kind.openNote(design, confirmed) : undefined;
+      const open = (spec.openNote ?? spec.traces) ? kind.openNote(design, confirmed) : undefined;
+      const extra = spec.extra?.(design);
       const docs = s.kit.contexts.documents(s.context);
       const earlier = (spec.uses ?? []).filter((k) => design[k] !== undefined);
       return [
@@ -345,6 +350,7 @@ export function sectionStep<T, D extends { title: string }>(spec: SectionSpec<T,
           ? `Confirmed requirements${spec.traces ? " (cite the ids each item addresses; only these)" : ""}:\n${requirementsToText(confirmed)}`
           : "No requirement is confirmed: base the section on the inputs.",
         ...(open ? [open] : []),
+        ...(extra ? [extra] : []),
         ...earlier.map((k) => `The ${k} section, as saved:\n${sectionJson((design as Record<string, unknown>)[k])}`),
         `Context documents (read them with context_get):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
         "Write only what the inputs, the index or the earlier sections support; mark the rest as an assumption or an open question. Give API names as the index has them. Leave out an optional field rather than filling it with a placeholder.",

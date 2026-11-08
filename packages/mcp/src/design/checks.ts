@@ -44,7 +44,7 @@ export const INDEXED_TYPES = [
   "LightningComponentBundle", "AuraDefinitionBundle", "FlexiPage", "CustomApplication", "CustomTab", "WorkflowRule", "NamedCredential", "ExternalCredential",
   "ConnectedApp", "CustomMetadata", "PlatformEventChannel", "QuickAction", "ApexPage",
 ] as const;
-const squash = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+export const squash = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
 const TYPE_ALIASES: Record<string, string> = {
   ...Object.fromEntries(INDEXED_TYPES.map((t) => [squash(t), t])),
   object: "CustomObject", standardobject: "CustomObject", field: "CustomField", customfields: "CustomField", recordtypes: "RecordType", validation: "ValidationRule",

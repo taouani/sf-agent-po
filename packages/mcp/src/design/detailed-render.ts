@@ -3,7 +3,7 @@
 
 import type { Requirement } from "@sf-agent-po/core";
 import { storyItems, type DetailedDesign } from "./detailed-schema.js";
-import { bullets, ids, NOT_DONE, table } from "./render.js";
+import { bullets, ids, NOT_DONE, oneLine, table } from "./render.js";
 
 export interface StoryGap {
   story: string;
@@ -18,7 +18,7 @@ function sizeOf(f: { length?: number | undefined; precision?: number | undefined
 }
 
 export function renderDetailedDesign(d: DetailedDesign, requirements: readonly Requirement[], gaps: readonly StoryGap[] = []): string {
-  const out: string[] = [`# ${d.title}`];
+  const out: string[] = [`# ${oneLine(d.title)}`];
   const section = (title: string, body: string | undefined) => out.push(`## ${title}\n\n${body?.trim() ? body.trim() : NOT_DONE}`);
   const join = (parts: readonly (string | number | false | undefined)[]) => parts.filter(Boolean).join("\n\n");
 
@@ -45,7 +45,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         ? dm.objects
             .map((o) =>
               join([
-                `### ${o.name}${o.label ? ` (${o.label})` : ""}: ${o.status}`,
+                `### ${oneLine(`${o.name}${o.label ? ` (${o.label})` : ""}: ${o.status}`)}`,
                 o.fields.length &&
                   table(
                     ["Field", "Label", "Type", "Length", "Required", "Default", "Values", "External ID, unique", "Help text", "Classification", "Access"],
@@ -65,7 +65,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
                   ),
                 o.recordTypes.length && table(["Record type", "Status", "Description"], o.recordTypes.map((r) => [r.name, r.status, r.description])),
                 o.validationRules.length && table(["Validation rule", "Status", "Error condition", "Message"], o.validationRules.map((v) => [v.name, v.status, v.condition, v.message])),
-                o.layouts && `Layouts: ${o.layouts}`,
+                o.layouts && `Layouts: ${oneLine(o.layouts)}`,
               ]),
             )
             .join("\n\n")
@@ -85,9 +85,9 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         a.apex.length &&
           table(
             ["Id", "Apex", "Kind", "Status", "Runs on", "Responsibility", "Sharing", "User mode", "Async", "Bulk", "Test class"],
-            a.apex.map((x) => [x.id, x.name, x.kind, x.status, [x.object, x.events.join(", ")].filter(Boolean).join(": "), x.responsibility, x.sharing, yes(x.userMode), yes(x.async), x.bulk, x.testClass]),
+            a.apex.map((x) => [x.id, x.name, x.kind, x.status, [x.object, x.events.join(", ")].filter(Boolean).join(": "), x.responsibility, x.sharing, yes(x.userMode === true), yes(x.async), x.bulk, x.testClass]),
           ),
-        a.orderNotes && `**Order of execution:** ${a.orderNotes}`,
+        a.orderNotes && `**Order of execution:** ${oneLine(a.orderNotes)}`,
       ]) || "No automation is added or changed."),
   );
 
@@ -110,7 +110,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         ? i.integrations
             .map((x) =>
               join([
-                `### ${x.id} ${x.system} (${x.direction}, ${x.pattern})`,
+                `### ${oneLine(`${x.id} ${x.system} (${x.direction}, ${x.pattern})`)}`,
                 bullets(
                   [
                     x.endpoint && `Endpoint: ${x.endpoint}`,
@@ -139,7 +139,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         sec.sharing.length &&
           table(["Object", "Internal default", "External default", "Sharing rules"], sec.sharing.map((x) => [x.object, x.internal, x.external, x.rules.join("; ")])),
         sec.customPermissions.length && table(["Custom permission", "Purpose"], sec.customPermissions.map((c) => [c.name, c.purpose])),
-        sec.guestAccess && `**Guest access:** ${sec.guestAccess}`,
+        sec.guestAccess && `**Guest access:** ${oneLine(sec.guestAccess)}`,
       ]) || "No security change."),
   );
 
@@ -151,7 +151,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         t.apex.length && table(["Apex test class", "Covers", "Scenarios"], t.apex.map((x) => [x.testClass, x.covers.join(", "), x.scenarios.join("; ")])),
         t.flows.length && table(["Flow test", "Scenarios"], t.flows.map((x) => [x.flow, x.scenarios.join("; ")])),
         t.acceptance.length && `**Acceptance**\n\n${table(["Story", "Criterion", "Kind", "Test"], t.acceptance.map((x) => [x.story, x.criterion, x.kind, x.test]))}`,
-        t.data && `**Test data:** ${t.data}`,
+        t.data && `**Test data:** ${oneLine(t.data)}`,
       ]) || "No test is described."),
   );
 
@@ -164,7 +164,7 @@ export function renderDetailedDesign(d: DetailedDesign, requirements: readonly R
         dp.preSteps.length && `**Before deploying**\n\n${bullets(dp.preSteps)}`,
         dp.postSteps.length && `**After deploying**\n\n${bullets(dp.postSteps)}`,
         dp.dataLoads.length && `**Data loads**\n\n${bullets(dp.dataLoads)}`,
-        `**Rollback:** ${dp.rollback}`,
+        `**Rollback:** ${oneLine(dp.rollback)}`,
       ]),
   );
 

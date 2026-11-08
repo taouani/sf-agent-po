@@ -18,11 +18,12 @@ import {
   requirementFindings,
   same,
   soften,
+  squash,
   warning,
   type DesignCheckEnv,
 } from "./checks.js";
 import {
-  STORY_REF,
+  JIRA_KEY,
   type DdAutomationSection,
   type DdDataModelSection,
   type DdDeploymentSection,
@@ -74,20 +75,25 @@ export function checkDdScope(s: DdScopeSection, env: Env): Finding[] {
       for (const st of s.stories) {
         const found = inBacklog.get(st.ref);
         if (!found) {
-          if (/^S\d/.test(st.ref)) findings.push(error(st.ref, `${st.ref} is not a story of backlog ${s.backlogId}.`));
+          if (!JIRA_KEY.test(st.ref)) findings.push(error(st.ref, `${st.ref} is not a story of backlog ${s.backlogId}: use its id there (${[...inBacklog.keys()].slice(0, 10).join(", ")}...), or its Jira key.`));
         } else if (found.acceptanceCriteria.length !== st.acceptanceCriteria.length)
           findings.push(error(st.ref, `${st.ref} has ${found.acceptanceCriteria.length} acceptance criteria in the backlog: list each one (AC1 to AC${found.acceptanceCriteria.length}), in order.`));
       }
     }
-  } else if (!s.backlogId && s.stories.some((st) => /^S\d/.test(st.ref))) findings.push(error("backlogId", "Stories such as S1 come from a backlog: give its id in backlogId, or use the Jira keys."));
+  } else if (!s.backlogId && s.stories.some((st) => !JIRA_KEY.test(st.ref)))
+    findings.push(warning("backlogId", "Some stories are neither from a saved backlog nor Jira keys: their acceptance criteria are not checked against anything. Name the backlog if there is one."));
   findings.push(...language(env, s, "scope"));
   return findings;
 }
 
 /** Field settings each type needs. */
-function fieldShape(where: string, f: DdDataModelSection["objects"][number]["fields"][number], type: string): Finding[] {
-  if (f.status === "existing" || f.status === "retired") return [];
+function fieldShape(where: string, field: DdDataModelSection["objects"][number]["fields"][number], type: string): Finding[] {
+  if (field.status === "existing" || field.status === "retired") return [];
+  // "Text(80)", "Number(18,2)": the size written in the type counts.
+  const [n, m] = (/\((\d+)(?:\s*,\s*(\d+))?\)/.exec(field.type) ?? []).slice(1).map((x) => (x === undefined ? undefined : Number(x)));
+  const f = { ...field, length: field.length ?? n, precision: field.precision ?? n, scale: field.scale ?? m };
   const out: Finding[] = [];
+  if (type === "Formula" && !f.formula) out.push(error(where, "A formula field needs its formula, and its returnType."));
   if (["Text", "EncryptedText"].includes(type) && (!f.length || f.length > 255)) out.push(error(where, `A ${type} field needs a length from 1 to 255.`));
   if (["LongTextArea", "Html"].includes(type) && (!f.length || f.length > 131_072)) out.push(error(where, `A ${type} field needs a length up to 131072.`));
   if (["Number", "Currency", "Percent"].includes(type)) {
@@ -96,6 +102,8 @@ function fieldShape(where: string, f: DdDataModelSection["objects"][number]["fie
   }
   if (["Picklist", "MultiselectPicklist"].includes(type) && !f.picklistValues.length && !f.valueSet) out.push(error(where, "A picklist needs its values, or a global value set in valueSet."));
   if (["Lookup", "MasterDetail"].includes(type) && !f.relationship) out.push(error(where, "A relationship field needs relationship: the object it points to, lookup or master-detail, and why."));
+  else if (f.relationship && (type === "Lookup" ? f.relationship.kind !== "lookup" : type === "MasterDetail" ? f.relationship.kind !== "master-detail" : false))
+    out.push(error(where, `The type is ${type} but the relationship says ${f.relationship.kind}: make them agree.`));
   else if (f.relationship && !f.relationship.reason) out.push(warning(where, `Say why ${f.relationship.kind} to ${f.relationship.to}: sharing, cascade delete, roll-up summaries.`));
   if (!f.description && !f.helpText) out.push(warning(where, "Give a description or help text."));
   if (!f.access.length) out.push(warning(where, "No permission set gives access to it: list the field-level security in access."));
@@ -116,8 +124,11 @@ export function checkDdDataModel(s: DdDataModelSection, env: Env): Finding[] {
       const where = `${o.name}.${name}`;
       const type = fieldType(f.type);
       if (!type) findings.push(error(where, `"${f.type}" is not a field type: use one of ${FIELD_TYPES.join(", ")}.`));
-      if (f.status === "new" && !CUSTOM_FIELD.test(name)) findings.push(error(where, "A new field is custom: its API name ends in __c."));
+      // A new custom object's Name field is standard.
+      const nameField = o.status === "new" && same(name, "Name");
+      if (f.status === "new" && !CUSTOM_FIELD.test(name) && !nameField) findings.push(error(where, "A new field is custom: its API name ends in __c."));
       if (f.status !== "new" && o.status !== "new") findings.push(...existence(env, where, "CustomField", where, CUSTOM_FIELD.test(name)));
+      if (f.status === "new" && o.status !== "new" && env.lookup?.("CustomField", where)) findings.push(error(where, `${where} already exists in the index: mark it changed or existing.`));
       if (type) findings.push(...fieldShape(where, f, type));
       const said = [f.name, f.label, f.description ?? "", f.helpText ?? ""].join(" ");
       if (!f.classification && env.rules.sensitive.test(said)) findings.push(warning(where, "It looks sensitive: give its classification (sensitivity and compliance categories)."));
@@ -146,7 +157,8 @@ export function checkDdAutomation(s: DdAutomationSection, env: Env): Finding[] {
     if (f.kind === "record-triggered" && (!f.object || !f.event || !f.timing)) findings.push(error(f.id, "A record-triggered flow needs its object, event (create, update...) and timing (before-save, after-save or async)."));
     if (f.object) findings.push(...objectFindings(env, f.id, f.object));
     if (f.status !== "new") findings.push(...existence(env, f.id, "Flow", f.name, true));
-    if (f.kind !== "screen" && f.status !== "retired" && !f.faultHandling) findings.push(warning(f.id, `Say how ${f.name} handles a fault: a fault path, who is told, what is rolled back.`));
+    if ((f.status === "new" || f.status === "changed") && (!f.runAs || !f.steps.length)) findings.push(error(f.id, `A new or changed flow needs runAs and its main steps.`));
+    if (f.kind !== "screen" && f.status !== "retired" && f.status !== "existing" && !f.faultHandling) findings.push(warning(f.id, `Say how ${f.name} handles a fault: a fault path, who is told, what is rolled back.`));
     if (f.runAs === "system without sharing") findings.push(warning(f.id, `${f.name} runs in system context without sharing: check it cannot expose records the user should not see.`));
     if (f.object && f.timing && f.status !== "retired") slot(`${f.object.toLowerCase()}|${f.timing}`, f.id);
   }
@@ -160,10 +172,12 @@ export function checkDdAutomation(s: DdAutomationSection, env: Env): Finding[] {
     if (a.object) findings.push(...objectFindings(env, a.id, a.object));
     if (a.status !== "new") findings.push(...existence(env, a.id, a.kind === "trigger" ? "ApexTrigger" : "ApexClass", a.name, true));
     if (a.status === "existing" || a.status === "retired") continue;
+    const needed = [!a.bulk && "bulk", !a.testClass && "testClass", ...(a.kind === "trigger" ? [] : [!a.responsibility && "responsibility", !a.sharing && "sharing", a.userMode === undefined && "userMode"])].filter(Boolean);
+    if (needed.length) findings.push(error(a.id, `A new or changed ${a.kind === "trigger" ? "trigger" : "class"} needs ${needed.join(", ")}.`));
     if (a.sharing === "without sharing" && !a.why) findings.push(warning(a.id, `${a.name} runs without sharing: say why in why.`));
-    if (!a.userMode && a.kind !== "trigger") findings.push(warning(a.id, `${a.name} does not run its queries and DML in user mode: say why, or use WITH USER_MODE and AccessLevel.USER_MODE so CRUD and field-level security apply.`));
+    if (a.userMode === false && a.kind !== "trigger") findings.push(warning(a.id, `${a.name} does not run its queries and DML in user mode: say why, or use WITH USER_MODE and AccessLevel.USER_MODE so CRUD and field-level security apply.`));
     if (!a.why) findings.push(warning(a.id, `Say why Apex rather than Flow for ${a.name}.`));
-    if (same(a.testClass, a.name)) findings.push(error(a.id, `The test class of ${a.name} cannot be the class itself.`));
+    if (a.testClass && same(a.testClass, a.name)) findings.push(error(a.id, `The test class of ${a.name} cannot be the class itself.`));
   }
   for (const [key, ids] of slots) {
     const flows = s.flows.filter((f) => ids.includes(f.id));
@@ -210,17 +224,24 @@ export function checkDdIntegrations(s: DdIntegrationsSection, env: Env): Finding
 
 export function checkDdSecurity(s: DdSecuritySection, env: Env): Finding[] {
   const findings: Finding[] = [];
-  const defined = new Set(s.permissionSets.map((p) => p.name.toLowerCase()));
+  // What can give access: the permission sets described here, their groups, or what the index holds.
+  const defined = new Set([...s.permissionSets.map((p) => p.name.toLowerCase()), ...s.permissionSets.flatMap((p) => (p.group ? [p.group.toLowerCase()] : []))]);
+  const known = (name: string) =>
+    defined.has(name.toLowerCase()) || (env.lookup && ["PermissionSet", "PermissionSetGroup", "Profile"].some((t) => env.lookup!(t, name)));
   for (const p of s.permissionSets) {
     findings.push(...storyFindings(env, p.name, p.stories));
-    if (p.status !== "new") findings.push(...existence(env, p.name, "PermissionSet", p.name, true));
+    if (p.status !== "new" && !(env.lookup && ["PermissionSetGroup", "Profile"].some((t) => env.lookup!(t, p.name))))
+      findings.push(...existence(env, p.name, "PermissionSet", p.name, true));
   }
   for (const c of s.customPermissions) findings.push(...storyFindings(env, c.name, c.stories));
   // Every permission set the field tables give access through is described here or exists.
-  const named = new Set((env.design.dataModel?.objects ?? []).flatMap((o) => o.fields.flatMap((f) => f.access.map((a) => a.permissionSet))));
-  for (const name of named)
-    if (!defined.has(name.toLowerCase()) && (!env.lookup || !env.lookup("PermissionSet", name)))
-      findings.push(error(name, `The data model gives access through permission set ${name}, which is neither described here nor in the index: describe it in permissionSets.`));
+  const named = new Map((env.design.dataModel?.objects ?? []).flatMap((o) => o.fields.flatMap((f) => f.access.map((a) => [a.permissionSet.toLowerCase(), a.permissionSet] as const))));
+  for (const name of named.values())
+    if (!known(name)) {
+      const message = `The data model gives access through ${name}, which is neither described here (as a permission set or its group) nor in the index: describe it in permissionSets.`;
+      // Without an index, an existing permission set cannot be told from a wrong name.
+      findings.push(env.lookup ? error(name, message) : warning(name, message));
+    }
   for (const o of (env.design.dataModel?.objects ?? []).filter((o) => o.status === "new" && !s.sharing.some((x) => same(x.object, o.name))))
     findings.push(warning(o.name, `New object ${o.name} has no sharing entry: give its internal (and external) default.`));
   for (const x of s.sharing.filter((x) => x.external === "public read/write"))
@@ -245,8 +266,8 @@ export function checkDdTests(s: DdTestsSection, env: Env): Finding[] {
         if (!tested.has(`${st.ref} ${ac.id}`)) findings.push(error(`${st.ref} ${ac.id}`, `No test is mapped to ${st.ref} ${ac.id}: add one to acceptance.`));
   }
   const classes = new Set(s.apex.map((t) => t.testClass.toLowerCase()));
-  for (const a of (env.design.automation?.apex ?? []).filter((a) => a.status === "new" || a.status === "changed"))
-    if (!classes.has(a.testClass.toLowerCase())) findings.push(warning(a.id, `${a.testClass}, the test class of ${a.name}, has no entry in apex: give its scenarios (bulk, negative, permissions).`));
+  for (const a of (env.design.automation?.apex ?? []).filter((a) => a.testClass && (a.status === "new" || a.status === "changed")))
+    if (!classes.has(a.testClass!.toLowerCase())) findings.push(warning(a.id, `${a.testClass}, the test class of ${a.name}, has no entry in apex: give its scenarios (bulk, negative, permissions).`));
   const flowTests = new Set(s.flows.map((t) => t.flow.toLowerCase()));
   for (const f of (env.design.automation?.flows ?? []).filter((f) => f.kind === "record-triggered" && (f.status === "new" || f.status === "changed")))
     if (!flowTests.has(f.name.toLowerCase())) findings.push(info(f.id, `No flow test for ${f.name}: add one, or say how it is tested.`));
@@ -266,12 +287,23 @@ export function ddComponents(d: DetailedDesign): { type: string; name: string; w
   for (const f of (d.automation?.flows ?? []).filter((f) => f.status !== "existing")) out.push({ type: "Flow", name: f.name, where: f.id });
   for (const a of (d.automation?.apex ?? []).filter((a) => a.status !== "existing")) {
     out.push({ type: a.kind === "trigger" ? "ApexTrigger" : "ApexClass", name: a.name, where: a.id });
-    if (a.status !== "retired") out.push({ type: "ApexClass", name: a.testClass, where: a.id });
+    if (a.status !== "retired" && a.testClass) out.push({ type: "ApexClass", name: a.testClass, where: a.id });
   }
-  for (const c of (d.userInterface?.components ?? []).filter((c) => c.status !== "existing" && c.kind === "lwc")) out.push({ type: "LightningComponentBundle", name: c.name, where: c.name });
+  const UI_TYPES: Record<string, string | undefined> = { lwc: "LightningComponentBundle", aura: "AuraDefinitionBundle", "quick action": "QuickAction", visualforce: "ApexPage", "list view": "ListView" };
+  for (const c of (d.userInterface?.components ?? []).filter((c) => c.status !== "existing" && UI_TYPES[c.kind])) out.push({ type: UI_TYPES[c.kind]!, name: c.name, where: c.name });
+  for (const p of (d.userInterface?.pages ?? []).filter((p) => p.status !== "existing" && p.kind !== "experience page")) out.push({ type: "FlexiPage", name: p.name, where: p.name });
   for (const p of (d.security?.permissionSets ?? []).filter((p) => p.status !== "existing")) out.push({ type: "PermissionSet", name: p.name, where: p.name });
-  for (const c of d.security?.customPermissions ?? []) out.push({ type: "CustomPermission", name: c.name, where: c.name });
+  for (const c of (d.security?.customPermissions ?? []).filter((c) => c.status !== "existing")) out.push({ type: "CustomPermission", name: c.name, where: c.name });
+  for (const i of d.integrations?.integrations ?? []) if (i.namedCredential) out.push({ type: "NamedCredential", name: i.namedCredential, where: i.id });
   return out;
+}
+
+const componentKey = (type: string, name: string) => `${indexedType(type) ?? squash(type)}|${name.trim().toLowerCase()}`;
+
+/** The components the other sections add or change that the deployment list (when given) leaves out. */
+export function undeployed(d: DetailedDesign, deployment?: DdDeploymentSection): { type: string; name: string; where: string }[] {
+  const listed = new Set((deployment?.components ?? []).map((c) => componentKey(c.type, c.name)));
+  return ddComponents(d).filter((c) => !listed.has(componentKey(c.type, c.name)));
 }
 
 export function checkDdDeployment(s: DdDeploymentSection, env: Env): Finding[] {
@@ -282,16 +314,15 @@ export function checkDdDeployment(s: DdDeploymentSection, env: Env): Finding[] {
     for (const c of s.components.filter((c) => c.change !== "add" && !env.impactChecked?.(c.type, c.name)))
       findings.push(error(`${c.type} ${c.name}`, `Run metadata_impact on ${c.type} ${c.name} (${c.change}) first, and carry its weak links into notes or the risks.`));
   // Every component the design adds, changes or retires has a deployment entry.
-  const listed = new Set(s.components.map((c) => `${indexedType(c.type) ?? c.type.toLowerCase()}|${c.name.trim().toLowerCase()}`));
-  const missing = ddComponents(env.design).filter((c) => !listed.has(`${indexedType(c.type) ?? c.type.toLowerCase()}|${c.name.trim().toLowerCase()}`));
+  const missing = undeployed(env.design, s);
   for (const m of missing.slice(0, 30)) findings.push(warning(m.where, `${m.type} ${m.name} has no deployment entry.`));
   if (missing.length > 30) findings.push(warning("components", `And ${missing.length - 30} more components have no deployment entry.`));
   findings.push(...language(env, s, "deployment"));
   return findings;
 }
 
-/** The stories in scope that no part of the design builds. */
-export function unbuiltStories(d: DetailedDesign, items: readonly { stories: string[] }[]): string[] {
-  const built = new Set(items.flatMap((i) => i.stories));
-  return (d.scope?.stories ?? []).map((s) => s.ref).filter((r) => !built.has(r) && STORY_REF.test(r));
+/** The stories in scope that no part of the design builds: a deployment line alone does not count. */
+export function unbuiltStories(d: DetailedDesign, items: readonly { section: string; stories: string[] }[]): string[] {
+  const built = new Set(items.filter((i) => i.section !== "Deployment").flatMap((i) => i.stories));
+  return (d.scope?.stories ?? []).map((s) => s.ref).filter((r) => !built.has(r));
 }

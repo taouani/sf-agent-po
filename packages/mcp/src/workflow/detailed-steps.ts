@@ -35,6 +35,7 @@ import {
 } from "../design/detailed-schema.js";
 import { maskDeep } from "../design/mask.js";
 import { decisionsSection, FIELD_TYPES } from "../design/schema.js";
+import { undeployed } from "../design/detailed-checks.js";
 import { cites, confirmedOf, plural, sectionsSoFar, sectionStep, type DesignKind, type SectionSpec } from "./design-steps.js";
 
 /** Section keys by step id, in the template's order. */
@@ -76,7 +77,8 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
       '{"summary": "...", "highLevelDesignId": "doc-...", "backlogId": "doc-...",\n' +
       ' "stories": [{"ref": "S1" | "PROJ-12", "summary": "...", "requirementIds": ["R1"], "acceptanceCriteria": [{"id": "AC1", "text": "Given ..., when ..., then ..."}]}]}',
     guidance:
-      "the stories or epics this design covers, and what it refines. Name the high-level design by its id, and the backlog the stories come from (or use their Jira keys, read with context_add_jira). " +
+      "the stories or epics this design covers, and what it refines. Name the high-level design by its id, and the backlog the stories come from. " +
+      "Give each story the id it has in that backlog, or its Jira key (read Jira issues with context_add_jira); with neither, give it a short id of your own (such as S1) and say where it comes from. " +
       "For each story, give its acceptance criteria in order as AC1, AC2...: every one gets a test later, and the stories of a backlog are checked against it.",
     check: checkDdScope,
     summary: (s) => `${plural(s.stories.length, "story", "stories")}, ${plural(s.stories.flatMap((x: { acceptanceCriteria: unknown[] }) => x.acceptanceCriteria).length, "acceptance criterion", "acceptance criteria")}.`,
@@ -86,12 +88,18 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "dataModel",
     title: "Data model changes",
     schema: ddDataModelSection,
+    principles: ["Standard first", "Bulk and limits"],
+    industry: true,
+    openNote: true,
     uses: ["scope"],
     shape:
       '{"objects": [{"name": "Policy__c", "status": "changed", "stories": ["S1"],\n' +
       '  "fields": [{"name": "Renewal_Date__c", "label": "Renewal date", "type": "Date", "status": "new", "required": true, "helpText": "...",\n' +
       '    "classification": {"sensitivity": "internal", "compliance": []}, "access": [{"permissionSet": "Renewals_Agent", "read": true, "edit": true}]},\n' +
-      '   {"name": "Channel__c", "label": "Channel", "type": "Picklist", "status": "new", "picklistValues": ["Email", "Letter"], ...},\n' +
+      '   {"name": "Channel__c", "label": "Channel", "type": "Picklist", "status": "new", "picklistValues": ["Email", "Letter"] (or "valueSet": "a global value set"), ...},\n' +
+      '   {"name": "Reference__c", "label": "Reference", "type": "Text", "length": 40, "externalId": true, "unique": true, "defaultValue": "...", ...},\n' +
+      '   {"name": "Premium__c", "label": "Premium", "type": "Currency", "precision": 16, "scale": 2, ...},\n' +
+      '   {"name": "Days_Left__c", "label": "Days left", "type": "Formula", "returnType": "Number", "formula": "Renewal_Date__c - TODAY()", ...},\n' +
       '   {"name": "Account__c", "label": "Account", "type": "Lookup", "status": "new", "relationship": {"to": "Account", "kind": "lookup", "reason": "..."}, ...}],\n' +
       '  "recordTypes": [{"name": "...", "status": "new"}], "validationRules": [{"name": "...", "status": "new", "condition": "the error condition formula, in words or as a formula", "message": "..."}], "layouts": "..."}]}\n' +
       'or, when no object changes: {"objects": []}',
@@ -110,6 +118,7 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "automation",
     title: "Automation",
     schema: ddAutomationSection,
+    principles: ["Flow or Apex", "Bulk and limits", "Technical debt"],
     traces: true,
     uses: ["scope", "dataModel"],
     shape:
@@ -122,7 +131,8 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
       ' "orderNotes": "how this runs with the existing triggers and flows on the same objects"}',
     guidance:
       "each flow (kind, object, event and timing, entry criteria, run context, main steps, fault handling) and each Apex class or trigger (responsibility, entry point, sharing, user mode, sync or async, bulk behaviour, test class). " +
-      "Check the existing triggers and flows on each object with metadata_component, and say how the new automation fits in their order. Keep one trigger per object, with the logic in a handler.",
+      "Check the existing triggers and flows on each object with metadata_component, and say how the new automation fits in their order. Keep one trigger per object, with the logic in a handler. " +
+      "An existing flow, class or trigger listed only for the order needs no more than its id, name, kind, status, object and events.",
     check: checkDdAutomation,
     summary: (s) => `${plural(s.flows.length, "flow")}, ${plural(s.apex.length, "Apex class or trigger", "Apex classes or triggers")}.${cites([...s.flows, ...s.apex].flatMap((x: { requirementIds: string[] }) => x.requirementIds))}`,
   },
@@ -131,6 +141,7 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "userInterface",
     title: "User interface",
     schema: ddUserInterfaceSection,
+    openNote: true,
     uses: ["scope"],
     shape:
       '{"pages": [{"name": "Policy record page", "kind": "record page" | "app page" | "home page" | "experience page" | "utility bar", "status": "changed", "object": "Policy__c", "content": "...", "stories": ["S1"]}],\n' +
@@ -145,6 +156,8 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "integrations",
     title: "Integrations",
     schema: ddIntegrationsSection,
+    principles: ["Integrations"],
+    industry: true,
     traces: true,
     uses: ["scope"],
     shape:
@@ -161,11 +174,14 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "security",
     title: "Security",
     schema: ddSecuritySection,
+    principles: ["Security and sharing"],
+    industry: true,
+    openNote: true,
     uses: ["scope", "dataModel"],
     shape:
       '{"permissionSets": [{"name": "Renewals_Agent", "status": "new", "purpose": "...", "grants": ["Policy__c: read, edit", "Policy__c.Renewal_Date__c: edit", "Apex class RenewalService"], "group": "Renewals", "stories": ["S1"]}],\n' +
       ' "sharing": [{"object": "Letter__c", "internal": "controlled by parent", "external": "private", "rules": ["..."]}],\n' +
-      ' "customPermissions": [{"name": "Send_Renewal", "purpose": "...", "stories": ["S1"]}], "guestAccess": "..."}',
+      ' "customPermissions": [{"name": "Send_Renewal", "status": "new", "purpose": "...", "stories": ["S1"]}], "guestAccess": "..."}',
     guidance:
       "the permission sets and permission set groups to create or change (every one the field tables name), the internal and external org-wide defaults, sharing rules, custom permissions, and guest-user access for public Experience Cloud pages.",
     check: checkDdSecurity,
@@ -191,12 +207,19 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     key: "deployment",
     title: "Deployment",
     schema: ddDeploymentSection,
+    principles: ["Delivery"],
     uses: ["scope"],
+    extra(design) {
+      const list = undeployed(design);
+      return list.length
+        ? `What the other sections add or change, each needing a deployment entry:\n${list.map((c) => `- ${c.type} ${c.name}`).join("\n")}`
+        : "The other sections add or change no metadata component.";
+    },
     shape:
       '{"components": [{"type": "CustomField", "name": "Policy__c.Renewal_Date__c", "change": "add" | "modify" | "delete", "stories": ["S1"], "notes": "..."}],\n' +
       ' "preSteps": ["..."], "postSteps": ["..."], "dataLoads": ["..."], "rollback": "..."}',
     guidance:
-      "every metadata component to deploy, with its Metadata API type and API name (the server lists below each one the sections add or change that is missing), the stories it builds, the pre- and post-deployment steps, the data loads, and the rollback. " +
+      "every metadata component to deploy, with its Metadata API type and API name (each one listed below, and any other), the stories it builds, the pre- and post-deployment steps, the data loads, and the rollback. " +
       "Run metadata_impact on the components you change or delete first, in this run.",
     check: checkDdDeployment,
     summary: (s) => `${plural(s.components.length, "component")} to deploy.${storiesOf(s.components)}`,
@@ -207,6 +230,7 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     title: "Open questions and risks",
     schema: decisionsSection,
     traces: true,
+    openNote: false,
     uses: ["scope"],
     shape:
       '{"decisions": [{"id": "D1", "title": "...", "options": ["...", "..."], "choice": "...", "reason": "...", "requirementIds": []}],\n' +

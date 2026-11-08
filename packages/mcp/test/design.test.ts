@@ -2,6 +2,13 @@ import type { IndexedComponent, Requirement } from "@sf-agent-po/core";
 import { describe, expect, it } from "vitest";
 import {
   automationSection,
+  checkDdDeployment,
+  checkDdScope,
+  checkDdSecurity,
+  ddDeploymentSection,
+  ddIntegrationsSection,
+  ddScopeSection,
+  ddSecuritySection,
   checkDdAutomation,
   checkDdDataModel,
   ddAutomationSection,
@@ -272,6 +279,77 @@ describe("detailed design checks", () => {
     const md = renderDetailedDesign({ title: "T" }, []);
     for (let n = 1; n <= 10; n++) expect(md).toMatch(new RegExp(`^## ${n}\\. `, "m"));
     expect(md).toContain("## 3. Automation\n\n_Not written");
+  });
+});
+
+describe("detailed design checks, review fixes", () => {
+  const ddEnv = (extra: Partial<DesignCheckEnv<DetailedDesign>> = {}): DesignCheckEnv<DetailedDesign> => ({ ...(env() as unknown as DesignCheckEnv<DetailedDesign>), design: { title: "" }, ...extra });
+  const story = (ref: string) => ({ ref, summary: "s", acceptanceCriteria: [{ id: "AC1", text: "t" }] });
+
+  it("take stories without a backlog, warning only for ids that are not Jira keys", () => {
+    expect(lines(checkDdScope(ddScopeSection.parse({ summary: "x", stories: [story("PROJ-12")] }), ddEnv())).filter((l) => !l.startsWith("info"))).toEqual([]);
+    expect(lines(checkDdScope(ddScopeSection.parse({ summary: "x", stories: [story("E1-S1")] }), ddEnv()))).toContain(
+      "warning backlogId: Some stories are neither from a saved backlog nor Jira keys: their acceptance criteria are not checked against anything. Name the backlog if there is one.",
+    );
+  });
+
+  it("read sizes written in the type, keep a new object's Name field, and ask a formula for its formula", () => {
+    const field = (extra: Record<string, unknown>) => ({ label: "X", status: "new", helpText: "h", access: [{ permissionSet: "P" }], ...extra });
+    const model = ddDataModelSection.parse({
+      objects: [
+        {
+          name: "Letter__c",
+          status: "new",
+          fields: [
+            field({ name: "Name", type: "AutoNumber" }),
+            field({ name: "Code__c", type: "Text(80)" }),
+            field({ name: "Amount__c", type: "Number(16,2)" }),
+            field({ name: "Sent__c", type: "Checkbox", defaultValue: false }),
+            field({ name: "Days__c", type: "Formula", returnType: "Number" }),
+            field({ name: "Policy__c", type: "Lookup", relationship: { to: "Letter__c", kind: "master-detail", reason: "r" } }),
+          ],
+        },
+      ],
+    });
+    expect(model.objects[0]!.fields[3]!.defaultValue).toBe("false");
+    expect(lines(checkDdDataModel(model, ddEnv()))).toEqual([
+      "error Letter__c.Days__c: A formula field needs its formula, and its returnType.",
+      "error Letter__c.Policy__c: The type is Lookup but the relationship says master-detail: make them agree.",
+    ]);
+  });
+
+  it("need little of existing automation, and the essentials of new automation", () => {
+    const s = ddAutomationSection.parse({
+      apex: [
+        { id: "AP1", name: "PolicyTrigger", kind: "trigger", status: "existing", object: "Policy__c", events: ["after update"] },
+        { id: "AP2", name: "RenewalService", kind: "service", status: "new", why: "w" },
+      ],
+      orderNotes: "n",
+    });
+    const found = lines(checkDdAutomation(s, ddEnv({ lookup: (t) => (t === "ApexTrigger" || t === "CustomObject" ? component(t, "x") : undefined) })));
+    expect(found).toEqual(["error AP2: A new or changed class needs bulk, testClass, responsibility, sharing, userMode."]);
+  });
+
+  it("accept field access through a permission set group or an indexed profile", () => {
+    const design = { title: "", dataModel: ddDataModelSection.parse({ objects: [{ name: "Policy__c", status: "existing", fields: [{ name: "A__c", label: "A", type: "Date", status: "new", access: [{ permissionSet: "Renewals" }, { permissionSet: "renewals" }, { permissionSet: "Agent Profile" }] }] }] }) };
+    const security = ddSecuritySection.parse({ permissionSets: [{ name: "Renewals_Edit", status: "new", purpose: "p", grants: ["g"], group: "Renewals" }] });
+    expect(checkDdSecurity(security, ddEnv({ design, lookup: (t, n) => (t === "Profile" && n === "Agent Profile" ? component(t, n) : undefined) }))).toEqual([]);
+  });
+
+  it("match deployment entries whatever the type's spelling", () => {
+    const design = { title: "", security: ddSecuritySection.parse({ customPermissions: [{ name: "Send_Renewal", purpose: "p" }, { name: "Old", status: "existing", purpose: "p" }] }) };
+    const deployment = ddDeploymentSection.parse({ components: [{ type: "Custom Permission", name: "send_renewal", change: "add" }], rollback: "r" });
+    expect(lines(checkDdDeployment(deployment, ddEnv({ design, lookup: undefined })))).toEqual(["info components: Nothing is indexed, so the impact on the existing org cannot be checked: say so in the risks."]);
+  });
+
+  it("keep headings and list items on one line", () => {
+    const md = renderDetailedDesign(
+      { title: "T\n# Injected", integrations: ddIntegrationsSection.parse({ integrations: [{ id: "I1", system: "Bill\ning", direction: "outbound", pattern: "fire and forget", authentication: "a", mapping: "m\n# heading", errorHandling: "e" }] }) },
+      [],
+    );
+    expect(md).not.toMatch(/^# Injected/m);
+    expect(md).not.toMatch(/^# heading/m);
+    expect(md).toContain("### I1 Bill ing (outbound, fire and forget)");
   });
 });
 
