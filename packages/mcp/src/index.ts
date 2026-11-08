@@ -53,6 +53,10 @@ export {
   type RequirementsKit,
   type RequirementsOutcome,
 } from "./requirements.js";
+export { currentStep, MAX_ATTEMPTS, type StepDefinition, type StepOutcome, type StepState, type WorkflowDefinition, type WorkflowKit } from "./workflow/engine.js";
+export { methodStep, requirementsStep, scopeStep, WORKFLOW_DEFINITIONS } from "./workflow/steps.js";
+export { registerWorkflowTools, submitStep, type WorkflowToolsKit } from "./workflow/tools.js";
+export { confirmScope, storedScope, type ScopeOutcome, type StoredScope } from "./scope-tools.js";
 export { registerAgentPrompts, WORKFLOWS } from "./prompts.js";
 export { EVIDENCE_RULES, PRIVACY_RULES, PUBLISH_RULES } from "./agents/common.js";
 export { INDUSTRIES, INDUSTRY_IDS, industryGuidance, resolveIndustry } from "./agents/industries.js";

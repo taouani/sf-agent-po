@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const { atlassianConfigFromEnv, AtlassianClient, BackgroundIndexer } = await import("@sf-agent-po/connectors");
-  const { ContextRepository, Database, Masker, MetadataIndex, openVault } = await import("@sf-agent-po/core");
+  const { ContextRepository, Database, Masker, MetadataIndex, openVault, RequirementRepository, WorkflowRepository } = await import("@sf-agent-po/core");
   const { ApprovalServer } = await import("./approval/server.js");
   const { createServer } = await import("./server.js");
   const { databaseFile, ensureWorkspace, lazyDetector, lazyRecognizer } = await import("./startup.js");
@@ -40,7 +40,9 @@ async function main(): Promise<void> {
   };
   const metadata = new MetadataIndex(database);
   const indexer = new BackgroundIndexer(metadata, { workspace });
-  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian, metadata: { index: metadata, indexer } });
+  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian, metadata: { index: metadata, indexer },
+    workflows: { requirements: new RequirementRepository(database), runs: new WorkflowRepository(database) },
+  });
   const shutdown = async () => {
     // An indexing run in progress is marked failed, so that the next start need not wait for its lease.
     metadata.abandon("the server stopped");
