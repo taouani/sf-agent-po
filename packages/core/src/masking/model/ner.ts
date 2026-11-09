@@ -144,6 +144,14 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
   const tokenizer = new Tokenizer(tokenizerJson, tokenizerConfig);
   // The checked bytes go straight to the runtime: no second read, no copy.
   const session = await ort.InferenceSession.create(onnx, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  // One run at a time: the WebAssembly runtime fails ("failed to call OrtRun()") when a
+  // session is run again before the last run ends, as two tool calls at once would do.
+  let last: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = last.then(work, work);
+    last = next.catch(() => undefined);
+    return next;
+  };
   const runner: ModelRunner = {
     id2label: (config.id2label ?? {}) as Record<string, string>,
     encode: (text) => tokenizer.encode(text, { return_token_type_ids: true }) as Encoded,
@@ -157,7 +165,7 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
         else if (name === "token_type_ids") feeds[name] = tensor(enc.token_type_ids ?? new Array<number>(n).fill(0));
         else throw new Error(`Unexpected model input ${name}`);
       }
-      const out = await session.run(feeds);
+      const out = await oneAtATime(() => session.run(feeds));
       const logits = out.logits ?? out[session.outputNames[0]!]!;
       const [, seqLen, numLabels] = logits.dims as number[];
       return { logits: logits.data as Float32Array, seqLen: seqLen!, numLabels: numLabels! };

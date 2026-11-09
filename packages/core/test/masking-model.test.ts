@@ -279,6 +279,17 @@ describe("the vendored runtime", () => {
 // The real model (138 MB) is downloaded from Hugging Face, so this runs only where that is
 // possible and wanted: in CI's model job, or locally with SF_AGENT_PO_MODEL_TEST=1.
 describe.runIf(process.env.SF_AGENT_PO_MODEL_TEST === "1")("the detection model", () => {
+  it("runs calls that come at once, as two tool calls do", { timeout: 600_000 }, async () => {
+    const model = await loadDetectionModel();
+    try {
+      const texts = Array.from({ length: 8 }, (_, i) => `Ticket ${i}: Sarah Martin called about the renewal of policy ${i}. ${"The client asked for a callback. ".repeat(40)}`);
+      const all = await Promise.all(texts.map((t) => model.detect(t)));
+      for (const [i, spans] of all.entries()) expect(spans.map((s) => texts[i]!.slice(s.start, s.end))).toContain("Sarah Martin");
+    } finally {
+      await model.release();
+    }
+  });
+
   it("finds every person in the samples, and masks nothing outside a labelled value", { timeout: 600_000 }, async () => {
     const model = await loadDetectionModel();
     try {
