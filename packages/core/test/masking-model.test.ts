@@ -13,6 +13,7 @@ import {
   labelType,
   loadDetectionModel,
   modelFile,
+  serialQueue,
   splitText,
   VENDORED_RUNTIME,
   type Fetch,
@@ -127,6 +128,27 @@ describe("cutting text for the model", () => {
     expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["Sarah", "Tom"]);
     expect(Math.max(...runs)).toBeLessThanOrEqual(512);
     expect(runs.length).toBeGreaterThan(1);
+  });
+});
+
+describe("running the model one call at a time", () => {
+  it("starts each piece of work after the last one ends, in order, and a failure stops nothing", async () => {
+    const queue = serialQueue();
+    const log: string[] = [];
+    let running = 0;
+    const work = (name: string, fail = false) => async () => {
+      running++;
+      expect(running).toBe(1);
+      log.push(`start ${name}`);
+      await new Promise((r) => setTimeout(r, 5));
+      log.push(`end ${name}`);
+      running--;
+      if (fail) throw new Error(`${name} failed`);
+      return name;
+    };
+    const results = await Promise.allSettled([queue(work("a")), queue(work("b", true)), queue(work("c"))]);
+    expect(results.map((r) => (r.status === "fulfilled" ? r.value : (r.reason as Error).message))).toEqual(["a", "b failed", "c"]);
+    expect(log).toEqual(["start a", "end a", "start b", "end b", "start c", "end c"]);
   });
 });
 
@@ -282,9 +304,13 @@ describe.runIf(process.env.SF_AGENT_PO_MODEL_TEST === "1")("the detection model"
   it("runs calls that come at once, as two tool calls do", { timeout: 600_000 }, async () => {
     const model = await loadDetectionModel();
     try {
-      const texts = Array.from({ length: 8 }, (_, i) => `Ticket ${i}: Sarah Martin called about the renewal of policy ${i}. ${"The client asked for a callback. ".repeat(40)}`);
+      const people = ["Sarah Martin", "Julien Moreau", "Amélie Dubois", "Thomas Bernard"];
+      const texts = Array.from({ length: 8 }, (_, i) => `Ticket ${i}: ${people[i % 4]} called about the renewal of policy ${i}. ${"The client asked for a callback. ".repeat(40)}`);
+      const alone = await model.detect(texts[0]!);
       const all = await Promise.all(texts.map((t) => model.detect(t)));
-      for (const [i, spans] of all.entries()) expect(spans.map((s) => texts[i]!.slice(s.start, s.end))).toContain("Sarah Martin");
+      // The same spans as a call made alone, and each text's own person.
+      expect(all[0]).toEqual(alone);
+      for (const [i, spans] of all.entries()) expect(spans.map((s) => texts[i]!.slice(s.start, s.end))).toContain(people[i % 4]);
     } finally {
       await model.release();
     }
