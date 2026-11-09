@@ -119,6 +119,31 @@ export function detectorFor(runner: ModelRunner, stats: DecodeStats = { tokens: 
   };
 }
 
+/**
+ * Runs work one piece at a time, in order; a failure goes to its caller and does not stop
+ * the next piece.
+ */
+export function serialQueue(): <T>(work: () => Promise<T>) => Promise<T> {
+  let last: Promise<unknown> = Promise.resolve();
+  return <T>(work: () => Promise<T>): Promise<T> => {
+    const next = last.then(work, work);
+    last = next.catch(() => undefined);
+    return next;
+  };
+}
+
+/**
+ * One queue per loaded runtime. The WebAssembly runtime fails ("failed to call OrtRun()")
+ * when a run starts before the last one ends, as two tool calls at once would do: every run
+ * uses the one WebAssembly stack, so this holds across sessions, and for releasing one too.
+ */
+const queues = new WeakMap<object, ReturnType<typeof serialQueue>>();
+function queueFor(runtime: object): ReturnType<typeof serialQueue> {
+  let queue = queues.get(runtime);
+  if (!queue) queues.set(runtime, (queue = serialQueue()));
+  return queue;
+}
+
 const json = (bytes: Buffer) => JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
 
 /**
@@ -144,6 +169,7 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
   const tokenizer = new Tokenizer(tokenizerJson, tokenizerConfig);
   // The checked bytes go straight to the runtime: no second read, no copy.
   const session = await ort.InferenceSession.create(onnx, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  const oneAtATime = queueFor(ort);
   const runner: ModelRunner = {
     id2label: (config.id2label ?? {}) as Record<string, string>,
     encode: (text) => tokenizer.encode(text, { return_token_type_ids: true }) as Encoded,
@@ -157,12 +183,12 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
         else if (name === "token_type_ids") feeds[name] = tensor(enc.token_type_ids ?? new Array<number>(n).fill(0));
         else throw new Error(`Unexpected model input ${name}`);
       }
-      const out = await session.run(feeds);
+      const out = await oneAtATime(() => session.run(feeds));
       const logits = out.logits ?? out[session.outputNames[0]!]!;
       const [, seqLen, numLabels] = logits.dims as number[];
       return { logits: logits.data as Float32Array, seqLen: seqLen!, numLabels: numLabels! };
     },
   };
   const stats: DecodeStats = { tokens: 0, unaligned: 0 };
-  return { detect: detectorFor(runner, stats), stats, release: () => session.release() };
+  return { detect: detectorFor(runner, stats), stats, release: () => oneAtATime(() => session.release()) };
 }
