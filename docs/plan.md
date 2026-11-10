@@ -1,10 +1,10 @@
 # sf-agent-po v1 plan
 
-> Copy of the [sf-agent-po v1 plan](https://claude.ai/artifact/FHCBeeVFd6Y4pCsSkPpWG8) Claude Doc, which stays the working version. Agreed with Tarek on 6 Nov 2026; progress updated on 7 Nov 2026. The two diagrams are only in the doc.
+> Copy of the [sf-agent-po v1 plan](https://claude.ai/artifact/FHCBeeVFd6Y4pCsSkPpWG8) Claude Doc, which stays the working version. Agreed with Tarek on 6 Nov 2026; progress updated on 10 Nov 2026. The two diagrams are only in the doc.
 
 sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](phase-1-review.md).
 
-**Status on 7 Nov 2026.** Phases 0 to 3 are built and merged (PRs #6 to #41), about four months ahead of the roadmap; 1.0.0-next.4 is on npm and next.5 is ready. The one open item from those phases is the evaluation baseline, which waits on OpenRouter credit. Section 8 has the progress, limitations, backlog and what is needed from you.
+**Status on 10 Nov 2026.** Phases 0 to 4 are built and merged (PRs #6 to #60), about five months ahead of the roadmap. 1.0.0-next.5 is on npm; next.6, the first release with the guided workflows, is ready once PR #62 merges. Gate G3 is measured on three models, but not on the three named in decision D4 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions), so closing it needs your call. Section 8 has the progress, evaluation results, limitations, backlog and what is needed from you.
 
 ## 1. Decision log
 
@@ -77,14 +77,14 @@ At 40 hours a week with no holiday break, the plan fits 30 June 2027 with about 
 
 *Diagram in the Claude Doc: v1 roadmap · 7 phases, 4 gates, 1.0 on 30 June 2027.*
 
-| Phase | Weeks | Delivers | Depends on | Gate at the end | Status on 7 Nov 2026 |
+| Phase | Weeks | Delivers | Depends on | Gate at the end | Status on 10 Nov 2026 |
 | --- | --- | --- | --- | --- | --- |
 | 0 Spikes | 2 | Answers on detection quality (incl. Chinese), image redaction, images in tool results on all three hosts, SQLite driver install, elicitation in VS Code, a draw.io diagram the Confluence macro renders, the detection model's licence | Nothing | G0: each spike passes, or its fallback is chosen (Python helper for masking) | Done (PRs #6, #12). G0 passed; WebAssembly runtime chosen (RT1) |
-| 1 Foundations | 4 | Workspaces and packages, CI on three platforms, Node 24, SQLite store with migrations, importer, proven code moved over, content as files, a luxury industry template, luxury evaluation scenarios in English and French, evaluation baseline measured on today's version | Phase 0 | None; your live use continues on the old server | Done (PRs #7 to #11, #39) except the evaluation baseline, which waits on OpenRouter credit |
-| 2 Masking, inputs, approval | 5 | Masking with vault and keychain, new document readers, image redaction, approval page with unmasked preview and image confirmation, masked-input review (a setting, on by default in pre-releases), unmasking on publish | Phase 1 store | G1: first `next` pre-release; you test on Copilot; in-house users can join | Done (PRs #13 to #29). G1 met: 1.0.0-next.0 to next.4 on npm, host kit passed on Copilot and Cursor |
-| 3 Metadata index, scope | 6 | Both metadata formats, flows, Apex references, validation rules and permissions, dependency graph, search, org retrieval, scope step, org summary, query tools, impact analysis | Phases 1 and 2 (metadata text is masked too) | G2: your 9,000+ component org indexed in under 30 minutes | Done (PRs #30 to #38, #40, #41). G2 met: your UAT org, 15,266 components in about 20 minutes. Scope and impact tools ship in next.5 |
-| 4 Guided workflows | 6 | Requirements extraction, step engine, workflow tools, designs and backlogs as checked steps, structured designs, output language with English and French word lists for the checks, diagrams as draw.io in Confluence; added by RM1: a traceability matrix in Confluence, Jira sub-tasks from a detailed design | Phases 2 and 3 | G3: a rubric score of at least 7/10 on each of three models | Next. Can start now; G3 needs the eval credit |
-| 5 Feedback, hosts, hardening | 5 | Story verdicts, design ratings, Jira diff, host files verified on Copilot, Cursor and Claude Code, `doctor`, Windows fixes, docs and contributor guide, old server removed; added by RM1: incremental re-index, reports, dashboards and integrations in the index | Phase 4 | None | Partly done: Windows fixes (PRs #35 and #36), Copilot and Cursor verified |
+| 1 Foundations | 4 | Workspaces and packages, CI on three platforms, Node 24, SQLite store with migrations, importer, proven code moved over, content as files, a luxury industry template, luxury evaluation scenarios in English and French, evaluation baseline measured on today's version | Phase 0 | None; your live use continues on the old server | Done (PRs #7 to #11, #39). The 0.x baseline was never run: the eval now measures v1 directly (backlog) |
+| 2 Masking, inputs, approval | 5 | Masking with vault and keychain, new document readers, image redaction, approval page with unmasked preview and image confirmation, masked-input review (a setting, on by default in pre-releases), unmasking on publish | Phase 1 store | G1: first `next` pre-release; you test on Copilot; in-house users can join | Done (PRs #13 to #29). G1 met: 1.0.0-next.0 to next.5 on npm, host kit passed on Copilot and Cursor |
+| 3 Metadata index, scope | 6 | Both metadata formats, flows, Apex references, validation rules and permissions, dependency graph, search, org retrieval, scope step, org summary, query tools, impact analysis | Phases 1 and 2 (metadata text is masked too) | G2: your 9,000+ component org indexed in under 30 minutes | Done (PRs #30 to #38, #40, #41, #58). G2 met: your UAT org, 15,266 components in about 20 minutes. #58 adds Visualforce, email templates, field sets and untyped Apex field uses |
+| 4 Guided workflows | 6 | Requirements extraction, step engine, workflow tools, designs and backlogs as checked steps, structured designs, output language with English and French word lists for the checks, diagrams as draw.io in Confluence; added by RM1: a traceability matrix in Confluence, Jira sub-tasks from a detailed design | Phases 2 and 3 | G3: a rubric score of at least 7/10 on each of three models | Built (PRs #44 to #56), finished 8 Nov 2026. G3 measured, not closed: three models score 8.1 to 10 on the luxury scenarios (Opus in English only), but not the D4 models (section 8) |
+| 5 Feedback, hosts, hardening | 5 | Story verdicts, design ratings, Jira diff, host files verified on Copilot, Cursor and Claude Code, `doctor`, Windows fixes, docs and contributor guide, old server removed; added by RM1: incremental re-index, reports, dashboards and integrations in the index | Phase 4 | None | Next; can start now. Partly done: Windows fixes (#35, #36), Copilot and Cursor verified, clear model download errors (#57) |
 | 6 Release candidate, buffer | 5.5 | Bug fixes, final evaluation, release notes | Everything | 1.0 on npm, 30 June 2027 | Not started |
 
 Weeks are rough estimates for one person with Claude. If phase 3 or 4 overruns, Shoulds and Coulds are cut first, then the buffer.
@@ -134,60 +134,85 @@ The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](h
 
 **Review.** A separate review agent checked the spike code. All 11 of its findings were real and were fixed before merge. The two that mattered most: over-masking was not being counted, and the Chinese search check hid the two-character gap.
 
-## 8. Progress on 7 November 2026
+## 8. Progress on 10 November 2026
 
-Phases 0 to 3 are done in 36 merged PRs (#6 to #41), against a roadmap that put the end of phase 3 at G2 on 5 March 2027. Every PR had a separate review agent; 502 tests pass on Windows, macOS and Linux. The build is no longer the bottleneck: what limits the next phases is evaluation credit and your live testing.
+Phases 0 to 4 are built and merged (PRs #6 to #60). Phase 4 finished on 8 Nov 2026, against a roadmap that put G3 on 16 April 2027. Every PR had a separate review agent, and 618 tests pass on Windows, macOS and Linux, plus a job that runs the real name model. What limits the next steps is your live testing and the evaluation credit, not the build.
 
-**Decision RM1 (7 Nov 2026).** 1.0 stays on 30 June 2027, and the time gained goes to items that were Could or after 1.0. You confirmed four items the same day. The traceability matrix in Confluence and Jira sub-tasks from a detailed design go to phase 4. Incremental re-index, and reports, dashboards and integrations in the index, go to phase 5. Phase weeks stay the original estimates: the four months gained absorb these items, so the buffer before 30 June 2027 is unchanged or larger.
+**Decision RM1 (7 Nov 2026).** 1.0 stays on 30 June 2027, and the time gained goes to items that were Could or after 1.0. You confirmed four items the same day. The traceability matrix in Confluence and Jira sub-tasks from a detailed design went to phase 4 and are built. Incremental re-index, and reports, dashboards and integrations in the index, go to phase 5.
 
 ### Achieved
 
 | Phase | PRs | What shipped |
 | --- | --- | --- |
-| 3 Metadata index, scope | #30 to #38, #40, #41 | Index of both metadata formats, flows, Apex, permissions, layouts and every other type from Salesforce's registry; org retrieval with your sf CLI; the `index` command; summary, search and component tools; the scope step on the approval page; impact analysis with weak links (dynamic Apex, inactive flows, outside scope, other writers) |
-| 2 Masking, inputs, approval | #13 to #29 | Detection with rules, dictionary and the model on WebAssembly; pseudonym vault with the key in the OS keychain; PDF, Word, PowerPoint, Excel, CSV and draw.io readers; image redaction with local OCR; approval page; masked designs and backlogs published to Confluence and Jira on approval; SA and PO workflows; `init` for three hosts; the `next` package and its release workflow |
-| 1 Foundations | #7 to #11, #39 | npm workspaces, SQLite store with migrations, importer for 0.x contexts, connectors moved over, content as Markdown, luxury template, English and French luxury scenarios, eval runner with judge, eval through OpenRouter |
-| 0 Spikes | #6, #12 | All spikes passed; WebAssembly model runtime chosen to keep the install small (RT1) |
+| Fixes from your testing (8 and 9 Nov) | #57 to #60 | The model download error gives its real cause and fix (proxy, company certificate, or placing the file by hand); the index reads Visualforce pages and components, email template merge fields (never their text), field sets and untyped Apex field uses, and links `Account.X__pc` to `Contact.X__c`; field types such as Currency are never masked as names; model runs wait their turn, which fixes the `failed to call OrtRun()` error on parallel tool calls |
+| 4 Guided workflows | #44 to #56 | Requirements with stable ids, confirmed on the approval page; a step engine with `workflow_start`, `workflow_step`, `workflow_submit` and `workflow_status`; output language per context with English and French word lists; high-level and detailed designs as checked section steps; backlogs as checked steps with Must coverage; `trace_show` and the traceability matrix page; Jira sub-tasks from the detailed design; draw.io diagrams attached to the Confluence page, with a Mermaid fallback setting; agents and `init` host files on the workflow tools (`agent_workflow` removed, `design_save` deprecated); the eval on v1 with prompt caching and send-back reasons |
+| 3 Metadata index, scope | #30 to #38, #40, #41 | Index of both metadata formats, flows, Apex, permissions, layouts and every other type from Salesforce's registry; org retrieval with your sf CLI; the `index` command; summary, search and component tools; the scope step on the approval page; impact analysis with weak links |
+| 2 Masking, inputs, approval | #13 to #29 | Detection with rules, dictionary and the model on WebAssembly; pseudonym vault with the key in the OS keychain; PDF, Word, PowerPoint, Excel, CSV and draw.io readers; image redaction with local OCR; approval page; publishing to Confluence and Jira on approval; `init` for three hosts; the `next` package and its release workflow |
+| 1 Foundations | #7 to #11, #39 | npm workspaces, SQLite store with migrations, importer for 0.x contexts, content as Markdown, luxury template and scenarios, eval runner with judge, eval through OpenRouter |
+| 0 Spikes | #6, #12 | All spikes passed; WebAssembly model runtime chosen (RT1) |
+
+### Evaluation results (8 Nov 2026)
+
+The target is at least 7/10 per model. Every score below is one run per scenario, so a difference of about a point may be noise (my estimate). First try is the share of steps accepted without a send-back.
+
+| Model | Judge | Luxury EN design / backlog | Luxury FR design / backlog | Other scenarios | First try |
+| --- | --- | --- | --- | --- | --- |
+| Opus 5.5 | Opus 5.5 | 10 / 9.1 | Not run | Not run | 75% |
+| Haiku 5.5 | Sonnet 5.5 | 9.4 / 9.1 | 8.8 / 8.2 | Banking 9 / 10, insurance 8 / 7.5 | 91% |
+| DeepSeek V4.1 Flash | Sonnet 5.5 | 10 / 10 | 8.1 / 9.1 | Banking 5 / 8 (data model missing), insurance 8.7 / 7.5 | 66% |
+
+- **Cost.** Prompt caching cut one Opus scenario from about $10 to about $4.60. The two cheap models cost about $1 to $2 for four scenarios each, judge included (estimate from token counts).
+- **G3.** Three models pass on the luxury scenarios, but they are not the three D4 named (Opus 5.5, GPT Sol 6.1, Grok 7.1), and Opus ran in English only. D4 also fixed Opus 5.5 as the judge, but the two cheap runs used Sonnet 5.5 to save credit, so their scores are not strictly comparable with the Opus run. Running the D4 set on both luxury scenarios would cost about $30, which the credit does not cover.
+- **Send-backs.** Every step sent back in the Opus runs went over a length limit; the briefs now show the limits (#56). The weaker model's send-backs cluster on the data model, integrations and security steps.
 
 ### Remaining
 
-1. **Phase 4, guided workflows (G3).** Requirements extraction with sources; a step engine that guides the model through checked steps; workflow tools replacing the single workflow tool; designs as structured JSON with checks; backlogs as checked steps; output language per context with English and French word lists; diagrams published as draw.io in Confluence, with a code-block fallback; the eval switched from the 0.x server to v1. Added by RM1: a traceability matrix published to Confluence (input, requirement, design, story) and Jira sub-tasks from a detailed design. G3 = a rubric score of at least 7/10 on each of three models.
-2. **Phase 5, feedback, hosts, hardening.** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking; the v1 user guide and contributor guide; trusted publishing on npm; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index so impact analysis can see them.
+1. **Close phase 4.** Your call on G3; the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks); your review of the French word list.
+2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide (today's `docs/user-guide.md` describes 0.x) and a contributor guide; trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
 3. **Phase 6, release candidate.** Bug fixes, the final evaluation across models, release notes, 1.0 on npm.
 
 ### Limitations today
 
-- **The index cannot see inside dynamic code.** Queries and searches built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced yet (phase 5 adds reports and integrations, RM1).
-- **The dynamic Apex flags need a re-index.** An index built before next.5 has none.
-- **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory.
-- **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace and masks it each time a tool returns it to the model. Documents are masked when added (AR1) and shown on the input review page; metadata text is not.
-- **v1 is not measured yet.** The eval drives the 0.x server by default and no baseline exists, because the OpenRouter key has no credit.
-- **Some paths are tested with fakes only.** v1 publishing to Confluence and Jira has not been tried live, as far as I know.
+- **The index cannot see inside dynamic code.** Queries built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced yet (phase 5).
+- **Untyped Apex field uses are linked by name.** A use such as `getAccount().Foo__c` is linked only when one object has a field of that name, or, in an email template, the recipient types (Contact, Lead, User) list it.
+- **Old indexes miss the #58 links.** An index built before next.6 has no Visualforce, email template, field set or untyped Apex links: re-index after updating.
+- **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory. Since #60, tool calls that mask at the same time wait for each other.
+- **The model download needs huggingface.co.** Behind a proxy or a company certificate it needs a setting, or the file placed by hand; the error now says which (#57).
+- **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace.
+- **G3 is only partly measured.** See above; the 0.x baseline was never run.
+- **Some paths are tested with fakes only.** v1 publishing to Confluence and Jira, including draw.io, the matrix page and sub-tasks, has not been tried live.
+- **Host memory is outside our control.** On 9 Nov, Copilot's memory brought facts from another repository into an answer in a clean workspace. Our masking and workspace do not cover what a host remembers.
 - **Hosts.** Claude Code is not tested; Cursor reports its version as "cursor-vscode 1.0.0".
-- **Two loaders.** The 0.x `context_add_file` still uses the old file loader until the old server is removed.
-- **Remote repos need a local checkout.** v1 indexes an org or a local folder; cloning from GitHub, GitLab or Azure DevOps still works only through the 0.x server.
-- **Publishing uses an npm token.** npm stops accepting such tokens for direct publish around January 2027.
+- **29 tools, against about 12 in DE3.** Decision D6 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions) keeps them until the eval shows models picking the wrong tool.
+- **Two loaders, local checkouts only, npm token.** The 0.x `context_add_file` still uses the old loader; v1 indexes an org or a local folder, not a remote repo; publishing uses an npm token, which npm stops accepting around January 2027.
 
 ### Backlog
 
 | Item | Why it waits | Goes to |
 | --- | --- | --- |
-| Eval baseline on 0.x | OpenRouter key has no credit | Before G3 |
+| G3 on the D4 models (GPT Sol 6.1, Grok 7.1, Opus in French) | About $30 of credit, which you are not adding now | When credit allows, or dropped if you accept G3 as measured |
+| Eval baseline on 0.x | The eval measures v1 directly now | I suggest dropping it; your call |
+| Copilot memory: a README note, an `init` host instruction, a check for untraced claims | You asked to discuss it only, on 9 Nov | Open, your call |
 | Claude Code host check | You test it when ready | Phase 5 |
 | Trusted publishing (no npm token) | Needs a setting on npmjs.com | Before January 2027 |
-| Index GitHub, GitLab and Azure DevOps repos directly | The clone connector exists and is tested, but only 0.x uses it; v1 indexes an org or a local checkout | Phase 5, before the old server is removed |
-| Cursor version string | Cosmetic | Phase 5 |
+| Index GitHub, GitLab and Azure DevOps repos directly | v1 indexes an org or a local checkout | Phase 5, before the old server is removed |
 | Batch masking calls | Speed only; correct today | Phase 5 |
+| Fewer tools (D6) | Only if the eval shows wrong tool picks | Phase 5 |
 | Move 0.x `context_add_file` to the new loader | Goes away with the old server | Phase 5 |
+| Cursor version string | Cosmetic | Phase 5 |
 | Metadata text on the input review page | Needs your call on whether to review it | Open question |
 | Native model runtime as an option | RT1 chose WebAssembly for install size | After 1.0 |
 | Web app, Atlassian Data Center, Azure DevOps Boards, telemetry | Won't for v1 in the feature list (FE1) | After 1.0, if ever |
 
 ### Inputs needed from you
 
-- [ ] Add about $20 of credit on OpenRouter, so the baseline and the G3 runs can go. Name the three models to compare and the judge, or I propose them.
-- [ ] Start the Release next workflow for 1.0.0-next.5, then re-index your UAT org with `npx sf-agent-po@next index --org <alias>` and try the scope and impact tools on one real requirement.
-- [ ] Try one v1 publish to a test Confluence space and a test Jira project.
+- [ ] Start the Release next workflow for 1.0.0-next.6 once PR #62 is merged. Your run on 8 Nov stopped because the version was still next.5; that PR bumps it.
+- [ ] Update, re-index your UAT org with `npx sf-agent-po@next index --org <alias>`, and run the Lifetime Spent check again.
+- [ ] Try one guided design and backlog on Copilot with next.6, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
+- [ ] Decide on G3: accept it on the three models measured, or keep it open for the D4 models.
+- [ ] Review the French word list in `packages/core/content/checks/fr.md`.
+- [ ] Send the name of the Apex class that was missed in the Lifetime Spent check, or the line that reads the field, so I can confirm #58 covers it.
+- [ ] Tell me the OpenRouter credit left after the 8 Nov runs.
 - [ ] Set up trusted publishing for sf-agent-po on npmjs.com before January 2027; I then change the release workflow.
 - [ ] Test the Claude Code host when you are ready.
-- [ ] Optional: two or three anonymised real requirement sets, in English and French, to use as phase 4 scenarios.
+- [ ] Optional: two or three anonymised real requirement sets, in English and French, to use as scenarios.
