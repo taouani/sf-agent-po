@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, KeychainUnavailable, openVault, type KeyStore } from "@sf-agent-po/core";
-import { KEY_USAGE, keyExportHint, keyImportHint, parseKeyArgs, runKey, type KeyIo } from "../src/key-command.js";
+import { EventEmitter } from "node:events";
+import { KEY_USAGE, keyExportHint, keyImportHint, parseKeyArgs, readHidden, runKey, shellWord, type HiddenInput, type KeyIo } from "../src/key-command.js";
 import { databaseFile } from "../src/startup.js";
 
 /** An in-memory key store, so that no test touches the real keychain. */
@@ -12,10 +13,10 @@ function memoryStore(): KeyStore & { keys: Map<string, Buffer> } {
   return { name: "memory", keys, get: (i) => keys.get(i), set: (i, k) => (keys.set(i, Buffer.from(k)), { where: "memory", warning: "a test warning" }) };
 }
 
-function io(input = ""): KeyIo & { stdout: string[]; stderr: string[] } {
+function io(input = "", outIsTerminal = true): KeyIo & { stdout: string[]; stderr: string[] } {
   const stdout: string[] = [];
   const stderr: string[] = [];
-  return { stdout, stderr, out: (t) => stdout.push(t), err: (t) => stderr.push(t), readLine: async () => input };
+  return { stdout, stderr, out: (t) => stdout.push(t), outIsTerminal, err: (t) => stderr.push(t), readLine: async () => input };
 }
 
 const dirs: string[] = [];
@@ -41,6 +42,8 @@ describe("key command", () => {
       allowKeyFile: true,
     });
     expect(parseKeyArgs(["import"], { SF_AGENT_WORKSPACE: "/ws" }, cwd)).toMatchObject({ workspace: path.resolve("/ws") });
+    expect(parseKeyArgs(["import"], { SF_AGENT_WORKSPACE: "rel" }, cwd)).toMatchObject({ workspace: path.join(cwd, "rel") });
+    expect(parseKeyArgs(["export", "--to-pipe"], {}, cwd)).toMatchObject({ toPipe: true });
     expect(parseKeyArgs(["--help"], {}, cwd)).toEqual({ help: KEY_USAGE });
   });
 
@@ -51,7 +54,8 @@ describe("key command", () => {
     expect(() => parseKeyArgs(["export", "--allow-key-file"], {}, cwd)).toThrow(/only goes with import/);
     expect(() => parseKeyArgs(["import", "--workspace"], {}, cwd)).toThrow(/--workspace needs a value/);
     // Before or after the action, a key in the arguments is refused and never echoed.
-    for (const argv of [["import", "sfpo-key-1-abc"], ["sfpo-key-1-abc"]]) {
+    expect(() => parseKeyArgs(["import", "--to-pipe"], {}, cwd)).toThrow(/only goes with export/);
+    for (const argv of [["import", "sfpo-key-1-abc"], ["sfpo-key-1-abc"], ["import", "--workspace", "sfpo-key-1-abc"], ["import", " sfpo-key-1-abc"]]) {
       expect(() => parseKeyArgs(argv, {}, cwd)).toThrow(/Do not pass the key on the command line/);
       try {
         parseKeyArgs(argv, {}, cwd);
@@ -100,6 +104,48 @@ describe("key command", () => {
     await expect(runKey({ action: "export", workspace: empty, allowKeyFile: false }, io(), store)).rejects.toThrow(/There is no sf-agent-po workspace/);
   });
 
+  it("prints the key only to a terminal unless --to-pipe, and never migrates the database", async () => {
+    const store = memoryStore();
+    const dir = workspace(store);
+    const db = new Database(databaseFile(dir));
+    // As if the workspace were written by an older server: the key command must not upgrade it.
+    db.db.exec("DELETE FROM schema_migration WHERE version = (SELECT MAX(version) FROM schema_migration)");
+    const before = (db.db.prepare("SELECT COUNT(*) AS n FROM schema_migration").get() as { n: number }).n;
+    db.close();
+    const piped = io("", false);
+    await expect(runKey({ action: "export", workspace: dir, allowKeyFile: false }, piped, store)).rejects.toThrow(/add --to-pipe/);
+    expect(piped.stdout).toEqual([]);
+    const ok = io("", false);
+    expect(await runKey({ action: "export", workspace: dir, allowKeyFile: false, toPipe: true }, ok, store)).toBe(0);
+    expect(await runKey({ action: "import", workspace: dir, allowKeyFile: false }, io(ok.stdout[0]), memoryStore())).toBe(0);
+    const after = new Database(databaseFile(dir), [], { readOnly: true });
+    try {
+      expect((after.db.prepare("SELECT COUNT(*) AS n FROM schema_migration").get() as { n: number }).n).toBe(before);
+    } finally {
+      after.close();
+    }
+  });
+
+  it("reads a pasted key without echoing it, past blank lines, with Backspace and Ctrl+C", async () => {
+    const terminal = () => {
+      const input = Object.assign(new EventEmitter(), { raw: [] as boolean[], setRawMode: (r: boolean) => input.raw.push(r), resume: () => {}, pause: () => {}, setEncoding: () => {} });
+      const written: string[] = [];
+      return { input, written, output: { write: (t: string) => written.push(t) } };
+    };
+    const t = terminal();
+    const line = readHidden("Paste: ", t.input as unknown as HiddenInput, t.output);
+    t.input.emit("data", "\r\nsfpo-key-1-abcx");
+    t.input.emit("data", "\u007f\r\n");
+    expect(await line).toBe("sfpo-key-1-abc");
+    expect(t.written.join("")).toBe("Paste: \n");
+    expect(t.input.raw).toEqual([true, false]);
+    const c = terminal();
+    const stopped = readHidden("", c.input as unknown as HiddenInput, c.output);
+    c.input.emit("data", "sfpo\u0003");
+    await expect(stopped).rejects.toThrow(/Stopped/);
+    expect(c.input.raw).toEqual([true, false]);
+  });
+
   it("names --allow-key-file when the keychain is down, and the commands in the server's hints", async () => {
     const home = memoryStore();
     const dir = workspace(home);
@@ -117,7 +163,9 @@ describe("key command", () => {
     const back = io(out.stdout[0]);
     expect(await runKey({ action: "import", workspace: dir, allowKeyFile: true }, back, down)).toBe(0);
     expect(back.stderr.join("\n")).toMatch(/saved in a key file/);
-    expect(keyImportHint("/w s")).toContain('key import --workspace "/w s"');
-    expect(keyExportHint("/w s")).toContain('key export --workspace "/w s"');
+    expect(keyImportHint("/w s", "linux")).toContain("key import --workspace '/w s'");
+    expect(keyExportHint("C:\\Users\\a b", "win32")).toContain('key export --workspace "C:\\Users\\a b"');
+    expect(shellWord("/home/a/.sf-agent")).toBe("/home/a/.sf-agent");
+    expect(shellWord("/it's $HOME", "darwin")).toBe("'/it'\\''s $HOME'");
   });
 });

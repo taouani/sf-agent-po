@@ -41,17 +41,20 @@ npx -y sf-agent-po@next index --project <folder>
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
 holds the masked inputs and the agents' work. Its masking key is kept in your OS keychain,
 or in a key file when no keychain is available. Back it up: without it, nothing can be
-unmasked. The server reminds you when it makes a new key.
+unmasked. When the server makes a new key, its log (the MCP server output of your AI tool)
+says so, with the command to back it up.
 
 ```bash
 npx -y sf-agent-po@next key export   # prints the key as one line, for a password manager
-npx -y sf-agent-po@next key import   # on another computer: paste it when asked
+npx -y sf-agent-po@next key import   # on another computer: paste it when asked (it is not shown)
 ```
 
-Both take `--workspace <folder>` (else `SF_AGENT_WORKSPACE`, else `.sf-agent` here). Import
-checks that the key is this workspace's and saves it in your keychain; add `--allow-key-file`
-to save it in a key file instead when the keychain cannot be used. The key is never read from
-the command line, which your shell history keeps.
+Both take `--workspace <folder>` (else `SF_AGENT_WORKSPACE`, else `.sf-agent` here). Export
+prints only to a terminal, so that an AI agent running commands cannot read the key; add
+`--to-pipe` to send it to a password manager's CLI. Import checks that the key is this
+workspace's and saves it in your keychain; add `--allow-key-file` to save it in a key file
+instead when the keychain cannot be used. The key is never read from the command line, which
+your shell history keeps, and neither command changes the workspace database.
 
 The name detection model (about 140 MB) is downloaded on first use, pinned and checked.
 It comes from huggingface.co, whose larger files are served from its download hosts

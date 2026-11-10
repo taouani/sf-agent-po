@@ -122,7 +122,7 @@ async function key(argv: string[]): Promise<void> {
     const { parseKeyArgs, readStdinLine, runKey } = await import("./key-command.js");
     const opts = parseKeyArgs(argv);
     if ("help" in opts) return console.log(opts.help);
-    process.exitCode = await runKey(opts, { out: (t) => console.log(t), err: (t) => console.error(t), readLine: readStdinLine });
+    process.exitCode = await runKey(opts, { out: (t) => console.log(t), outIsTerminal: Boolean(process.stdout.isTTY), err: (t) => console.error(t), readLine: readStdinLine });
   } catch (err) {
     console.error((err as Error).message);
     process.exitCode = 1;
