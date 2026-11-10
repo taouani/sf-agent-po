@@ -2,7 +2,7 @@
 
 > Copy of the [sf-agent-po v1 plan](https://claude.ai/artifact/FHCBeeVFd6Y4pCsSkPpWG8) Claude Doc, which stays the working version. Agreed with Tarek on 6 Nov 2026; progress updated on 7 Nov 2026. The two diagrams are only in the doc.
 
-sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](https://claude.ai/artifact/JBucxLtXXBCrmhTQVjDSde).
+sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](phase-1-review.md).
 
 **Status on 7 Nov 2026.** Phases 0 to 3 are built and merged (PRs #6 to #41), about four months ahead of the roadmap; 1.0.0-next.4 is on npm and next.5 is ready. The one open item from those phases is the evaluation baseline, which waits on OpenRouter credit. Section 8 has the progress, limitations, backlog and what is needed from you.
 

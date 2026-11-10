@@ -88,7 +88,7 @@ Nothing is broken in the sense of failing checks. The real problems are things t
 
 Nothing looked unused: every module is reachable from `src/server.ts` or the `init` command.
 
-## 6. Phase 2: goal statement (draft, to confirm) confirmed
+## 6. Phase 2: goal statement (confirmed)
 
 **Purpose.** An open-source Salesforce Solution Architect and Product Owner agent. From a handful of inputs and a large existing org, it produces high-level designs, detailed designs and Jira-ready backlogs that the SA, PO and dev team accept with few edits.
 
@@ -393,7 +393,7 @@ I recommend option c: use the diagram app the client's Confluence already has, w
 
 |  | a. Mermaid as a code block (today) | b. Render to images locally and attach them | c. Use a diagram app installed on the site (recommended) |
 | --- | --- | --- | --- |
-| How it works | The page shows the diagram's source text | Mermaid is drawn to PNG or SVG on the user's machine and attached to the page | The user names the site's diagram app once (a Mermaid app, for example). Diagrams are published into its macro; without one, they fall back to a |
+| How it works | The page shows the diagram's source text | Mermaid is drawn to PNG or SVG on the user's machine and attached to the page | The user names the site's diagram app once (a Mermaid app, for example). Diagrams are published into its macro; without one, they fall back to a code block |
 | Pros | No work | Works on every Confluence site | A real diagram that people can edit in Confluence |
 | Cons | Business readers see code, not a diagram | Needs a headless browser, a large extra download on every install; images cannot be edited | Depends on what each client has installed; each supported app is extra work, so v1 would support one |
 | Effort | None | Medium | Low to medium per app |

@@ -59,7 +59,7 @@ Ask in the chat, one at a time:
 1. "Which metadata sources are indexed?" (`metadata_sources`). Expect both sources, with the counts of components and the time of the run.
 2. "Summarise the objects of my-sandbox" (`metadata_summary`).
 3. "Search the index for renewal" (`metadata_search`). On the sample, expect the flow `Policy_Renewal` and `PolicyService`.
-4. "Show the component Policy\_\_c" (`metadata_component`). Expect its fields, the flow and the trigger on it, and the permission set.
+4. "Show the component `Policy__c`" (`metadata_component`). Expect its fields, the flow and the trigger on it, and the permission set.
 5. Search for a name that does not exist, such as `Polcy__c`. Expect close matches, not an error.
 
 Check that labels and help texts with personal data are masked in the chat (`[PERSON_1]` and so on).
@@ -86,10 +86,10 @@ Ask the model to analyse the impact of a change (`metadata_impact`). Each case b
 
 | Case | Ask | Expect |
 | --- | --- | --- |
-| Change a field used by automation | "What is the impact of changing Policy\_\_c.Premium\_\_c?" | What uses the field, one or two links away. |
-| New rule on a saved object | "Impact of adding a validation rule on Policy\_\_c" | The flow `Policy_Renewal` and the trigger `PolicyTrigger` named as automation that saves records the rule can stop. |
-| New required field | "Impact of adding a required field Renewal\_Date\_\_c on Policy\_\_c" | The same warning about the automation that saves records. |
-| Delete a referenced field | "Impact of deleting Policy\_\_c.Account\_\_c" | Its dependents listed as breaking. |
+| Change a field used by automation | "What is the impact of changing `Policy__c.Premium__c`?" | What uses the field, one or two links away. |
+| New rule on a saved object | "Impact of adding a validation rule on `Policy__c`" | The flow `Policy_Renewal` and the trigger `PolicyTrigger` named as automation that saves records the rule can stop. |
+| New required field | "Impact of adding a required field `Renewal_Date__c` on `Policy__c`" | The same warning about the automation that saves records. |
+| Delete a referenced field | "Impact of deleting `Policy__c.Account__c`" | Its dependents listed as breaking. |
 | Add something that exists | "Impact of adding the class PolicyService" | A note that it already exists. |
 | Outside the scope | A change on an object you did not confirm | Its dependents flagged as outside the confirmed scope. |
 | Unknown name | A field that is not indexed | Close matches. |

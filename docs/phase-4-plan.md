@@ -1,12 +1,12 @@
 # sf-agent-po phase 4 plan: guided workflows
 
-> Copy of the [sf-agent-po phase 4 plan: guided workflows](https://claude.ai/artifact/BgGJWbS23gqMQLSXCXoLZV) Claude Doc, which stays the working version. Written on 7 Nov 2026 and agreed with Tarek on 8 Nov 2026 (decisions D1 to D7 in section 10). The diagram is only in the doc.
+> Copy of the [sf-agent-po phase 4 plan: guided workflows](https://claude.ai/artifact/BgGJWbS23gqMQLSXCXoLZV) Claude Doc, which stays the working version. Written on 7 Nov 2026 and agreed with Tarek on 8 Nov 2026 (his answers to decisions D1 to D7 are in section 10). The diagram is only in the doc.
 
 ## 1. Goal and gate
 
 Phase 4 makes the server, not the prompt, lead the work. Each design and backlog is built in small steps, and each step is checked before the next one starts. This is how a weaker model can still produce a design and backlog that pass. The phase ends at gate G3: a rubric score of at least 7/10 on each of three models, on the English and French luxury scenarios, measured on the v1 server.
 
-In scope, from the [v1 plan](https://claude.ai/artifact/FHCBeeVFd6Y4pCsSkPpWG8):
+In scope, from the [v1 plan](plan.md):
 
 - requirements extraction
 - a step engine and workflow tools
@@ -113,9 +113,9 @@ Four new tools drive every workflow, and a fifth shows the traceability matrix. 
 
 | Tool | What it does | Change |
 | --- | --- | --- |
-| `workflow_start` | Starts or resumes a run, given:<br>- the context<br>- the workflow (high-level design, detailed design, backlog, or story review)<br>- an optional focus and industry<br><br>Returns the first open step's brief | New |
-| `workflow_step` | Returns the brief of the current step again:<br>- what to produce<br>- the JSON shape<br>- the evidence ids to read<br>- the rules for this step | New |
-| `workflow_submit` | Takes the answer for one step and checks it:<br>- if it passes, saves it and returns the next brief<br>- if it fails, returns precise findings for a retry | New |
+| `workflow_start` | Starts or resumes a run, given the context, the workflow (high-level design, detailed design, backlog, or story review), and an optional focus and industry; returns the first open step's brief | New |
+| `workflow_step` | Returns the brief of the current step again: what to produce, the JSON shape, the evidence ids to read, and the rules for this step | New |
+| `workflow_submit` | Takes the answer for one step and checks it; if it passes, saves it and returns the next brief, and if it fails, returns precise findings for a retry | New |
 | `workflow_status` | Shows a run's steps, their status and open findings, and which artifacts it saved | New |
 | `trace_show` | Shows the matrix: each requirement → its sources, design parts, stories and Jira keys | New (RM1) |
 | `agent_workflow` | Returned the long instruction text | Removed; `workflow_start` replaces it |
@@ -183,7 +183,7 @@ It also had a fallback (C): the XML in a code block. I need to know which of the
 
 The page is computed from the requirement ids that the designs and backlogs carry. `trace_show` gives the same table in the chat.
 
-**Jira sub-tasks (RM1).** A detailed design lists the components each story changes. On `jira_publish`, each story gets one sub-task per component change, for example "Create field Appointment\_\_c.Channel\_\_c" or "Build the record-triggered flow on Appointment\_\_c". Each sub-task has a short description from the design. The approval page lists the sub-tasks under their story.
+**Jira sub-tasks (RM1).** A detailed design lists the components each story changes. On `jira_publish`, each story gets one sub-task per component change, for example "Create field `Appointment__c.Channel__c`" or "Build the record-triggered flow on `Appointment__c`". Each sub-task has a short description from the design. The approval page lists the sub-tasks under their story.
 
 Other rules:
 
@@ -247,17 +247,17 @@ Nothing publishes without your trigger, as today.
 
 ## 10. Risks and decisions
 
-Seven decisions shape the build. I recommend an option for each; your answers in a comment or in the chat are enough. D3 is the only one that blocks a PR (PR 7), so I can start PR 1 as soon as you give the green light.
+Seven decisions shape the build. I recommended an option for each, and the last column holds your answers.
 
-| # | Decision | Options | I recommend |
-| --- | --- | --- | --- |
-| D1 | Do you confirm the requirement list before the design starts? | (a) Yes, on the approval page; (b) No, the model's list is used as is (a) | (a): every later check leans on the list, and a wrong list wastes the whole run |
-| D2 | How big is a design step? | (a) One step per section, about 11 steps; (b) Four grouped steps (a) | (a): small steps are what weaker models handle; I'll measure the extra tool calls in the eval |
-| D3 | Which draw.io variant rendered on your site in the host-kit check? | A (no extension), B (`.drawio`), or neither Send the command again please | Your answer from the check; if you did not run that part, I send you the one command again. |
-| D4 | Which models and judge for G3? | Opus 5.5, GPT Sol 6.1 and Grok 7.1 through OpenRouter; judge fixed | These three, with Opus 5.5 as the fixed judge, and a sample of verdicts checked by a second judge to spot bias ok for me |
-| D5 | When does `design_save` (free Markdown) go? | (a) With the old server in phase 5; (b) Now, in PR 10 | (a): current users keep a way to save until the guided workflow is proven ok for me |
-| D6 | Cut the tool count toward DE3's 12? | (a) Only if the eval shows wrong tool choices; (b) Now | (a): merging tools now changes host files twice ok for me |
-| D7 | How fine are Jira sub-tasks? | (a) One per component change; (b) One per layer: data, automation, UI, tests | (a): each one maps to a design part and can be checked ok for me |
+| # | Decision | Options | I recommend | Answer (8 Nov 2026) |
+| --- | --- | --- | --- | --- |
+| D1 | Do you confirm the requirement list before the design starts? | (a) Yes, on the approval page; (b) No, the model's list is used as is | (a): every later check leans on the list, and a wrong list wastes the whole run | (a) |
+| D2 | How big is a design step? | (a) One step per section, about 11 steps; (b) Four grouped steps | (a): small steps are what weaker models handle; I'll measure the extra tool calls in the eval | (a) |
+| D3 | Which draw.io variant rendered on your site in the host-kit check? | A (no extension), B (`.drawio`), or neither | Your answer from the check; if you did not run that part, I send you the one command again | Both A and B rendered with the draw.io macro; PR 7 uses B |
+| D4 | Which models and judge for G3? | Opus 5.5, GPT Sol 6.1 and Grok 7.1 through OpenRouter; judge fixed | These three, with Opus 5.5 as the fixed judge, and a sample of verdicts checked by a second judge to spot bias | As recommended |
+| D5 | When does `design_save` (free Markdown) go? | (a) With the old server in phase 5; (b) Now, in PR 10 | (a): current users keep a way to save until the guided workflow is proven | (a) |
+| D6 | Cut the tool count toward DE3's 12? | (a) Only if the eval shows wrong tool choices; (b) Now | (a): merging tools now changes host files twice | (a) |
+| D7 | How fine are Jira sub-tasks? | (a) One per component change; (b) One per layer: data, automation, UI, tests | (a): each one maps to a design part and can be checked | (a) |
 
 **Risks.**
 
