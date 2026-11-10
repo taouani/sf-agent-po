@@ -20,7 +20,7 @@ New here? The [user guide](docs/user-guide.md) walks through installing the serv
 | 3 | PO agent: epics and stories with acceptance criteria, published to Jira after review | Done |
 | 4 | Per-host packaging (Claude Code, Cursor, Copilot), sample scenarios, industry templates | Done |
 
-That was the 0.x server. The v1 rebuild (`sf-agent-po@next`) follows the [v1 plan](docs/plan.md): phases 0 to 3 are done apart from the evaluation baseline (masking, approval, metadata index, scope and impact analysis), and phase 4, guided workflows, is built (PRs #44 to #56), with its evaluation gate G3 accepted on 10 Nov 2026. The [phase 1 review](docs/phase-1-review.md) holds the analysis behind the plan, the [phase 4 plan](docs/phase-4-plan.md) details the guided workflows, and [Testing scope and impact tools](docs/testing-scope-and-impact.md) is a hands-on test guide for the scope and impact tools.
+That was the 0.x server. The v1 rebuild (`sf-agent-po@next`) follows the [v1 plan](docs/plan.md): phases 0 to 3 are done apart from the evaluation baseline (masking, approval, metadata index, scope and impact analysis), and phase 4, guided workflows, is built (PRs #44 to #56), with its evaluation gate G3 accepted on 10 Nov 2026; phase 5 (feedback, hosts, hardening) started the same day. The [phase 1 review](docs/phase-1-review.md) holds the analysis behind the plan, the [phase 4 plan](docs/phase-4-plan.md) details the guided workflows, the [phase 5 plan](docs/phase-5-plan.md) details feedback, `doctor`, incremental re-indexing and the 0.x removal, and [Testing scope and impact tools](docs/testing-scope-and-impact.md) is a hands-on test guide for the scope and impact tools.
 
 ## Tools
 
@@ -328,8 +328,8 @@ The new code lives in npm workspaces under `packages/`:
   and the content bundled inside, then installs it in an empty folder and runs it (CI does
   this on the three systems). Nothing is published by it: the `Release next` workflow
   publishes `sf-agent-po@next` to npm, only when started by hand from main, after the checks,
-  the tests and both smoke tests, with provenance (retried when Sigstore's transparency log fails, and optional while it is down; it runs in the `npm-next` environment, which holds the `NPM_TOKEN` secret and can require
-  an approval, and it needs a new
+  the tests and both smoke tests, with provenance (retried when Sigstore's transparency log fails, and optional while it is down; it runs in the `npm-next` environment, which can require
+  an approval, and publishes through npm trusted publishing, with no npm token once that is set up on npmjs.com; it also tries to move the `latest` tag to each pre-release until 1.0 (when npm refuses, the run's summary gives the command to run by hand), and it needs a new
   `-next.n` version in `packages/mcp/package.json` each time; it is a dry run by default). It also holds the approval page (AR5): a small
   server on 127.0.0.1, plain HTML forms and no script, where the user rather than the model
   approves each write with its real values, confirms each redacted image (or sends only its
