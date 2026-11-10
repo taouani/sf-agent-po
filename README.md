@@ -220,7 +220,8 @@ The new code lives in npm workspaces under `packages/`:
   (GNOME Keyring, KWallet) on Linux, through the tools each OS ships. Where none of these
   works (a server without a keyring), it falls back to a key file only the user can read,
   and says so. `exportVaultKey` and `importVaultKey` back the key up as text and restore it,
-  for example on a new computer. Without the key, masked documents cannot be unmasked, so back
+  for example on a new computer; the `key export` and `key import` commands of the package
+  call them. Without the key, masked documents cannot be unmasked, so back
   it up when it is created. The keychain protects the key at rest and while you are logged
   out; like any keychain item an app reads without a prompt, other programs running as you
   can read it too.

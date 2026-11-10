@@ -41,7 +41,17 @@ npx -y sf-agent-po@next index --project <folder>
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
 holds the masked inputs and the agents' work. Its masking key is kept in your OS keychain,
 or in a key file when no keychain is available. Back it up: without it, nothing can be
-unmasked.
+unmasked. The server reminds you when it makes a new key.
+
+```bash
+npx -y sf-agent-po@next key export   # prints the key as one line, for a password manager
+npx -y sf-agent-po@next key import   # on another computer: paste it when asked
+```
+
+Both take `--workspace <folder>` (else `SF_AGENT_WORKSPACE`, else `.sf-agent` here). Import
+checks that the key is this workspace's and saves it in your keychain; add `--allow-key-file`
+to save it in a key file instead when the keychain cannot be used. The key is never read from
+the command line, which your shell history keeps.
 
 The name detection model (about 140 MB) is downloaded on first use, pinned and checked.
 It comes from huggingface.co, whose larger files are served from its download hosts
