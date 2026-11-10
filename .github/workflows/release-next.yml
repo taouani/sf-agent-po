@@ -8,10 +8,13 @@ name: Release next
 # through GitHub's OIDC token, so no npm token is needed (npmjs.com, package Settings >
 # Trusted publishing > GitHub Actions: user taouani, repository sf-agent-po, workflow
 # release-next.yml, environment npm-next). Until that is set up, an NPM_TOKEN secret in the
-# environment is used instead; npm tries trusted publishing first, so the secret can be
-# deleted once a release has gone out without it.
-# Each release also moves the "latest" tag to it, so that npx sf-agent-po without @next runs
-# the newest pre-release (decision D5 of the phase 5 plan) until 1.0.
+# environment is used instead. npm tries trusted publishing first, so a release that works
+# with the secret present proves nothing: delete the secret, then release, to check it.
+# Each release also tries to move the "latest" tag to it, so that npx sf-agent-po without
+# @next runs the newest pre-release (decision D5 of the phase 5 plan) until 1.0. Trusted
+# publishing covers npm publish; npm dist-tag works with it only if npm allows that action
+# for the trusted publisher, else with a token. When neither does, the job stays green and
+# its summary gives the command to run by hand (npm login first, with your 2FA code).
 # The version is the one in packages/mcp/package.json: bump it in a pull request before
 # each release, since npm never accepts the same version twice.
 
@@ -29,7 +32,8 @@ on:
 
 permissions:
   contents: read
-  # For npm provenance: the package records which workflow run built it.
+  # For npm trusted publishing (GitHub's OIDC token stands in for an npm token) and npm
+  # provenance (the package records which workflow run built it).
   id-token: write
 
 concurrency:
@@ -52,7 +56,7 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later; Node 24 can come with an older one.
       - name: Update npm
         run: |
-          npm install -g npm@11
+          npm install -g npm@^11.5.1
           npm_version=$(npm --version)
           if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -n1)" != 11.5.1 ]; then
             echo "::error::npm $npm_version is older than 11.5.1, which trusted publishing needs"; exit 1
@@ -99,7 +103,7 @@ jobs:
             if npm publish "$@" 2>&1 | tee "$log"; then exit 0; fi
             if ! grep -Eq 'TLOG_CREATE_ENTRY_ERROR|code E5[0-9][0-9]|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' "$log"; then
               if published; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
-              if grep -Eq 'code E401|code E403|code ENEEDAUTH|code EOTP' "$log"; then
+              if grep -Eq 'code E401|code E403|code E404|code ENEEDAUTH|code EOTP' "$log"; then
                 echo "::error::npm refused the publish. Check the trusted publisher on npmjs.com (user taouani, repository sf-agent-po, workflow release-next.yml, environment npm-next), or add an NPM_TOKEN secret to the npm-next environment"
               else
                 echo "::error::npm publish failed with an error that trying again would not fix: see the npm error above"
@@ -115,7 +119,7 @@ jobs:
           echo "::error::The publish failed three times. If the error is TLOG_CREATE_ENTRY_ERROR, Sigstore's transparency log is down (https://status.sigstore.dev): $hint."
           exit 1
       # Until 1.0, "latest" follows "next", so that npx sf-agent-po without a tag does not run
-      # an old pre-release. Once a release without -next is latest, it is left alone. A failure
+      # an old pre-release. Once a release (a version with no "-") is latest, it is left alone. A failure
       # here does not undo the publish: the summary says how to move the tag by hand.
       - name: Move the latest tag
         id: latest
@@ -124,15 +128,20 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          current=$(npm view sf-agent-po dist-tags.latest 2>/dev/null || true)
+          # The package exists, so no answer means npm could not be reached: then nothing moves,
+          # since a release could otherwise lose its tag to a pre-release.
+          if ! current=$(npm view sf-agent-po dist-tags.latest 2>/dev/null) || [ -z "$current" ]; then
+            echo "::warning::npm did not say which version is latest, so the latest tag was not moved. If it is a pre-release, run: npm dist-tag add sf-agent-po@$VERSION latest"
+            echo "moved=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           case "$current" in
-            *-next.*|"") ;;
+            *-*) ;;
             *) echo "latest is $current, a release: left as it is"; echo "moved=kept" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           if npm dist-tag add "sf-agent-po@$VERSION" latest; then
             echo "moved=yes" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::sf-agent-po@$VERSION is published, but the latest tag could not be moved to it. Run: npm dist-tag add sf-agent-po@$VERSION latest"
+            echo "::warning::sf-agent-po@$VERSION is published, but the latest tag could not be moved to it (npm needs a token or a trusted publisher allowed to change tags). Run, after npm login: npm dist-tag add sf-agent-po@$VERSION latest --otp <your 2FA code>"
             echo "moved=no" >> "$GITHUB_OUTPUT"
           fi
       - name: Summary
@@ -149,6 +158,6 @@ jobs:
             echo "Published sf-agent-po@$VERSION with the tag next$note: https://www.npmjs.com/package/sf-agent-po" >> "$GITHUB_STEP_SUMMARY"
             case "$LATEST" in
               yes) echo "The latest tag now points to it too." >> "$GITHUB_STEP_SUMMARY" ;;
-              no) echo "The latest tag could not be moved: run npm dist-tag add sf-agent-po@$VERSION latest" >> "$GITHUB_STEP_SUMMARY" ;;
+              no) echo "The latest tag was not moved: after npm login, run npm dist-tag add sf-agent-po@$VERSION latest --otp <your 2FA code>" >> "$GITHUB_STEP_SUMMARY" ;;
             esac
           fi

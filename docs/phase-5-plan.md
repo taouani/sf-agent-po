@@ -122,10 +122,11 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 **Trusted publishing.**
 
 - **The workflow.** The release workflow publishes through GitHub's OIDC: `id-token: write` (already there), and npm 11.5.1 or later (Node 24 ships an older npm on some runners, so the job installs it). npm tries trusted publishing first, so the `NPM_TOKEN` secret works as a fallback until you delete it. Provenance becomes automatic; the provenance input stays for when Sigstore is down. The retry logic stays.
-- **Your steps on npmjs.com.** After the workflow PR merges:
-  1. Open the `sf-agent-po` package, then **Settings**, then **Trusted publishing**. Choose **GitHub Actions** and fill in "Organization or user" `taouani`, "Repository" `sf-agent-po`, "Workflow filename" `release-next.yml` and "Environment name" `npm-next`.
-  2. Run Release next within two days, since npm drops an unused setup.
-  3. When that release works, set **Publishing access** to "Require two-factor authentication and disallow tokens", then delete the `NPM_TOKEN` secret and the npm token itself.
+- **Your steps on npmjs.com.** When the next release (next.7) is ready:
+  1. Open the `sf-agent-po` package, then **Settings**, then **Trusted publishing**. Choose **GitHub Actions** and fill in "Organization or user" `taouani`, "Repository" `sf-agent-po`, "Workflow filename" `release-next.yml` and "Environment name" `npm-next`. If "Allowed actions" offers `npm dist-tag`, tick it, so the workflow can move `latest`.
+  2. Delete the `NPM_TOKEN` secret from the `npm-next` environment, then run Release next within two days, since npm drops an unused setup. A release that works without the secret proves trusted publishing works.
+  3. Set **Publishing access** to "Require two-factor authentication and disallow tokens", then delete the npm token itself.
+- **If npm will not move `latest`.** Trusted publishing covers `npm publish`; moving a tag works with it only if npm allows that action. When it does not, the release still goes out, and its summary gives the one command to run on your machine after `npm login`.
 
 **The `latest` tag.** D5.
 
