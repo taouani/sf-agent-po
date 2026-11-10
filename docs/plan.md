@@ -4,7 +4,7 @@
 
 sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](phase-1-review.md).
 
-**Status on 10 Nov 2026.** Phases 0 to 4 are built and merged (PRs #6 to #60), about five months ahead of the roadmap. 1.0.0-next.5 is on npm; next.6, the first release with the guided workflows, is ready to release (PR #62 merged). Gate G3 is closed: on 10 Nov 2026 you accepted it on the three models measured (Opus 5.5, Haiku 5.5 and DeepSeek V4.1 Flash), instead of the three named in decision D4 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions). Section 8 has the progress, evaluation results, limitations, backlog and what is needed from you.
+**Status on 10 Nov 2026.** Phases 0 to 4 are built and merged (PRs #6 to #60), about five months ahead of the roadmap. 1.0.0-next.5 is on npm; next.6, the first release with the guided workflows, is ready to release (PR #62 merged). Gate G3 is closed: on 10 Nov 2026 you accepted it on the three models measured (Opus 5.5 in English only, Haiku 5.5 and DeepSeek V4.1 Flash), instead of the three named in decision D4 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions). Section 8 has the progress, evaluation results, limitations, backlog and what is needed from you.
 
 ## 1. Decision log
 
@@ -136,7 +136,7 @@ The spikes ran on 7 Nov 2026 on Windows, macOS and Linux with Node 24 ([PR #6](h
 
 ## 8. Progress on 10 November 2026
 
-Phases 0 to 4 are built and merged (PRs #6 to #60). Phase 4 finished on 8 Nov 2026, against a roadmap that put G3 on 16 April 2027. Every PR had a separate review agent, and 618 tests pass on Windows, macOS and Linux, plus a job that runs the real name model. What limits the next steps is your live testing and the evaluation credit, not the build.
+Phases 0 to 4 are built and merged (PRs #6 to #60). Phase 4 finished on 8 Nov 2026, against a roadmap that put G3 on 16 April 2027. Every PR had a separate review agent, and 618 tests pass on Windows, macOS and Linux, plus a job that runs the real name model. What limits the next steps is your live testing, not the build; the evaluation credit only limits the run on the D4 models.
 
 **Decision RM1 (7 Nov 2026).** 1.0 stays on 30 June 2027, and the time gained goes to items that were Could or after 1.0. You confirmed four items the same day. The traceability matrix in Confluence and Jira sub-tasks from a detailed design went to phase 4 and are built. Incremental re-index, and reports, dashboards and integrations in the index, go to phase 5.
 
@@ -167,7 +167,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Remaining
 
-1. **Close phase 4.** G3 is accepted; what is left is the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks); your review of the French word list.
+1. **Close phase 4.** G3 is accepted; what is left is the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks) and your review of the French word list.
 2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide (today's `docs/user-guide.md` describes 0.x) and a contributor guide; trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
 3. **Phase 6, release candidate.** Bug fixes, the final evaluation across models, release notes, 1.0 on npm.
 
@@ -206,7 +206,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Inputs needed from you
 
-- [ ] Start the Release next workflow for 1.0.0-next.6 once PR #62 is merged. Your run on 8 Nov stopped because the version was still next.5; that PR bumps it.
+- [ ] Start the Release next workflow for 1.0.0-next.6; PR #62 (merged) bumped the version. Your run on 8 Nov stopped because it was still next.5.
 - [ ] Update, re-index your UAT org with `npx sf-agent-po@next index --org <alias>`, and run the Lifetime Spent check again.
 - [ ] Try one guided design and backlog on Copilot with next.6, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
 - [x] Decide on G3: done on 10 Nov 2026, accepted on the three models measured.
