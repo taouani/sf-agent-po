@@ -4,11 +4,11 @@
 
 sf-agent-po v1 ships as an open-source npm package by Jun 30, 2027: a rebuild in TypeScript that masks personal data, indexes orgs of 9,000+ components, guides any model through checked steps, and records whether its stories and designs are accepted. Every decision below was agreed on 6 or 7 Nov 2026; the analysis behind them is in the [Phase 1 to 4 review](phase-1-review.md).
 
-**Status on 10 Nov 2026.** Phases 0 to 4 are built and merged (PRs #6 to #60), about five months ahead of the roadmap. 1.0.0-next.5 is on npm; next.6, the first release with the guided workflows, is ready once PR #62 merges. Gate G3 is measured on three models, but not on the three named in decision D4 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions), so closing it needs your call. Section 8 has the progress, evaluation results, limitations, backlog and what is needed from you.
+**Status on 10 Nov 2026.** Phases 0 to 4 are built and merged (PRs #6 to #60), about five months ahead of the roadmap. 1.0.0-next.5 is on npm; next.6, the first release with the guided workflows, is ready to release (PR #62 merged). Gate G3 is closed: on 10 Nov 2026 you accepted it on the three models measured (Opus 5.5, Haiku 5.5 and DeepSeek V4.1 Flash), instead of the three named in decision D4 of the [phase 4 plan](phase-4-plan.md#10-risks-and-decisions). Section 8 has the progress, evaluation results, limitations, backlog and what is needed from you.
 
 ## 1. Decision log
 
-You made 21 decisions on 6 Nov 2026. You accepted every recommendation except one: sending images to the model became a Must, which led to FE4. Six more came during the build on 7 Nov 2026 (MA1, ST3a, RT1, KC1, PB1, RM1); ST3a and RT1 replace parts of ST3 and ST4. During the build, Apex and Office files also moved to our own readers instead of apex-parser and officeparser.
+You made 21 decisions on 6 Nov 2026. You accepted every recommendation except one: sending images to the model became a Must, which led to FE4. Six more came during the build on 7 Nov 2026 (MA1, ST3a, RT1, KC1, PB1, RM1); ST3a and RT1 replace parts of ST3 and ST4. During the build, Apex and Office files also moved to our own readers instead of apex-parser and officeparser. On 10 Nov 2026 you accepted gate G3 on the three models measured instead of the D4 set (section 8).
 
 | ID | Decision | Chosen | Why |
 | --- | --- | --- | --- |
@@ -83,7 +83,7 @@ At 40 hours a week with no holiday break, the plan fits 30 June 2027 with about 
 | 1 Foundations | 4 | Workspaces and packages, CI on three platforms, Node 24, SQLite store with migrations, importer, proven code moved over, content as files, a luxury industry template, luxury evaluation scenarios in English and French, evaluation baseline measured on today's version | Phase 0 | None; your live use continues on the old server | Done (PRs #7 to #11, #39). The 0.x baseline was never run: the eval now measures v1 directly (backlog) |
 | 2 Masking, inputs, approval | 5 | Masking with vault and keychain, new document readers, image redaction, approval page with unmasked preview and image confirmation, masked-input review (a setting, on by default in pre-releases), unmasking on publish | Phase 1 store | G1: first `next` pre-release; you test on Copilot; in-house users can join | Done (PRs #13 to #29). G1 met: 1.0.0-next.0 to next.5 on npm, host kit passed on Copilot and Cursor |
 | 3 Metadata index, scope | 6 | Both metadata formats, flows, Apex references, validation rules and permissions, dependency graph, search, org retrieval, scope step, org summary, query tools, impact analysis | Phases 1 and 2 (metadata text is masked too) | G2: your 9,000+ component org indexed in under 30 minutes | Done (PRs #30 to #38, #40, #41, #58). G2 met: your UAT org, 15,266 components in about 20 minutes. #58 adds Visualforce, email templates, field sets and untyped Apex field uses |
-| 4 Guided workflows | 6 | Requirements extraction, step engine, workflow tools, designs and backlogs as checked steps, structured designs, output language with English and French word lists for the checks, diagrams as draw.io in Confluence; added by RM1: a traceability matrix in Confluence, Jira sub-tasks from a detailed design | Phases 2 and 3 | G3: a rubric score of at least 7/10 on each of three models | Built (PRs #44 to #56), finished 8 Nov 2026. G3 measured, not closed: three models score 8.1 to 10 on the luxury scenarios (Opus in English only), but not the D4 models (section 8) |
+| 4 Guided workflows | 6 | Requirements extraction, step engine, workflow tools, designs and backlogs as checked steps, structured designs, output language with English and French word lists for the checks, diagrams as draw.io in Confluence; added by RM1: a traceability matrix in Confluence, Jira sub-tasks from a detailed design | Phases 2 and 3 | G3: a rubric score of at least 7/10 on each of three models | Built (PRs #44 to #56), finished 8 Nov 2026. G3 accepted on 10 Nov 2026 on the three models measured, which score 8.1 to 10 on the luxury scenarios (Opus in English only; section 8) |
 | 5 Feedback, hosts, hardening | 5 | Story verdicts, design ratings, Jira diff, host files verified on Copilot, Cursor and Claude Code, `doctor`, Windows fixes, docs and contributor guide, old server removed; added by RM1: incremental re-index, reports, dashboards and integrations in the index | Phase 4 | None | Next; can start now. Partly done: Windows fixes (#35, #36), Copilot and Cursor verified, clear model download errors (#57) |
 | 6 Release candidate, buffer | 5.5 | Bug fixes, final evaluation, release notes | Everything | 1.0 on npm, 30 June 2027 | Not started |
 
@@ -162,12 +162,12 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 | DeepSeek V4.1 Flash | Sonnet 5.5 | 10 / 10 | 8.1 / 9.1 | Banking 5 / 8 (data model missing), insurance 8.7 / 7.5 | 66% |
 
 - **Cost.** Prompt caching cut one Opus scenario from about $10 to about $4.60. The two cheap models cost about $1 to $2 for four scenarios each, judge included (estimate from token counts).
-- **G3.** Three models pass on the luxury scenarios, but they are not the three D4 named (Opus 5.5, GPT Sol 6.1, Grok 7.1), and Opus ran in English only. D4 also fixed Opus 5.5 as the judge, but the two cheap runs used Sonnet 5.5 to save credit, so their scores are not strictly comparable with the Opus run. Running the D4 set on both luxury scenarios would cost about $30, which the credit does not cover.
+- **G3.** Three models pass on the luxury scenarios, but they are not the three D4 named (Opus 5.5, GPT Sol 6.1, Grok 7.1), and Opus ran in English only. D4 also fixed Opus 5.5 as the judge, but the two cheap runs used Sonnet 5.5 to save credit, so their scores are not strictly comparable with the Opus run. On 10 Nov 2026 you accepted G3 as measured; running the D4 set on both luxury scenarios, about $30, moved to the backlog.
 - **Send-backs.** Every step sent back in the Opus runs went over a length limit; the briefs now show the limits (#56). The weaker model's send-backs cluster on the data model, integrations and security steps.
 
 ### Remaining
 
-1. **Close phase 4.** Your call on G3; the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks); your review of the French word list.
+1. **Close phase 4.** G3 is accepted; what is left is the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks); your review of the French word list.
 2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide (today's `docs/user-guide.md` describes 0.x) and a contributor guide; trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
 3. **Phase 6, release candidate.** Bug fixes, the final evaluation across models, release notes, 1.0 on npm.
 
@@ -179,7 +179,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 - **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory. Since #60, tool calls that mask at the same time wait for each other.
 - **The model download needs huggingface.co.** Behind a proxy or a company certificate it needs a setting, or the file placed by hand; the error now says which (#57).
 - **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace.
-- **G3 is only partly measured.** See above; the 0.x baseline was never run.
+- **G3 was accepted on models other than the D4 set.** See above; the 0.x baseline was never run.
 - **Some paths are tested with fakes only.** v1 publishing to Confluence and Jira, including draw.io, the matrix page and sub-tasks, has not been tried live.
 - **Host memory is outside our control.** On 9 Nov, Copilot's memory brought facts from another repository into an answer in a clean workspace. Our masking and workspace do not cover what a host remembers.
 - **Hosts.** Claude Code is not tested; Cursor reports its version as "cursor-vscode 1.0.0".
@@ -190,7 +190,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 | Item | Why it waits | Goes to |
 | --- | --- | --- |
-| G3 on the D4 models (GPT Sol 6.1, Grok 7.1, Opus in French) | About $30 of credit, which you are not adding now | When credit allows, or dropped if you accept G3 as measured |
+| G3 on the D4 models (GPT Sol 6.1, Grok 7.1, Opus in French) | About $30 of credit, which you are not adding now | When credit allows; it no longer blocks phase 4 |
 | Eval baseline on 0.x | The eval measures v1 directly now | I suggest dropping it; your call |
 | Copilot memory: a README note, an `init` host instruction, a check for untraced claims | You asked to discuss it only, on 9 Nov | Open, your call |
 | Claude Code host check | You test it when ready | Phase 5 |
@@ -209,7 +209,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 - [ ] Start the Release next workflow for 1.0.0-next.6 once PR #62 is merged. Your run on 8 Nov stopped because the version was still next.5; that PR bumps it.
 - [ ] Update, re-index your UAT org with `npx sf-agent-po@next index --org <alias>`, and run the Lifetime Spent check again.
 - [ ] Try one guided design and backlog on Copilot with next.6, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
-- [ ] Decide on G3: accept it on the three models measured, or keep it open for the D4 models.
+- [x] Decide on G3: done on 10 Nov 2026, accepted on the three models measured.
 - [ ] Review the French word list in `packages/core/content/checks/fr.md`.
 - [ ] Send the name of the Apex class that was missed in the Lifetime Spent check, or the line that reads the field, so I can confirm #58 covers it.
 - [ ] Tell me the OpenRouter credit left after the 8 Nov runs.
