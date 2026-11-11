@@ -285,4 +285,30 @@ export const MIGRATIONS: readonly Migration[] = [
       ) WITHOUT ROWID;
     `,
   },
+  {
+    version: 12,
+    name: "feedback",
+    sql: `
+      -- Feedback (phase 5): whether published stories and designs were accepted. One row per
+      -- artifact, item (a story id or a design section), kind and role, replaced when it is
+      -- recorded again. kind jira_diff is the server's guess from Jira (role ''), verdict a
+      -- person's (po, sa or dev), rating a design section's 1 to 5. comment is masked; model is
+      -- the context's model label when it was recorded; workflow the guided workflow that wrote
+      -- the artifact, if any. details is JSON: numbers and keys, never Jira's text.
+      CREATE TABLE feedback (
+        context      TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
+        artifact     TEXT NOT NULL,
+        item         TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('jira_diff', 'verdict', 'rating')),
+        role         TEXT NOT NULL DEFAULT '' CHECK (role IN ('', 'po', 'sa', 'dev')),
+        value        TEXT NOT NULL,
+        comment      TEXT,
+        model        TEXT,
+        workflow     TEXT,
+        details      TEXT NOT NULL DEFAULT '{}',
+        recorded_at  TEXT NOT NULL,
+        PRIMARY KEY (context, artifact, item, kind, role)
+      );
+    `,
+  },
 ];

@@ -32,6 +32,16 @@ export interface IssueState {
   labels: string[];
 }
 
+/** A story as Jira holds it now (in clear: compared in memory, never stored or returned). */
+export interface JiraStory {
+  summary: string;
+  /** Atlassian Document Format. */
+  description?: unknown;
+  status?: string;
+  updated: string;
+  points?: number;
+}
+
 export interface PublishedPage {
   pageId: string;
   url: string;
@@ -120,6 +130,31 @@ export class AtlassianClient {
     const r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=updated,summary,parent,labels`);
     const f = r.fields ?? {};
     return { updated: String(f.updated ?? ""), summary: f.summary ?? "", parentKey: f.parent?.key, labels: f.labels ?? [] };
+  }
+
+  /**
+   * A story as Jira holds it now, to compare with what was published: its summary, description
+   * (ADF), status and, given its field, story points. Undefined when the issue was deleted (404).
+   */
+  async getStory(key: string, pointsField?: string): Promise<JiraStory | undefined> {
+    if (pointsField !== undefined && !/^customfield_\d+$/.test(pointsField)) throw new Error(`Not a custom field id: ${pointsField}`);
+    const fields = ["summary", "description", "status", "updated", ...(pointsField ? [pointsField] : [])];
+    let r;
+    try {
+      r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`);
+    } catch (err) {
+      if (err instanceof AtlassianError && err.status === 404) return undefined;
+      throw err;
+    }
+    const f = r.fields ?? {};
+    const points = pointsField ? f[pointsField] : undefined;
+    return {
+      summary: String(f.summary ?? ""),
+      description: f.description ?? undefined,
+      status: f.status?.name ? String(f.status.name) : undefined,
+      updated: String(f.updated ?? ""),
+      ...(typeof points === "number" && { points }),
+    };
   }
 
   async updateIssue(key: string, fields: Record<string, unknown>): Promise<{ key: string; url: string }> {

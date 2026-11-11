@@ -96,6 +96,9 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
+/** How much of a story's description is kept for the Jira diff. */
+const MAX_SENT_TEXT = 20_000;
+
 /** Jira's limit on a summary, which a real value can take the summary past. */
 const SUMMARY_MAX = 255;
 const oneLine = (s: string) => {
@@ -548,7 +551,10 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         };
         // The mapping is saved right after every write, so a failure part-way never leads to duplicates on the next run.
         const record = async (item: PlannedItem, key: string, url: string) => {
-          mapping.items[item.id] = { key, url, hash: item.hash, labels: item.labels };
+          // A story's fields as sent, masked, for the Jira diff to compare with.
+          const points = args.storyPointsField ? item.fields[args.storyPointsField] : undefined;
+          const sent = item.level === "story" ? { summary: item.fields.summary, text: adfToText(item.fields.description).slice(0, MAX_SENT_TEXT), ...(typeof points === "number" && { points }) } : undefined;
+          mapping.items[item.id] = { key, url, hash: item.hash, labels: item.labels, ...(sent && { sent }) };
           save();
           await refreshUpdated(item.id);
         };
@@ -596,6 +602,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           await refreshUpdated(link.blocked);
         }
 
+        if (args.storyPointsField) mapping.storyPointsField = args.storyPointsField;
         markPublished();
         return text(`Published to Jira project ${args.projectKey}:\n${done.map((d) => `- ${d}`).join("\n")}${skippedNote}${noteText}${await comment()}`);
       }),

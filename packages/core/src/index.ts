@@ -37,6 +37,19 @@ export {
   type WorkflowStep,
   type WorkflowStepStatus,
 } from "./store/workflows.js";
+export {
+  FEEDBACK_KINDS,
+  FEEDBACK_ROLES,
+  FeedbackRepository,
+  JIRA_DIFF_VALUES,
+  VERDICT_VALUES,
+  type FeedbackEntry,
+  type FeedbackInput,
+  type FeedbackKind,
+  type FeedbackRole,
+  type JiraDiffValue,
+  type VerdictValue,
+} from "./store/feedback.js";
 export { importLegacyWorkspace, parseLegacyContext, type ImportReport } from "./store/import.js";
 export {
   BUILTIN_CONTENT_DIR,
