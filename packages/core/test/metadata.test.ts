@@ -598,6 +598,33 @@ describe("formulaFields", () => {
 });
 
 describe("MetadataIndex", () => {
+  it("lists components by type and finds what names a host", async () => {
+    const index = fresh();
+    const c = (type: string, name: string, attrs: Record<string, unknown>, extra: Partial<ParsedComponent> = {}): ParsedComponent => ({ type, name, file: `${name}.x`, attrs, text: "", ...extra });
+    const snap = await index.build({ source: "s", kind: "repo" }, async () => ({
+      components: [
+        c("ApexClass", "A", { calloutHosts: ["api.example.com"] }),
+        c("ApexClass", "B", {}),
+        c("RemoteSiteSetting", "Site", { host: "api.example.com" }),
+        c("ConnectedApp", "App", { callbackHosts: ["api.example.com"] }),
+        c("NamedCredential", "Gone", {}, { missing: true }),
+        // A field whose attrs name the host is not of a type that carries hosts.
+        c("CustomField", "Account.Url__c", { host: "api.example.com" }),
+      ],
+      edges: [],
+      skipped: [],
+    }));
+    expect(index.ofTypes(snap.id, ["ApexClass"]).map((x) => x.name)).toEqual(["A", "B"]);
+    expect(index.ofTypes(snap.id, ["ApexClass"], { attr: "calloutHosts" }).map((x) => x.name)).toEqual(["A"]);
+    expect(index.ofTypes(snap.id, ["ApexClass"], { limit: 1 }).map((x) => x.name)).toEqual(["A"]);
+    expect(index.ofTypes(snap.id, ["NamedCredential"])).toEqual([]);
+    expect(index.ofTypes(snap.id, ["NamedCredential"], { missing: true }).map((x) => x.name)).toEqual(["Gone"]);
+    expect(() => index.ofTypes(snap.id, ["ApexClass"], { attr: "x') OR 1=1 --" })).toThrow(/Not an attribute name/);
+    expect(index.withHost(snap.id, " API.example.com ").map((x) => `${x.type}:${x.name}`)).toEqual(["ApexClass:A", "ConnectedApp:App", "RemoteSiteSetting:Site"]);
+    expect(index.withHost(snap.id, "(an IP address)")).toEqual([]);
+    expect(index.withHost(snap.id, "other.example.com")).toEqual([]);
+  });
+
   it("stores a snapshot, finds components and walks the graph", async () => {
     const index = fresh();
     const snap = await index.build({ source: "repo:source", kind: "repo", revision: "abc123" }, () => scanProject(join(fixtures, "source")));

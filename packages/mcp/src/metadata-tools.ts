@@ -34,6 +34,9 @@ export const NAMED_LIKE_TEXT = new Set<string>([
   "EmailTemplateFolder",
 ]);
 
+/** A host name, as a query: two labels or more, ending in letters (not Account.Name, which has capitals and no TLD shape). */
+const HOST = /^(?=[a-z0-9.-]+$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
+
 /** How much of a component's text (a description, help text, a formula) is shown. */
 const MAX_TEXT = 2_000;
 /** Related components listed for one component. */
@@ -176,7 +179,8 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     {
       title: "Summarize an org or a project",
       description:
-        "Gives an overview of an indexed org or project: how many components of each type, and the busiest objects (fields, validation rules, and the flows and Apex triggers that run on their records). " +
+        "Gives an overview of an indexed org or project: how many components of each type, the busiest objects (fields, validation rules, and the flows and Apex triggers that run on their records), " +
+        "and its integrations: the hosts it calls, through which named credentials, remote site settings, outbound messages or Apex endpoints, from which classes and flows; the connected apps that sign in; the event channels. " +
         "Start here before a design, then look closer with metadata_search and metadata_component. Labels are masked like any input.",
       inputSchema: { context: contextName, source: sourceArg, objects: z.number().int().min(1).max(200).default(30).describe("How many objects to list.") },
       annotations: { readOnlyHint: true },
@@ -197,6 +201,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         `${snap.stats.referenced ?? 0} standard objects and fields are referenced without being in the source; ${snap.stats.edges ?? 0} links in all.`,
         `Components by type:\n${counts.map(([t, n]) => `- ${t}: ${n}`).join("\n")}`,
         busiest.length ? `Busiest objects:\n${rows.join("\n")}` : "No objects in this source.",
+        ...(await integrationLines(index, snap.id, pieces)),
       ];
       return text(lines.join("\n\n"));
     }),
@@ -207,8 +212,8 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     {
       title: "Search the metadata",
       description:
-        "Finds components (objects, fields, flows, Apex, permission sets, layouts, pages...) whose API name, label or description contains every word of the query, best first. " +
-        "Use API names or words from labels; then open one with metadata_component.",
+        "Finds components (objects, fields, flows, Apex, permission sets, layouts, pages, reports, named credentials...) whose API name, label or description contains every word of the query, best first. " +
+        "A host (erp.example.com) finds what calls or allows it. Use API names or words from labels; then open one with metadata_component.",
       inputSchema: {
         context: contextName,
         source: sourceArg,
@@ -221,7 +226,12 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     guard(async ({ context, source, query, types, limit }: { context: string; source?: string; query: string; types?: string[]; limit: number }) => {
       const snap = pick(index, source);
       const pieces = new Pieces(kit.masker, context);
-      const found = index.search(snap.id, pieces.real(query), { types: types as ComponentType[] | undefined, limit });
+      const real = pieces.real(query).trim();
+      // A host (erp.example.com) is found in what calls or allows it: named credentials, remote
+      // sites, outbound messages, connected apps and Apex endpoints.
+      const byHost = HOST.test(real.toLowerCase()) ? index.withHost(snap.id, real, limit).filter((c) => !types?.length || types.includes(c.type)) : [];
+      const seen = new Set(byHost.map((c) => c.id));
+      const found = [...byHost, ...index.search(snap.id, real, { types: types as ComponentType[] | undefined, limit }).filter((c) => !seen.has(c.id))].slice(0, limit);
       if (!found.length) return text(`Nothing in ${snap.source} matches "${query}".`);
       const lines = await Promise.all(found.map((c) => line(pieces, c)));
       return text(`${found.length} match(es) in ${snap.source}:\n${lines.join("\n")}`);
@@ -281,6 +291,137 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       },
     ),
   );
+}
+
+/** Hosts listed in a summary's integrations, callers listed for each, and components of each kind named for one host. */
+const MAX_HOSTS = 40;
+const MAX_CALLERS = 8;
+const MAX_PER_KIND = 5;
+/** Components of each integration type read for a summary. */
+const MAX_INTEGRATIONS = 5_000;
+/** Shown for a named credential whose URL is set at run time (a merge field) or not kept. */
+const NO_HOST = "(host not in the metadata)";
+
+const list = (items: string[], max: number) => (items.length > max ? `${items.slice(0, max).join(", ")} and ${items.length - max} more` : items.join(", "));
+
+/** What one host is reached through, and from where; components are kept as they are and rendered only if shown. */
+interface HostUse {
+  credentials: { c: IndexedComponent; auth: string[] }[];
+  sites: IndexedComponent[];
+  messages: IndexedComponent[];
+  apex: boolean;
+  from: { c: IndexedComponent; through: boolean }[];
+}
+
+/**
+ * Where the org connects, for metadata_summary: each host, what it is reached through (a named
+ * credential, a remote site setting, an outbound message, an endpoint in Apex) and from which
+ * classes and flows; the connected apps that sign in from outside; the event channels. The
+ * busiest hosts come first. Hosts are masked like attrs, since one can name a client; only what
+ * is shown is masked.
+ */
+export async function integrationLines(index: MetadataIndex, snapshot: number, pieces: Pieces): Promise<string[]> {
+  const hosts = new Map<string, HostUse>();
+  const at = (host: string) => {
+    let h = hosts.get(host);
+    if (!h) hosts.set(host, (h = { credentials: [], sites: [], messages: [], apex: false, from: [] }));
+    return h;
+  };
+  const hostOf = (c: IndexedComponent) => (typeof c.attrs.host === "string" ? c.attrs.host : undefined);
+  let capped = false;
+  const read = (types: ComponentType[], options: { attr?: string; missing?: boolean } = {}) => {
+    const found = index.ofTypes(snapshot, types, { ...options, limit: MAX_INTEGRATIONS });
+    if (found.length >= MAX_INTEGRATIONS) capped = true;
+    return found;
+  };
+
+  // Named credentials, those only called (callout:Name) included.
+  for (const nc of read(["NamedCredential"], { missing: true })) {
+    const h = at(hostOf(nc) ?? NO_HOST);
+    const auth = nc.missing ? [] : index.related(nc.id, { kinds: ["references"] }).filter((r) => r.direction === "out").map((r) => r.component.name);
+    h.credentials.push({ c: nc, auth });
+    // Who calls through it: Apex (callout:Name), external services, and the flows and classes that call those.
+    for (const r of index.related(nc.id, { depth: 2, kinds: ["calls", "references"] })) {
+      if (r.direction === "in" && !["NamedCredential", "ExternalCredential"].includes(r.component.type)) h.from.push({ c: r.component, through: r.depth > 1 });
+    }
+  }
+  for (const rs of read(["RemoteSiteSetting"])) {
+    const host = hostOf(rs);
+    if (host) at(host).sites.push(rs);
+  }
+  for (const om of read(["WorkflowOutboundMessage"])) at(hostOf(om) ?? NO_HOST).messages.push(om);
+  for (const apex of read(["ApexClass", "ApexTrigger"], { attr: "calloutHosts" })) {
+    for (const host of (apex.attrs.calloutHosts as unknown[]).filter((h): h is string => typeof h === "string")) {
+      const h = at(host);
+      h.apex = true;
+      h.from.push({ c: apex, through: false });
+    }
+  }
+
+  const lines: string[] = [];
+  if (hosts.size) {
+    // The busiest first: what connects through it, then who calls it; then by name.
+    const weight = (h: HostUse) => h.credentials.length + h.sites.length + h.messages.length + new Set(h.from.map((f) => f.c.id)).size;
+    const sorted = [...hosts].sort(([a, x], [b, y]) => (a === NO_HOST ? 1 : b === NO_HOST ? -1 : weight(y) - weight(x) || (a < b ? -1 : a > b ? 1 : 0)));
+    const named = async (c: IndexedComponent) => (await line(pieces, c)).slice(2);
+    const rows = await Promise.all(
+      sorted.slice(0, MAX_HOSTS).map(async ([host, h]) => {
+        const name = host === NO_HOST ? host : await pieces.mask(host);
+        const through: string[] = [];
+        const kind = (one: string, many: string, items: string[]) => {
+          if (items.length) through.push(`${items.length === 1 ? one : `${items.length} ${many}`} ${list(items, MAX_PER_KIND)}`);
+        };
+        kind("named credential", "named credentials", h.credentials.map(({ c, auth }) => `${c.name}${c.missing ? " (not in the source)" : ""}${auth.length ? ` (authenticates with ${auth.join(", ")})` : ""}`));
+        kind("remote site setting", "remote site settings", h.sites.map((s) => `${s.name}${s.attrs.active === false ? " (inactive)" : ""}`));
+        kind(
+          "outbound message",
+          "outbound messages",
+          h.messages.map((m) => `${m.name} (sends ${Array.isArray(m.attrs.fields) ? m.attrs.fields.length : 0} field(s) of ${m.parent ?? "its object"})`),
+        );
+        if (h.apex) through.push("an endpoint written in Apex");
+        const seen = new Set<number>();
+        const from = h.from.filter((f) => !seen.has(f.c.id) && (seen.add(f.c.id), true));
+        const callers = await Promise.all(from.slice(0, MAX_CALLERS).map(async (f) => `${await named(f.c)}${f.through ? " (through one of these)" : ""}`));
+        // Apex that calls a URL written in the code needs an active remote site setting for its
+        // host: a named credential allows only callout:Name endpoints.
+        const allowed = h.sites.some((s) => s.attrs.active !== false);
+        const warning =
+          h.apex && host !== NO_HOST && !allowed
+            ? ` [no active remote site setting in the source allows this host for the endpoint written in Apex${h.credentials.length ? "; a named credential exists for it, but that Apex does not call through it" : ""}]`
+            : "";
+        return `- ${name}: through ${through.join("; ")}${callers.length ? `; from ${callers.join(", ")}${from.length > callers.length ? ` and ${from.length - callers.length} more` : ""}` : ""}${warning}`;
+      }),
+    );
+    lines.push(
+      `Integrations (where the org connects; only hosts are kept of URLs; the busiest first):\n${rows.join("\n")}${hosts.size > MAX_HOSTS ? `\n- and ${hosts.size - MAX_HOSTS} more hosts` : ""}` +
+        (capped ? `\n(Only the first ${MAX_INTEGRATIONS.toLocaleString("en")} components of each kind were read: search by host with metadata_search for the rest.)` : ""),
+    );
+  }
+  const apps = index.ofTypes(snapshot, ["ConnectedApp"], { limit: MAX_HOSTS + 1 });
+  if (apps.length) {
+    const rows = await Promise.all(
+      apps.slice(0, MAX_HOSTS).map(async (a) => {
+        const scopes = Array.isArray(a.attrs.scopes) && a.attrs.scopes.length ? `scopes ${a.attrs.scopes.join(", ")}` : a.attrs.saml ? "SAML" : a.attrs.canvas ? "canvas" : "no OAuth scopes";
+        const callbacks = Array.isArray(a.attrs.callbackHosts) ? (await Promise.all(a.attrs.callbackHosts.slice(0, MAX_PER_KIND).map((h) => pieces.mask(String(h))))).join(", ") : "";
+        return `- ${(await line(pieces, a)).slice(2)}: ${scopes}${callbacks ? `; returns to ${callbacks}` : ""}`;
+      }),
+    );
+    lines.push(`Connected apps (systems that sign in to the org):\n${rows.join("\n")}${apps.length > MAX_HOSTS ? "\n- and more: search with types [\"ConnectedApp\"]" : ""}`);
+  }
+  const members = index.ofTypes(snapshot, ["PlatformEventChannelMember"], { limit: MAX_INTEGRATIONS });
+  if (members.length) {
+    const byChannel = new Map<string, string[]>();
+    for (const m of members) {
+      const channel = typeof m.attrs.channel === "string" ? m.attrs.channel : "(no channel)";
+      byChannel.set(channel, [...(byChannel.get(channel) ?? []), typeof m.attrs.entity === "string" ? m.attrs.entity : m.name]);
+    }
+    const rows = [...byChannel]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .slice(0, MAX_HOSTS)
+      .map(([channel, entities]) => `- ${channel === "ChangeEvents" ? "ChangeEvents (change data capture)" : channel}: ${list(entities.sort(), 20)}`);
+    lines.push(`Event channels (what subscribers outside the org receive):\n${rows.join("\n")}${byChannel.size > MAX_HOSTS ? `\n- and ${byChannel.size - MAX_HOSTS} more channels` : ""}`);
+  }
+  return lines;
 }
 
 /** One component on one line: type, API name, label, and its kind (a field's type). */

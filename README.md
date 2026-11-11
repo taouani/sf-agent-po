@@ -353,8 +353,11 @@ The new code lives in npm workspaces under `packages/`:
   is, without credentials. A project is named by its folder and a hash of its path,
   an org by its id. `BackgroundIndexer` runs the same without blocking, for the server, whose
   metadata tools let the agents index and read the org: `metadata_index` (in the background),
-  `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,
-  rules, flows and triggers that run on its records), `metadata_search` and `metadata_component` (one
+  `metadata_sources`, `metadata_summary` (types, the busiest objects with their fields,
+  rules, flows and triggers that run on its records, and the integrations: each host the org
+  calls, through which named credential, remote site setting, outbound message or Apex endpoint,
+  from which classes and flows, busiest first, flagged when Apex calls a URL no active remote site
+  setting allows; connected apps and event channels), `metadata_search` (a host finds what calls or allows it) and `metadata_component` (one
   component, its children and what it reads, writes, calls or grants, one or two links away).
   `scope_propose` puts the objects a piece of work touches in front of the user on the approval
   page (they untick, tick linked objects or type others); the confirmed objects are kept with the
@@ -365,7 +368,11 @@ The new code lives in npm workspaces under `packages/`:
   depends on each, one or two links away, with the weak links: Apex the index cannot follow
   (queries built from strings, classes named at run time, describes, files too large to read),
   inactive flows, dependents outside the confirmed scope, and the automation that saves records a
-  new rule or required field can stop.
+  new rule or required field can stop. Reports and report types that use a component are counted
+  apart and the first ten named, and what lies two links away (dashboards, reports on those report
+  types) is counted; outbound messages that send a field and change data capture on its object
+  are flagged as outside systems that receive the change; for an active remote site setting, the
+  Apex that calls its host with an endpoint written in the code.
   API names are returned as they are; labels, descriptions, formulas, picklist values and the
   names of reports, dashboards, documents and email templates are masked before they are
   returned (masked names can be passed back), and long details are cut. `node scripts/pack-next.mjs --smoke` builds the

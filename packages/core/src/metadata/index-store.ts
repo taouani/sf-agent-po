@@ -177,6 +177,8 @@ const toSnapshot = (r: SnapshotRow): SnapshotInfo => ({
   stats: JSON.parse(r.stats) as SnapshotStats,
 });
 
+/** The types whose attrs name hosts (host, calloutHosts, callbackHosts). */
+const HOST_TYPES = ["NamedCredential", "RemoteSiteSetting", "WorkflowOutboundMessage", "ConnectedApp", "ApexClass", "ApexTrigger"];
 const COLUMNS = "c.id, c.type, c.name, c.parent, c.parent_type, c.label, c.file, c.present, c.attrs, c.text";
 
 /** What a run holds while it reads: renewing it keeps another run of the source from starting. */
@@ -481,6 +483,43 @@ export class MetadataIndex {
       out.push({ component: toComponent(r), kind: kinds[0]!, kinds, direction: r.direction, depth: r.depth });
     }
     return out;
+  }
+
+  /**
+   * Components of these types in the source, by type and name, at most `limit` (default 500,
+   * at most 5,000); with `attr`, only those whose attrs have it (Apex with calloutHosts); with
+   * `missing`, those only referenced too (a named credential Apex calls but the source lacks).
+   */
+  ofTypes(snapshot: number, types: readonly ComponentType[], options: { attr?: string; limit?: number; missing?: boolean } = {}): IndexedComponent[] {
+    if (!types.length) return [];
+    if (options.attr !== undefined && !/^[A-Za-z]\w*$/.test(options.attr)) throw new Error(`Not an attribute name: ${options.attr}`);
+    const limit = Math.min(Math.max(options.limit ?? 500, 1), 5_000);
+    const attr = options.attr ? `AND json_extract(c.attrs, '$.${options.attr}') IS NOT NULL` : "";
+    return (
+      this.db
+        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? ${options.missing ? "" : "AND c.present = 1"} AND c.type IN (${types.map(() => "?").join(", ")}) ${attr} ORDER BY c.type, c.name LIMIT ?`)
+        .all(snapshot, ...types, limit) as unknown as ComponentRow[]
+    ).map(toComponent);
+  }
+
+  /**
+   * Components that name this host (its `host`, or one of its `calloutHosts` or `callbackHosts`),
+   * by type and name: of the types that carry hosts only, so the rest of the org is not read.
+   */
+  withHost(snapshot: number, host: string, limit = 200): IndexedComponent[] {
+    const h = host.trim().toLowerCase();
+    // "(an IP address)" stands for any IP address, so it matches none.
+    if (!h || h.startsWith("(")) return [];
+    return (
+      this.db
+        .prepare(
+          `SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.present = 1 AND c.type IN (${HOST_TYPES.map(() => "?").join(", ")}) AND (json_extract(c.attrs, '$.host') = ?
+             OR EXISTS (SELECT 1 FROM json_each(c.attrs, '$.calloutHosts') WHERE value = ?)
+             OR EXISTS (SELECT 1 FROM json_each(c.attrs, '$.callbackHosts') WHERE value = ?))
+           ORDER BY c.type, c.name LIMIT ?`,
+        )
+        .all(snapshot, ...HOST_TYPES, h, h, h, Math.min(Math.max(limit, 1), 1_000)) as unknown as ComponentRow[]
+    ).map(toComponent);
   }
 
   /**
