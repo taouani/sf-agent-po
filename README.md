@@ -263,7 +263,18 @@ The new code lives in npm workspaces under `packages/`:
   queries built in strings (`Database.query`) are not read. Permission
   sets and profiles grant (`grants`) objects with their CRUD level, fields (read or edit),
   classes, pages, flows and layouts; permission set groups include (`includes`) permission
-  sets; layouts show (`shows`) their fields, buttons, related lists and actions. Every other
+  sets; layouts show (`shows`) their fields, buttons, related lists and actions. Reports read
+  (`reads`) their report type and the fields they show, group by, filter on, bucket and chart
+  (custom report type columns `Object$Field`, standard ones `Object.Field__c`; Salesforce's
+  capitalised names for standard columns are left out); dashboards read the reports their
+  components show; custom report types read their base object and their columns' fields.
+  Filter values and dashboards' running users are never kept: only the fields filters are
+  on (the retrieved XML in the workspace still holds them, as the org returned it). Joined
+  reports are read block by block. An org run retrieves reports, dashboards and report types
+  too, with their dates and their folders' from three queries (`sf data query`), or one
+  listing per folder when a query fails; past 5,000 reports only the most recently changed
+  are retrieved, and the rest are reported. Reports in private folders are not listed by
+  Salesforce, so they are not indexed. Every other
   type in Salesforce's metadata type registry (copied from source-deploy-retrieve 13.12.0,
   Apache-2.0, by `scripts/metadata-registry.mjs`; the library itself is not a dependency) is
   indexed by name and file, including bundles, static resources, sites, documents, folders

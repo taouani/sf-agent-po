@@ -1,2 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Report xmlns="http://soap.sforce.com/2006/04/metadata"><name>Pipeline</name></Report>
+<Report xmlns="http://soap.sforce.com/2006/04/metadata">
+    <columns><field>Policy__c$Premium__c</field></columns>
+    <columns><field>Policy__c$Name</field></columns>
+    <columns><field>Policy__c.Claims__r$Amount__c</field></columns>
+    <description>Pipeline for Jane Doe's accounts</description>
+    <filter>
+        <criteriaItems>
+            <column>Policy__c$Status__c</column>
+            <operator>equals</operator>
+            <value>Acme Holdings</value>
+        </criteriaItems>
+    </filter>
+    <format>Summary</format>
+    <groupingsDown><field>Policy__c.Holder__c$Segment__c</field></groupingsDown>
+    <name>Pipeline</name>
+    <reportType>Policies_with_Claims__c</reportType>
+    <scope>organization</scope>
+    <timeFrameFilter><dateColumn>Policy__c$CreatedDate</dateColumn><interval>INTERVAL_CUSTOM</interval></timeFrameFilter>
+</Report>

@@ -10,6 +10,7 @@ import { MARKUP_SUFFIX, readMarkup } from "./markup.js";
 import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
 import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
+import { readDashboard, readReport, readReportType } from "./reports.js";
 import { classifyFile } from "./registry.js";
 import { obj, parseMetadataXml } from "./xml.js";
 
@@ -29,7 +30,8 @@ export const MAX_SKIPPED_LISTED = 200;
 
 type Kind =
   | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
-  | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup";
+  | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup"
+  | "report" | "dashboard" | "reportType";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -46,6 +48,9 @@ const TOP_LEVEL = new Map<string, [string, Kind, boolean]>([
   ["layouts", [".layout", "layout", true]],
 ]);
 
+/** Report-like types: read from their one XML file, named by the registry. */
+const REPORT_KINDS: Readonly<Record<string, Kind>> = { Report: "report", Dashboard: "dashboard", ReportType: "reportType" };
+
 /** Types read in detail: every other one is indexed by name and file. */
 const DETAILED = new Set<string>(COMPONENT_TYPES);
 
@@ -59,6 +64,9 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
   // pages/Foo.page, components/Foo.component, email/Folder/Foo.email: read from the markup;
   // their -meta.xml files are the same component.
   if (match && Object.hasOwn(MARKUP_SUFFIX, match.type)) return rel.endsWith(MARKUP_SUFFIX[match.type]!) ? { kind: "markup", object: match.name, type: match.type } : undefined;
+  // reports/Sales/Q1/Pipeline.report(-meta.xml), dashboards/..., reportTypes/Foo.reportType:
+  // in folders people name, so the registry gives the full name.
+  if (match && Object.hasOwn(REPORT_KINDS, match.type)) return { kind: REPORT_KINDS[match.type]!, object: match.name };
   const parts = rel.split("/");
   const base = parts.at(-1)!;
   const dir = parts.at(-2);
@@ -311,6 +319,12 @@ function readComponents(what: NonNullable<ReturnType<typeof classify>>, file: st
       return [readPermissionSetGroup(what.object, obj(doc.PermissionSetGroup), file)];
     case "layout":
       return [readLayout(what.object, obj(doc.Layout), file)];
+    case "report":
+      return [readReport(what.object, obj(doc.Report), file)];
+    case "dashboard":
+      return [readDashboard(what.object, obj(doc.Dashboard), file)];
+    case "reportType":
+      return [readReportType(what.object, obj(doc.ReportType), file)];
   }
   return [];
 }

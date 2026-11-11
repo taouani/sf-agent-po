@@ -7,6 +7,7 @@
 export const COMPONENT_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow", "ApexClass", "ApexTrigger",
   "PermissionSet", "Profile", "PermissionSetGroup", "Layout", "FieldSet", "ApexPage", "ApexComponent", "EmailTemplate",
+  "Report", "Dashboard", "ReportType",
 ] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
@@ -18,6 +19,8 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
  *   an Apex-defined type, or a person account field (Account.Foo__pc) stands for its contact
  *   field (Contact.Foo__c);
  * - reads: a formula, rule, flow, code, page or email template uses a field (or queries an object);
+ *   a report shows, groups or filters on a field and is built on a report type; a dashboard
+ *   shows a report; a report type is built on objects and offers their fields;
  * - writes: a flow sets a field (or creates, updates or deletes records of an object);
  * - triggers_on: a flow, process or Apex trigger runs for records of an object: when they change
  *   (record-triggered) or on a schedule. Draft and obsolete flows have the edge too, since

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apexCode, classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -193,6 +193,51 @@ describe("flows", () => {
     );
   });
 
+  it("reads reports, dashboards and report types: what they use, never filter values or running users", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const out = (name: string) => edges.filter((e) => e.from.name === name).map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
+    expect(out("Sales/Pipeline")).toEqual([
+      "reads CustomField:Account.Segment__c",
+      "reads CustomField:Policy__c.CreatedDate",
+      "reads CustomField:Policy__c.Name",
+      "reads CustomField:Policy__c.Premium__c",
+      "reads CustomField:Policy__c.Status__c",
+      "reads ReportType:Policies_with_Claims",
+    ]);
+    expect(out("Sales/Weekly")).toEqual(["reads CustomField:Policy__c.Status__c", "reads Report:Sales/Pipeline"]);
+    // A joined report's blocks, its summary formula, a cross filter and a report type's lookup.
+    expect(out("Sales/Claims_Joined")).toEqual([
+      "reads CustomField:Account.Id",
+      "reads CustomField:Account.Segment__c",
+      "reads CustomField:Policy__c.Holder__c",
+      "reads CustomField:Policy__c.Premium__c",
+      "reads CustomField:Policy__c.Status__c",
+      "reads CustomObject:Policy__c",
+    ]);
+    expect(out("Policies_with_Claims")).toEqual(["reads CustomField:Policy__c.Premium__c", "reads CustomObject:Policy__c"]);
+    const report = components.find((c) => c.name === "Sales/Pipeline")!;
+    expect(report).toMatchObject({ label: "Pipeline", attrs: { reportType: "Policies_with_Claims__c", format: "Summary", filterFields: ["Policy__c$Status__c"] } });
+    expect(components.find((c) => c.type === "ReportType")).toMatchObject({ label: "Policies with Claims", attrs: { baseObject: "Policy__c", joins: ["Claims__r (with or without)"], fields: 2 } });
+    const kept = JSON.stringify(components.filter((c) => ["Report", "Dashboard", "ReportType"].includes(c.type)));
+    for (const secret of ["Acme Holdings", "Bob Smith", "jane.doe@example.com"]) expect(kept).not.toContain(secret);
+    expect(components.find((c) => c.type === "Dashboard")?.attrs).toEqual({ reportCount: 1, dashboardType: "SpecifiedUser", filterFields: ["Policy__c$Status__c"] });
+  });
+
+  it("names the field a report column reads", () => {
+    expect(reportColumnRef("Policy__c$Premium__c")).toEqual({ kind: "reads", object: "Policy__c", path: "Premium__c" });
+    expect(reportColumnRef("Policy__c.Claims__r$Amount__c")).toEqual({ kind: "reads", field: "Amount__c" });
+    expect(reportColumnRef("Policy__c.Claims__r$Name")).toBeUndefined();
+    // Through a lookup, and a standard lookup named by its relationship.
+    expect(reportColumnRef("Policy__c$Holder__c.Segment__c")).toEqual({ kind: "reads", object: "Policy__c", path: "Holder__r.Segment__c" });
+    expect(reportColumnRef("Opportunity$Account.Industry")).toEqual({ kind: "reads", object: "Opportunity", path: "Account.Industry" });
+    expect(reportColumnRef("Account$Owner")).toEqual({ kind: "reads", object: "Account", path: "OwnerId" });
+    // Historical trending columns, which no index holds.
+    expect(reportColumnRef("Policy__hd$Premium__c__hst")).toBeUndefined();
+    expect(reportColumnRef("Account.Segment__c")).toEqual({ kind: "reads", object: "Account", path: "Segment__c" });
+    expect(reportColumnRef("FK_$Account.Segment__c")).toEqual({ kind: "reads", object: "Account", path: "Segment__c" });
+    for (const standard of ["ACCOUNT.NAME", "CUST_NAME", "AMOUNT", "FK_ACC_NAME", "a$b$"]) expect(reportColumnRef(standard), standard).toBeUndefined();
+  });
+
   it("indexes every other type by name and file", async () => {
     const { components } = await scanProject(join(fixtures, "source"));
     const others = components.filter((c) => !["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"].includes(c.type) && !c.missing);
@@ -200,13 +245,17 @@ describe("flows", () => {
       "ApexClass:RenewalNotifier",
       "ApexClass:RenewalService",
       "ApexTrigger:PolicyTrigger",
+      "Dashboard:Sales/Weekly",
+      "DashboardFolder:Sales",
       "Layout:Policy__c-Policy Layout",
       "LightningComponentBundle:policyCard",
       "ListView:Policy__c.All",
       "PermissionSet:Policy_Manager",
       "PermissionSetGroup:Renewals",
+      "Report:Sales/Claims_Joined",
       "Report:Sales/Pipeline",
       "ReportFolder:Sales",
+      "ReportType:Policies_with_Claims",
     ]);
     expect(others.find((c) => c.type === "ListView")).toMatchObject({ parent: "Policy__c", parentType: "CustomObject" });
     // The bundle's own file, not its test fixture.
@@ -545,6 +594,7 @@ describe("MetadataIndex", () => {
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
       // Standard fields only referenced come after what the project holds.
+      "Policy__c.CreatedDate",
       "Policy__c.Id",
       "Policy__c.Name",
     ]);
@@ -557,6 +607,9 @@ describe("MetadataIndex", () => {
       "in writes+reads PolicyTrigger",
       "in shows Policy__c-Policy Layout",
       "in grants Policy_Manager",
+      "in reads Sales/Claims_Joined",
+      "in reads Sales/Pipeline",
+      "in reads Policies_with_Claims",
       "in reads Policy__c.Premium_Required",
     ]);
     expect(near.find((r) => r.component.name === "PolicyTrigger")?.kind).toBe("writes");
