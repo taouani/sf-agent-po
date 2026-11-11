@@ -3,7 +3,7 @@
 
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { classifyFile, parseMetadataXml } from "@sf-agent-po/core";
+import { classifyFile, isMappingValue, parseMetadataXml } from "@sf-agent-po/core";
 import { defaultSfRunner, type SfRunner } from "./salesforce.js";
 
 /**
@@ -12,8 +12,10 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
  * none of their text. Reports and dashboards are retrieved for the fields and reports they
  * use; the index keeps no filter value. Integrations (credentials, remote sites, connected apps,
  * event channels) are retrieved for where the org connects; the index keeps hosts, never a
- * secret or a username. Left out: types whose content is records or people's
- * text (documents, custom metadata records) and large binaries (static resources).
+ * secret or a username. Custom metadata records are retrieved for the objects and fields their
+ * values name (mapping tables code reads): each is kept on disk with only its values shaped like
+ * names (recordNamesOnly), and the index keeps only the links their type gets. Left out:
+ * documents (people's text) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink",
@@ -22,6 +24,7 @@ export const DEFAULT_ORG_TYPES = [
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
   "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "PlatformEventChannel", "PlatformEventChannelMember",
+  "CustomMetadata",
 ] as const;
 
 /** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */
@@ -74,6 +77,21 @@ export function withoutSecrets(type: string, xml: string): string {
   if (!names?.length) return xml;
   const tags = names.join("|");
   return xml.replace(new RegExp(`[ \\t]*<(${tags})(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</\\1\\s*>)[ \\t]*\\r?\\n?`, "g"), "");
+}
+
+/**
+ * A custom metadata record as it is kept: its values the index reads as names of objects or
+ * fields (isMappingValue), nothing else. Records hold data (keys, tokens, addresses, people's names), and the index reads only
+ * the names; the label, the description and every other value are taken out.
+ */
+export function recordNamesOnly(xml: string): string {
+  const kept: string[] = [];
+  for (const m of xml.matchAll(/<values>([\s\S]*?)<\/values>/g)) {
+    const field = /<field>([^<]*)<\/field>/.exec(m[1]!)?.[1]?.trim();
+    const value = /<value(?:\s[^>]*)?>([^<]*)<\/value>/.exec(m[1]!)?.[1]?.trim();
+    if (field && value && /^\w+$/.test(field) && isMappingValue(field, value)) kept.push(`    <values>\n        <field>${field}</field>\n        <value>${value}</value>\n    </values>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">\n${kept.join("\n")}${kept.length ? "\n" : ""}</CustomMetadata>\n`;
 }
 
 /** A retrieval older than this is redone in full: dates can miss a change (access on a profile). */
@@ -437,7 +455,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
           }
         }
         await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, kind && Object.hasOwn(SECRET_ELEMENTS, kind) ? withoutSecrets(kind, text.toString("utf8")) : text);
+        await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text.toString("utf8")) : kind && Object.hasOwn(SECRET_ELEMENTS, kind) ? withoutSecrets(kind, text.toString("utf8")) : text);
       }
       await remove(path.join(work, part));
     }

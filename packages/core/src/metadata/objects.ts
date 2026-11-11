@@ -1,7 +1,7 @@
 // Objects and their children: fields, record types and validation rules, from either the
 // source format (one file per child) or the metadata format (children inside the .object).
 
-import type { ComponentType, EdgeKind, ParsedComponent, ParsedEdge } from "./model.js";
+import type { ComponentType, EdgeKind, ParsedComponent, ParsedEdge, Ref } from "./model.js";
 import { bool, list, num, obj, str } from "./xml.js";
 
 /** Suffixes of custom names: objects, metadata types, events, person account fields... */
@@ -39,6 +39,60 @@ export function readObject(name: string, root: Record<string, unknown>, file: st
   for (const v of list(root.validationRules)) out.push(readValidationRule(name, obj(v), file));
   for (const f of list(root.fieldSets)) out.push(readFieldSet(name, obj(f), file));
   return out;
+}
+
+/**
+ * Whether a value of a custom metadata record can name an object or field: "Account",
+ * "Account.Industry", "Segment__c", "ns__Field__c", "AccountId". A name is a custom name, a
+ * dotted pair, or words in capitals (CamelCase); a key or token ("AKIAIOSFODNN7EXAMPLE",
+ * "k_9f8e7d") is none of these. Shared with the retrieval, which keeps only such values.
+ */
+export function isNameValue(v: string): boolean {
+  if (!/^[A-Za-z][A-Za-z0-9_]{0,79}(?:\.[A-Za-z][A-Za-z0-9_]{0,79})?$/.test(v)) return false;
+  return v.includes(".") || /__/.test(v) || /^(?:[A-Z][a-z]+)+$/.test(v);
+}
+
+/** A field of a custom metadata type whose values can name objects or fields (Object__c, Target_Field__c, SObject__c). */
+const NAMING_FIELD = /object|entity|field|column|source|target|path|api|mapping/i;
+
+/**
+ * Whether a custom metadata record's value, in its field, is read as a name: a name in a field
+ * named for one (Object__c, Source_Field__c), or a value shaped like an API name wherever it is
+ * (Account.Industry, Segment__c). "Event" in Trigger__c or "Dupont" in Owner__c is not.
+ */
+export function isMappingValue(field: string, value: string): boolean {
+  return isNameValue(value) && (NAMING_FIELD.test(field) || value.includes(".") || /__/.test(value));
+}
+
+/**
+ * The objects and fields a custom metadata record (CIM_Client_Field.Account_Name) names, as
+ * links that may be there (may_read), for its type (CIM_Client_Field__mdt), since code reads the
+ * type, not the record. Only values of fields named for it (Object__c, Field__c, Source__c...),
+ * or shaped like one (Account.Industry, Segment__c), count; the linker keeps only names of what
+ * the project has. The record itself is not kept: records hold data, and their names can name
+ * clients.
+ */
+export function readCustomMetadataRecord(root: Record<string, unknown>): Ref[] {
+  const values: string[] = [];
+  for (const entry of list(root.values)) {
+    const e = obj(entry);
+    const v = str(e.value)?.trim();
+    if (v && isMappingValue(str(e.field) ?? "", v)) values.push(v);
+  }
+  // The values that may name an object: where a field named alone in the same record may be.
+  const objects = [...new Set(values.filter((v) => !v.includes(".")))];
+  const refs: Ref[] = [];
+  for (const v of new Set(values)) {
+    const at = v.indexOf(".");
+    if (at > 0) refs.push({ kind: "may_read", field: v.slice(at + 1), among: [v.slice(0, at)] });
+    else {
+      refs.push({ kind: "may_read", object: v, known: true });
+      // A field named alone: on an object the record names, or a custom field one object alone has.
+      if (objects.length > 1) refs.push({ kind: "may_read", field: v, among: objects });
+      if (/__c$/i.test(v)) refs.push({ kind: "may_read", field: v });
+    }
+  }
+  return refs;
 }
 
 /** A field set: the fields it lists, shown wherever a page, component or code uses it. */
@@ -324,7 +378,9 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     const reached = new Set(edges.filter((e) => e.to.type === "CustomField" && e.kind !== "may_read").map((e) => `${componentKey(e.from.type, e.from.name)}>${e.to.name.slice(e.to.name.lastIndexOf(".") + 1).toLowerCase()}`));
     for (const { from, field, kind, among } of byName) {
       const lower = field.toLowerCase();
-      if (reached.has(`${componentKey(from.type, from.name)}>${lower}`)) continue;
+      // A mapping record's field named with its object is looked for whatever else was reached:
+      // the records of one type name Lead.Email and Contact.Email.
+      if (!(among && kind === "may_read") && reached.has(`${componentKey(from.type, from.name)}>${lower}`)) continue;
       // An object of that name (Policy__c.SObjectType, a managed object only referenced) is not a field.
       if (objectNamed(field) || missing.has(componentKey("CustomObject", field))) continue;
       const owning = /__pc$/i.test(field) ? ["Account"] : (owners.get(lower) ?? []);

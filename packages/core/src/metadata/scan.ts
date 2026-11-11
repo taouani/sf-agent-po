@@ -4,8 +4,8 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { COMPONENT_TYPES, type ParseCache, type ParsedComponent, type ParsedMetadata } from "./model.js";
-import { componentKey, isCustomName, linkObjects, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
+import { COMPONENT_TYPES, type ParseCache, type ParsedComponent, type ParsedMetadata, type Ref } from "./model.js";
+import { componentKey, isCustomName, linkObjects, readCustomMetadataRecord, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
 import { MARKUP_SUFFIX, readMarkup } from "./markup.js";
 import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
@@ -33,7 +33,8 @@ type Kind =
   | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
   | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup"
   | "report" | "dashboard" | "reportType"
-  | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow" | "outboundMessage";
+  | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow" | "outboundMessage"
+  | "customMetadata";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -65,6 +66,8 @@ const BY_TYPE: Readonly<Record<string, Kind>> = {
   Workflow: "workflow",
   // workflows/Account/workflowOutboundMessages/Notify_ERP.workflowOutboundMessage-meta.xml
   WorkflowOutboundMessage: "outboundMessage",
+  // customMetadata/CIM_Client_Field.Account_Name.md(-meta.xml)
+  CustomMetadata: "customMetadata",
 };
 
 /** Types read in detail: every other one is indexed by name and file. */
@@ -225,6 +228,8 @@ export async function scanProject(root: string, options: { exclude?: readonly st
     if (m && !homes.has(componentKey(m.type, m.name))) homes.set(componentKey(m.type, m.name), m.home);
   };
 
+  /** The links custom metadata records give their type, by type. */
+  const mappings = new Map<string, { refs: Ref[]; records: number }>();
   const files = new Set<string>();
   for (const dir of await packageDirs(root)) {
     try {
@@ -261,6 +266,18 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       const size = (await stat(path.join(root, file))).size;
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
       const content = await readFile(path.join(root, file), "utf8");
+      if (what.kind === "customMetadata") {
+        // A record is read every run and never cached nor kept: only what it names is, as links of its type.
+        const dot = what.object.indexOf(".");
+        if (dot > 0) {
+          const type = `${what.object.slice(0, dot)}__mdt`;
+          const found = mappings.get(type) ?? { refs: [], records: 0 };
+          found.refs.push(...readCustomMetadataRecord(obj(parseMetadataXml(content).CustomMetadata)));
+          found.records++;
+          mappings.set(type, found);
+        }
+        continue;
+      }
       // A template's subject and plain text, in its -meta.xml, hold merge fields too.
       let meta = "";
       if (what.kind === "markup" && what.type === "EmailTemplate" && files.has(`${file}-meta.xml`)) {
@@ -293,13 +310,20 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       // before the type was read in detail: what points at it does not find it missing.
       const match = classifyFile(file);
       const key = match && componentKey(match.type, match.name);
-      if (match && key && Object.hasOwn(BY_TYPE, match.type) && !seen.has(key) && homes.get(key) === undefined) {
+      if (match && key && Object.hasOwn(BY_TYPE, match.type) && match.type !== "CustomMetadata" && !seen.has(key) && homes.get(key) === undefined) {
         homes.set(key, match.home);
         add({ type: match.type, name: match.name, file, attrs: {}, text: "", ...(match.parent ? { parent: match.parent, parentType: match.parentType } : {}) }, file);
       }
     }
   }
 
+  // What the records of each custom metadata type name goes to the type, with how many it has.
+  for (const [type, { refs, records }] of mappings) {
+    const at = seen.get(componentKey("CustomObject", type));
+    if (at === undefined) continue;
+    const c = components[at]!;
+    components[at] = { ...c, attrs: { ...c.attrs, records }, refs: [...(c.refs ?? []), ...refs] };
+  }
   const { edges, missing } = linkObjects(components);
   for (const m of missing) components.push({ type: m.type, name: m.name, ...(m.parent ? { parent: m.parent } : {}), missing: true, attrs: {}, text: "" });
   return { components, edges, skipped, ...(skippedCount > skipped.length ? { skippedCount } : {}), ...(options.cache ? { files: { read, reused } } : {}) };

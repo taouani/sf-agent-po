@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
 import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
-import { capReports, mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
+import { capReports, mergeAccess, readManifest, recordNamesOnly, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
@@ -97,6 +97,19 @@ function fakeSf(
             // Built at run time: a key-shaped literal would trip secret scanning.
             const key = ["3MVG9", "x".repeat(20)].join("");
             write(`connectedApps/${m}.connectedApp`, `<?xml version="1.0"?>\n<ConnectedApp>\n    <contactEmail>jane.doe@example.com</contactEmail>\n    <label>${m}</label>\n    <oauthConfig>\n        <callbackUrl>https://app.example.com/cb</callbackUrl>\n        <certificate>-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----</certificate>\n        <consumerKey>${key}</consumerKey>\n        <consumerSecret>${key}SECRET</consumerSecret>\n        <oauthClientCredentialUser>jane.doe@example.com</oauthClientCredentialUser>\n        <scopes>Api</scopes>\n    </oauthConfig>\n</ConnectedApp>\n`);
+          }
+          if (e.type === "CustomMetadata") {
+            // Built at run time: a key-shaped literal would trip secret scanning.
+            const token = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
+            write(
+              `customMetadata/${m}.md`,
+              `<?xml version="1.0" encoding="UTF-8"?>\n<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n    <label>Jeanne Dupont</label>\n    <protected>false</protected>\n` +
+                `    <values>\n        <field>Object__c</field>\n        <value xsi:type="xsd:string">Account</value>\n    </values>\n` +
+                `    <values>\n        <field>Field__c</field>\n        <value xsi:type="xsd:string">Account.Industry</value>\n    </values>\n` +
+                `    <values>\n        <field>Key__c</field>\n        <value xsi:type="xsd:string">${token}</value>\n    </values>\n` +
+                `    <values>\n        <field>Contact__c</field>\n        <value xsi:type="xsd:string">jane.doe@example.com</value>\n    </values>\n` +
+                `    <values>\n        <field>Empty__c</field>\n        <value xsi:nil="true"/>\n    </values>\n</CustomMetadata>\n`,
+            );
           }
           if (e.type === "CustomObject") objects.set(m, objects.get(m) ?? []);
           if (e.type === "CustomField") {
@@ -208,6 +221,19 @@ describe("retrieveOrgMetadata", () => {
       .toBe("<Workflow><outboundMessages><name>N</name></outboundMessages><alerts><recipients><type>user</type></recipients></alerts></Workflow>");
     expect(withoutSecrets("Dashboard", "<Dashboard><runningUser/><title>T</title></Dashboard>")).toBe("<Dashboard><title>T</title></Dashboard>");
     expect(withoutSecrets("ApexClass", "<x><username>u</username></x>")).toBe("<x><username>u</username></x>");
+  });
+
+  it("keeps only the values of custom metadata records that can name an object or field", async () => {
+    const dir = tmp();
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ CustomMetadata: ["Map.Industry"] }) });
+    const kept = readFileSync(path.join(r.dir, "metadata", "customMetadata", "Map.Industry.md"), "utf8");
+    for (const gone of ["Dupont", "AKIA", "jane.doe", "Key__c", "Empty__c", "label"]) expect(kept).not.toContain(gone);
+    expect(kept).toBe(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">\n` +
+        `    <values>\n        <field>Object__c</field>\n        <value>Account</value>\n    </values>\n` +
+        `    <values>\n        <field>Field__c</field>\n        <value>Account.Industry</value>\n    </values>\n</CustomMetadata>\n`,
+    );
+    expect(recordNamesOnly("<CustomMetadata><label>x</label></CustomMetadata>")).toBe(`<?xml version="1.0" encoding="UTF-8"?>\n<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">\n</CustomMetadata>\n`);
   });
 
   it("refuses an org argument the CLI could read as more, and cleans up after a failure", async () => {

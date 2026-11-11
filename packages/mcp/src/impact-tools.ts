@@ -174,7 +174,7 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           const shown = rest.slice(0, MAX_DEPENDENTS);
           const lines = await Promise.all(
             shown.map(async (d) => {
-              const via = d.depth > 1 ? " (through one of the above)" : ` (${d.kinds.map((k) => VERB_IN[k] ?? k).join(", ")})`;
+              const via = d.depth > 1 ? " (through one of the above)" : ` (${d.kinds.map((k) => (k === "may_read" && d.component.type === "CustomObject" ? "its records name it: code that reads them may use it" : (VERB_IN[k] ?? k))).join(", ")})`;
               const marks = [inactive(d.component) ? `inactive: ${String(d.component.attrs.status)}` : "", scope && !scope.has(d.component.id) ? "outside the scope" : ""].filter(Boolean);
               return `${await line(pieces, d.component)}${via}${marks.length ? ` [${marks.join("; ")}]` : ""}`;
             }),
@@ -255,9 +255,14 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         }
         if (ch.change === "delete") {
           // A query built in strings does not stop the delete: the class fails when it runs.
-          const weak = rest.filter((d) => d.depth === 1 && d.kinds.every((k) => k === "may_read")).length;
-          if (rest.length > weak) flags.push(`Deleting it breaks or changes ${rest.length - weak} component(s) above; Salesforce refuses the delete while some still reference it.`);
-          if (weak) flags.push(`${weak} class(es) may read it in a query built in strings: Salesforce does not stop the delete, and the query fails when it runs. Check their code with metadata_code.`);
+          const weak = rest.filter((d) => d.depth === 1 && d.kinds.every((k) => k === "may_read"));
+          const mappings = weak.filter((d) => d.component.type === "CustomObject").length;
+          const code = weak.length - mappings;
+          // Salesforce refuses the delete only for what references it directly and for sure.
+          const blocking = rest.filter((d) => d.depth === 1 && !weak.includes(d)).length;
+          if (blocking) flags.push(`Deleting it breaks or changes ${rest.length - weak.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
+          if (code) flags.push(`${code} class(es) may read it in a query built in strings: Salesforce does not stop the delete, and the query fails when it runs. Check their code with metadata_code.`);
+          if (mappings) flags.push(`${mappings} custom metadata type(s) name it in their records: the code that reads them may fail once it is gone. Update or remove those records.`);
         }
         const facts = object ? objectFacts(object) : undefined;
         if (facts && (ch.change === "add" || ch.change === "modify") && ["ValidationRule", "CustomField", "CustomObject"].includes(ch.type)) {

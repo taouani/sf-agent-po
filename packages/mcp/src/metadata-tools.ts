@@ -294,7 +294,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         const related = index.related(c.id, { depth, kinds }).filter((r) => !(r.kind === "part_of" && r.direction === "in" && r.depth === 1 && r.component.parent));
         if (related.length) {
           const shown = related.slice(0, MAX_RELATED);
-          out.push(`Linked (${related.length}${related.length > shown.length ? `, first ${shown.length}` : ""}):\n${(await Promise.all(shown.map((r) => relatedLine(pieces, r)))).join("\n")}`);
+          out.push(`Linked (${related.length}${related.length > shown.length ? `, first ${shown.length}` : ""}):\n${(await Promise.all(shown.map((r) => relatedLine(pieces, r, c.type)))).join("\n")}`);
         } else out.push("No links found in the index. Dynamic Apex, SOQL built from strings and long formula chains are not seen: check with the user.");
         if ((c.type === "ApexClass" || c.type === "ApexTrigger") && index.hasBody(c.id)) {
           out.push(`Its code (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code${c.attrs.dynamic ? ", which shows what the links above cannot: the queries it builds from strings and the classes it names at run time" : ""}.`);
@@ -535,8 +535,16 @@ const VERB: Record<string, [string, string]> = {
   may_read: ["may read (a query built in strings)", "may be read by (a query built in strings)"],
 };
 
-async function relatedLine(pieces: Pieces, r: Related): Promise<string> {
-  const verbs = r.kinds.map((k) => VERB[k]?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
+/** A may_read from a custom metadata type: its records name the field or object. */
+const NAMED_IN_RECORDS: [string, string] = ["its records name", "is named in the records of"];
+const MAY_READ: [string, string] = ["may read", "may be read by"];
+
+async function relatedLine(pieces: Pieces, r: Related, self?: string): Promise<string> {
+  // The source of the link: the component shown for a link out, the other one for a link in.
+  // Two links away, the source of the last link is the one between: its kind is said plainly.
+  const source = r.direction === "out" ? (r.depth > 1 ? undefined : self) : r.component.type;
+  const verb = (k: string) => (k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k]);
+  const verbs = r.kinds.map((k) => verb(k)?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
   const via = r.depth > 1 ? ` (${r.depth} links away)` : "";
   return `${verbs}${via}: ${(await line(pieces, r.component)).slice(2)}`;
 }

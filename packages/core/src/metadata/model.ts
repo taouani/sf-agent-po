@@ -9,7 +9,7 @@ export const COMPONENT_TYPES = [
   "PermissionSet", "Profile", "PermissionSetGroup", "Layout", "FieldSet", "ApexPage", "ApexComponent", "EmailTemplate",
   "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "ExternalServiceRegistration",
-  "PlatformEventChannel", "PlatformEventChannelMember", "Workflow", "WorkflowOutboundMessage",
+  "PlatformEventChannel", "PlatformEventChannelMember", "Workflow", "WorkflowOutboundMessage", "CustomMetadata",
 ] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
@@ -40,7 +40,9 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
  * - shows: a layout puts a field, button, related list, page or action in front of users; a
  *   field set lists a field;
  * - may_read: Apex builds a query in strings that reads an object or field (a weaker link than
- *   reads: the query is pieced together from the strings and string constants the code holds).
+ *   reads: the query is pieced together from the strings and string constants the code holds);
+ *   the records of a custom metadata type name an object or field (a mapping the code that
+ *   reads the type may follow).
  */
 export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls", "grants", "includes", "shows", "may_read"] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
