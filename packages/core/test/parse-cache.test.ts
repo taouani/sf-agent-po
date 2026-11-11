@@ -43,6 +43,8 @@ describe("parse cache", () => {
     const second = await run();
     expect(second.stats).toMatchObject({ full: false, files: { read: 0, reused: all } });
     expect(parsed().components).toEqual(fresh.components);
+    // The code of a class comes back from the cache too.
+    expect(parsed().components.find((c) => c.file === CLASS)?.body).toContain("class RenewalService");
     expect(parsed().edges).toEqual(fresh.edges);
     expect(second.stats.counts).toEqual(first.stats.counts);
 

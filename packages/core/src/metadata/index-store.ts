@@ -310,11 +310,13 @@ export class MetadataIndex {
     const insert = this.db.prepare(
       "INSERT INTO component (snapshot, type, name, parent, parent_type, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     );
+    const insertBody = this.db.prepare("INSERT INTO component_body (component, body) VALUES (?, ?)");
     const ids = new Map<string, number>();
     const counts: Partial<Record<ComponentType, number>> = {};
     let referenced = 0;
     for (const c of parsed.components) {
       const row = insert.get(id, c.type, c.name, c.parent ?? null, c.parent ? (c.parentType ?? "CustomObject") : null, c.label ?? null, c.file ?? null, c.missing ? 0 : 1, JSON.stringify(c.attrs), c.text) as { id: number };
+      if (c.body !== undefined) insertBody.run(row.id, c.body);
       ids.set(componentKey(c.type, c.name), row.id);
       if (c.missing) referenced++;
       else counts[c.type] = (counts[c.type] ?? 0) + 1;
@@ -358,6 +360,17 @@ export class MetadataIndex {
   /** Every snapshot, newest first. */
   snapshots(): SnapshotInfo[] {
     return (this.db.prepare("SELECT * FROM metadata_snapshot ORDER BY id DESC").all() as unknown as SnapshotRow[]).map(toSnapshot);
+  }
+
+  /** The code of an Apex class or trigger (secrets hidden, not masked), if the run that indexed it kept it. */
+  body(component: number): string | undefined {
+    const r = this.db.prepare("SELECT body FROM component_body WHERE component = ?").get(component) as { body: string } | undefined;
+    return r?.body;
+  }
+
+  /** Whether the index keeps a component's code, without reading it. */
+  hasBody(component: number): boolean {
+    return this.db.prepare("SELECT 1 FROM component_body WHERE component = ?").get(component) !== undefined;
   }
 
   /** A component by type and API name; the case of the name does not matter (the column ignores it, as Salesforce does). */

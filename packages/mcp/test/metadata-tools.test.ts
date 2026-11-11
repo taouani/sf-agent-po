@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
+import { ContextRepository, Database, Masker, MAX_APEX_LENGTH, MetadataIndex, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer } from "../src/index.js";
 import { trimDetails } from "../src/metadata-tools.js";
@@ -82,7 +82,7 @@ async function connect(sf?: (args: string[]) => Promise<unknown>) {
     const r = (await client.callTool({ name, arguments: args })) as { content: { type: string; text?: string }[]; isError?: boolean };
     return { ...r, text: r.content.map((c) => c.text ?? "").join("\n") };
   };
-  return { call, index, indexer, client };
+  return { call, index, indexer, client, db };
 }
 
 describe("metadata tools", () => {
@@ -171,6 +171,90 @@ describe("metadata tools", () => {
     expect(profile.text).toContain("460 more entries");
     expect(profile.text.length).toBeLessThan(20_000);
     expect(trimDetails({ a: Array.from({ length: 45 }, (_, i) => i) })).toEqual({ a: [...Array.from({ length: 40 }, (_, i) => i), "and 5 more"] });
+  });
+
+  it("show Apex code by range and by search, masked", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    const lines = ["public class Mapper {", "  // Written for Karim Benali", "  public List<SObject> load(String f) {", "    return Database.query('SELECT ' + f + ' FROM Policy__c');", "  }", ...Array.from({ length: 300 }, (_, i) => `  // line ${i}`), "}"];
+    writeFileSync(path.join(root, "classes/Mapper.cls"), lines.join("\r\n"));
+    await indexProject(index, root);
+
+    const card = await call("metadata_component", { context: "acme", type: "ApexClass", name: "Mapper" });
+    expect(card.text).toContain(`Its code (${lines.length} lines) can be read with metadata_code, which shows what the links above cannot`);
+    expect((await call("metadata_component", { context: "acme", type: "ApexClass", name: "PolicyService" })).text).not.toContain("which shows what");
+
+    const first = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper" });
+    expect(first.text).toContain(`ApexClass Mapper, lines 1-200 of ${lines.length}`);
+    expect(first.text).toContain("More from line 201.");
+    expect(first.text).toContain("  4      return Database.query('SELECT ' + f + ' FROM Policy__c');");
+    expect(first.text).toContain("// Written for [PERSON_");
+    expect(first.text).not.toContain("Karim");
+    expect(first.text).not.toContain("\r");
+
+    const end = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", from: 300, lines: 50 });
+    expect(end.text).toContain(`lines 300-${lines.length} of ${lines.length}`);
+    expect(end.text).not.toContain("More from");
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", from: 999 })).text).toContain(`Mapper has ${lines.length} lines.`);
+
+    const found = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "database.QUERY" });
+    expect(found.text).toContain('ApexClass Mapper: 1 line(s) contain "database.QUERY"');
+    expect(found.text).toContain("Database.query(");
+    // A pseudonym the model was shown finds the real text, and comes back masked.
+    const pseudonym = /\[PERSON_\d+\]/.exec(first.text)![0];
+    const byName = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: pseudonym });
+    expect(byName.text).toContain(`  2    // Written for ${pseudonym}`);
+    expect(byName.text).not.toContain("Karim");
+    // A real name the model guesses is not confirmed by the lines that hold it.
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "Benali" })).text).toContain('No line of Mapper contains "Benali"');
+    const many = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "// line" });
+    expect(many.text).toContain("200 line(s) contain");
+    expect(many.text).toContain("the first 60 shown");
+    expect(many.text).toContain("More may follow: search again from line 206.");
+    const later = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "// line", from: 206 });
+    expect(later.text).toContain("100 line(s) from line 206 contain");
+    expect(later.text).toContain("206    // line 200");
+    expect(later.text).not.toContain("More may follow");
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "nowhere" })).text).toContain('No line of Mapper contains "nowhere"');
+
+    expect((await call("metadata_code", { context: "acme", type: "ApexTrigger", name: "Mapper" })).text).toContain("No ApexTrigger named Mapper");
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", lines: 501 })).isError).toBe(true);
+  });
+
+  it("show code with its secrets hidden, and long lines cut", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    const fixture = `'${"{\"a\":1}".repeat(1_000)}'`;
+    writeFileSync(
+      path.join(root, "classes/Client.cls"),
+      ["public class Client {", "  String apiKey = 'k_9f8e7d6c';", "  // req.setHeader('Authorization', 'Bearer abcDEF123456');", ...Array.from({ length: 100 }, () => `  String json = ${fixture};`), "}"].join("\n"),
+    );
+    await indexProject(index, root);
+    const r = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Client" });
+    expect(r.text).toContain("String apiKey = 'HIDDEN_SECRET';");
+    expect(r.text).toContain("'Bearer HIDDEN_SECRET'");
+    expect(r.text).not.toContain("k_9f8e7d6c");
+    expect(r.text).not.toContain("abcDEF123456");
+    expect(r.text).toMatch(/\.\.\. \(\d+ more characters\)/);
+    expect(r.text.length).toBeLessThan(40_000);
+    expect(r.text).toMatch(/lines 1-\d+ of 104, .* More from line \d+\./);
+  });
+
+  it("say why there is no code to show", async () => {
+    const { call, index, db } = await connect();
+    const root = project();
+    writeFileSync(path.join(root, "classes/Big.cls"), "x".repeat(MAX_APEX_LENGTH + 1));
+    await indexProject(index, root);
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Big" })).text).toContain("too large for the index to keep its code");
+    // An index built before the code was kept.
+    const snap = index.latest(index.snapshots()[0]!.source)!;
+    db.db.prepare("DELETE FROM component_body").run();
+    const old = await call("metadata_code", { context: "acme", type: "ApexClass", name: "PolicyService" });
+    expect(old.text).toContain(`The index of ${snap.source} has no code for PolicyService`);
+    expect(old.text).toContain("Index the source again");
+    // A file the scan could not read has no lines either: indexing again would not help.
+    db.db.prepare("UPDATE component SET attrs = '{}' WHERE name = 'PolicyService'").run();
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "PolicyService" })).text).toContain("could not be read when");
   });
 
   it("mask the error of a failed run", async () => {

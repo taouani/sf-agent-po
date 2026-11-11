@@ -88,6 +88,11 @@ export interface ParsedComponent {
    * error messages). Stored as the project holds it; masked before any tool returns it.
    */
   text: string;
+  /**
+   * The code of an Apex class or trigger, comments included, with the secrets written in its
+   * strings hidden: stored apart from `text` (it is not searched) and masked before any tool returns it.
+   */
+  body?: string;
 }
 
 /** An edge between two components, each named by type and full name. */

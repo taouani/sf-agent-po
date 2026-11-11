@@ -335,4 +335,19 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 13,
+    name: "apex code",
+    sql: `
+      -- The code of an Apex class or trigger, for an agent to read what the index cannot follow
+      -- (a query built from strings, a class named at run time). The secrets written in its
+      -- strings are hidden before it is stored; like component.text, it is masked whenever a
+      -- tool returns it. It goes with its
+      -- component, so with its snapshot.
+      CREATE TABLE component_body (
+        component  INTEGER PRIMARY KEY REFERENCES component(id) ON DELETE CASCADE,
+        body       TEXT NOT NULL
+      );
+    `,
+  },
 ];

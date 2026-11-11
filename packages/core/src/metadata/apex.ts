@@ -63,6 +63,83 @@ export function apexCode(src: string): string {
   return out.join("");
 }
 
+/**
+ * What replaces a secret written in code: a constant's name, which the masking rules take for
+ * a reference rather than a value, so it is shown as it is.
+ */
+export const HIDDEN_SECRET = "HIDDEN_SECRET";
+/** Names of what holds a secret: a variable, a constant, a header, a parameter, a JSON or XML key. */
+const SECRET_WORDS =
+  String.raw`pass(?:word|wd|phrase)?|pwd|pw\b|secret|token|credentials?|signature|authorization|auth\b|auth[_-]?(?:header|key|token)|cookie|sid\b|session[_-]?id|` +
+  String.raw`(?:api|private|access|secret|crypto|encryption|hmac|signing|subscription|aes|master|consumer|app|auth)[_-]?key`;
+/** A string just after such a name: `apiKey = '`, `setHeader('Authorization', '`, `put('password', '`, `cryptoKey = EncodingUtil.base64Decode('`. */
+const AFTER_SECRET_NAME = new RegExp(String.raw`(?:${SECRET_WORDS})[\w-]*'?\s*(?:=>?|,|:)\s*(?:[\w.]+\(\s*)*$`, "i");
+/** Inside a string: a URL or form parameter (`?apikey=...`), a JSON value (`"password":"..."`), an XML element. */
+const SECRET_PARAM = new RegExp(String.raw`((?:^|[?&;\s])[\w.-]*(?:${SECRET_WORDS}|key|sig)=)[^&#\s;]+`, "gi");
+const SECRET_JSON = new RegExp(String.raw`("[\w.-]*(?:${SECRET_WORDS})[\w.-]*"\s*:\s*")[^"]+`, "gi");
+const SECRET_XML = new RegExp(String.raw`(<([\w:.-]*(?:${SECRET_WORDS})[\w.-]*)>)[^<]+(?=</\2>)`, "gi");
+/** A credential after an auth scheme, anywhere in a string: "Bearer ...", "Authorization: Basic ...". */
+const SCHEME_TOKEN = /\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/-]{8,}=*/g;
+/** API names and other values that only name something: kept, they are what dynamic Apex needs. */
+const NAMES_SOMETHING = /(?:__(?:c|mdt|e|r|x|b|kav|share|history)$|^(?:callout|https?):|^\s*(?:Bearer|Basic|OAuth|Token)\s*$)/i;
+const NAMES_A_SECRET = new RegExp(SECRET_WORDS, "i");
+
+/** A string's value with what looks like a secret in it hidden, given the code just before it. */
+function hideInString(value: string, before: string): string {
+  if (value.length < 4) return value;
+  let hidden = value.replace(SECRET_PARAM, `$1${HIDDEN_SECRET}`).replace(SECRET_JSON, `$1${HIDDEN_SECRET}`).replace(SECRET_XML, `$1${HIDDEN_SECRET}`).replace(SCHEME_TOKEN, `$1${HIDDEN_SECRET}`);
+  // A parameter's name ("client_secret=") is kept; base64 padding ("...Q=") is not a name.
+  if (hidden !== value || NAMES_SOMETHING.test(value) || (/^(?:[a-z]+(?:[_-][a-z]+)*|[A-Z]+(?:[_-][A-Z]+)*)[=:]$/.test(value) && NAMES_A_SECRET.test(value))) return hidden;
+  const context = before.replace(/\s+/g, " ");
+  // A message about a secret ("Enter your password") is not one.
+  const message = /\s/.test(value.trim()) && NAMES_A_SECRET.test(value);
+  if (!message && AFTER_SECRET_NAME.test(context)) hidden = HIDDEN_SECRET;
+  // The password of "user:password", or the part after `':' +`, for Basic credentials built in code.
+  else if (/Blob\.valueOf\(\s*$/.test(context) && /^[^\s:]+:\S+$/.test(value)) hidden = value.replace(/:.*$/, `:${HIDDEN_SECRET}`);
+  else if (/':'\s*\+\s*$/.test(context)) hidden = HIDDEN_SECRET;
+  return hidden;
+}
+
+/** The strings of some text (code, or the text of a comment) with their secrets hidden. */
+function hideInStrings(text: string, code: boolean): string {
+  const out: string[] = [];
+  let i = 0;
+  let from = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (code && c === "/" && (text[i + 1] === "/" || text[i + 1] === "*")) {
+      // Commented-out code holds secrets too: the strings of a comment are read the same way.
+      const end = text[i + 1] === "/" ? text.indexOf("\n", i) : text.indexOf("*/", i + 2);
+      const stop = end < 0 ? text.length : text[i + 1] === "/" ? end : end + 2;
+      out.push(text.slice(from, i), hideInStrings(text.slice(i, stop), false));
+      i = from = stop;
+    } else if (c === "'") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== "'" && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
+      const stop = Math.min(j, text.length);
+      // The code before the string, a line or two back (a header name on the line above).
+      out.push(text.slice(from, i + 1), hideInString(text.slice(i + 1, stop), text.slice(Math.max(0, i - 160), i)));
+      from = stop;
+      i = stop + 1;
+    } else i++;
+  }
+  out.push(text.slice(from));
+  return out.join("");
+}
+
+/**
+ * Apex code with the secrets written in its strings hidden, before it is kept: a string just
+ * after something named like a secret (`String apiKey = '...'`, `setHeader('Authorization', '...')`),
+ * a secret parameter, JSON value or XML element inside a string, the credential after "Bearer" or
+ * "Basic", and the password of Basic credentials built in code. The strings of comments are read
+ * the same way. The rest stays, to be masked like any input when a tool returns it. This finds the
+ * usual forms, not every one: the masking rules look for known token formats on the way out.
+ */
+export function hideCodeSecrets(src: string): string {
+  const hidden = hideInStrings(src, true);
+  return hidden === src ? src : hidden;
+}
+
 /** The inline SOQL queries in code ([SELECT ...]), with where each starts and ends. */
 function soqlBlocks(code: string): { start: number; end: number; query: string }[] {
   const blocks: { start: number; end: number; query: string }[] = [];
@@ -205,12 +282,15 @@ const DYNAMIC: readonly (readonly [string, RegExp])[] = [
  * the object of the record or list it is given; `record.Field = x` writes a field and
  * `record.Field` reads it, for records whose type the code declares (the nearest declaration of
  * that name before the use); classes, flows and custom labels it names are linked. Comments are
- * not kept: they can name people.
+ * not read for links. The code itself is kept as `body`, with its secrets hidden, for an agent to
+ * read what the links cannot show (a query built from strings); it is masked whenever a tool returns it.
  */
 export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source: string, file: string): ParsedComponent {
   const refs: Ref[] = [];
   const attrs: Record<string, unknown> = { lines: source.split("\n").length };
   if (source.length > MAX_APEX_LENGTH) return { type, name, file, attrs: { ...attrs, tooLarge: true }, text: "" };
+  // Secrets in strings are hidden before the code is kept.
+  const body = hideCodeSecrets(source);
   // One space for every run of whitespace (blanked comments included): the patterns below
   // then never meet a long run, where backtracking would cost quadratic time.
   const blanked = apexCode(source);
@@ -417,5 +497,5 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     add({ kind: "calls", type: "ApexClass", name: c, known: true });
   }
 
-  return { type, name, file, attrs, refs, text: "" };
+  return { type, name, file, attrs, refs, text: "", body };
 }
