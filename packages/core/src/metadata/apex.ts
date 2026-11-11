@@ -204,7 +204,7 @@ export interface SoqlReads {
  * A query's object and the fields it names (selected, filtered, sorted). Subqueries in the
  * select list name child relationships and are left out; those after FROM are semi-joins, read
  * as queries of their own. TYPEOF clauses, bind expressions, functions, aliases and date
- * literals are not fields. A query built in a string (Database.query) is not read.
+ * literals are not fields. A query built in strings is read apart, by builtQueries.
  */
 export function soqlFields(query: string, depth = 0): SoqlReads {
   const text = withoutBinds(query.replace(/\s+/g, " ")).replace(/\btypeof\b.{0,2000}?\bend\b/gi, " ");
@@ -270,33 +270,55 @@ class Declarations {
 
 /** How much of a query built in strings is read: the rest is most likely not the query. */
 const MAX_BUILT_QUERY = 20_000;
-const MODIFIERS = /^(?:(?:final|static|private|public|protected|global|transient|override|virtual)\s+)*/i;
+/** What can come before an assignment: annotations, then modifiers. */
+const MODIFIERS = /^(?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)*(?:(?:final|static|private|public|protected|global|transient|override|virtual)\s+)*/i;
+/** A query's start: SELECT, a select list of names, then FROM and an object. Anchored, so linear. */
+const QUERY_START = /^\s*select\s+[\w.,\s()]*?\bfrom\s+[A-Za-z_]\w*/i;
+
+/** `blanked` with its inline queries ([SELECT ...]) blanked too: their strings are values, not queries. */
+function withoutInlineQueries(blanked: string): string {
+  const out: string[] = [];
+  let at = 0;
+  for (const m of blanked.matchAll(/\[\s*select\b/gi)) {
+    if (m.index < at) continue;
+    let d = 0;
+    let end = m.index;
+    for (; end < blanked.length; end++) {
+      if (blanked[end] === "[") d++;
+      else if (blanked[end] === "]" && --d === 0) break;
+    }
+    out.push(blanked.slice(at, m.index), blanked.slice(m.index, end + 1).replace(/[^\n]/g, " "));
+    at = end + 1;
+  }
+  out.push(blanked.slice(at));
+  return out.join("");
+}
 
 /**
  * The SOQL queries a class builds in strings, as far as its strings and string variables show
  * them: `'SELECT Id, ' + fieldList + ' FROM ' + OBJECT_NAME + ' WHERE ...'`, a constant
  * (`static final String OBJECT_NAME = 'Account'`), a variable built over several statements
  * (`q += ' WHERE ...'`). What the strings do not show (a list of fields joined at run time) is
- * left out. `blanked` is the code with comments and strings blanked; `literals` holds the text
- * of each string by where its opening quote is.
+ * left out. Only a text that starts as a query does (SELECT, names, FROM) is one: not a message
+ * that says "select ... from". `blanked` is the code with comments and strings blanked;
+ * `literals` holds the text of each string by where its opening quote is.
  */
 function builtQueries(blanked: string, literals: ReadonlyMap<number, string>): string[] {
   if (!literals.size) return [];
+  const code = withoutInlineQueries(blanked);
   const values = new Map<string, string>();
-  const texts: string[] = [];
+  const texts = new Set<string>();
+  /** The text of an expression, joined as Apex joins strings; what is not known is a space. */
   const pieces = (from: number, text: string) => {
-    const out: string[] = [];
+    let out = "";
     for (const m of text.matchAll(/'( *)'|(?<![\w.])([A-Za-z_]\w*)(?![\w(])/g)) {
-      if (m[1] !== undefined) out.push(literals.get(from + m.index) ?? "");
-      else {
-        const value = values.get(m[2]!.toLowerCase());
-        if (value !== undefined) out.push(value);
-      }
+      out += m[1] !== undefined ? (literals.get(from + m.index) ?? "") : (values.get(m[2]!.toLowerCase()) ?? " ");
+      if (out.length >= MAX_BUILT_QUERY) return out.slice(0, MAX_BUILT_QUERY);
     }
-    return out.join(" ").slice(0, MAX_BUILT_QUERY);
+    return out;
   };
   let at = 0;
-  for (const statement of blanked.split(/[;{}]/)) {
+  for (const statement of code.split(/[;{}]/)) {
     const start = at;
     at += statement.length + 1;
     if (!statement.includes("'") && !values.size) continue;
@@ -308,15 +330,18 @@ function builtQueries(blanked: string, literals: ReadonlyMap<number, string>): s
       const name = assign[1]!.toLowerCase();
       const value = pieces(offset + assign[0].length, body.slice(assign[0].length));
       const previous = values.get(name);
-      if (assign[2] === "=" && previous !== undefined) texts.push(previous);
-      values.set(name, assign[2] === "+=" && previous !== undefined ? `${previous} ${value}`.slice(0, MAX_BUILT_QUERY) : value);
-    } else if (statement.includes("'")) texts.push(pieces(start, statement));
+      if (assign[2] === "=" && previous !== undefined) texts.add(previous);
+      values.set(name, assign[2] === "+=" && previous !== undefined ? (previous + value).slice(0, MAX_BUILT_QUERY) : value);
+    } else if (statement.includes("'")) texts.add(pieces(start, statement));
   }
-  texts.push(...values.values());
+  for (const v of values.values()) texts.add(v);
   const queries = new Set<string>();
   for (const t of texts) {
-    const m = /\bselect\s[\s\S]*?\bfrom\s+[A-Za-z_]\w*/i.exec(t);
-    if (m) queries.add(t.slice(m.index).replace(/\s+/g, " ").trim());
+    // The query is where the text starts, or where a string in it starts with SELECT.
+    const begin = /(?:^|\()\s*select\s/i.exec(t);
+    if (!begin) continue;
+    const query = t.slice(begin.index).replace(/^\(/, "");
+    if (QUERY_START.test(query)) queries.add(query.replace(/\s+/g, " ").trim());
   }
   return [...queries];
 }
