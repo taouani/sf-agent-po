@@ -197,7 +197,7 @@ function nodeCheck(version: string, env: NodeJS.ProcessEnv): Omit<CheckResult, "
   if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
     results.push({
       level: "warn",
-      detail: "NODE_TLS_REJECT_UNAUTHORIZED=0 turns off certificate checks, so a machine in the middle could read the Jira and Confluence token.",
+      detail: "NODE_TLS_REJECT_UNAUTHORIZED=0 turns off certificate checks, so a machine in the middle could read what Node sends, the Jira and Confluence token included.",
       fix: "Remove NODE_TLS_REJECT_UNAUTHORIZED from your shell and your AI tool's MCP settings. Behind a proxy that inspects HTTPS, set NODE_OPTIONS=--use-system-ca instead, so Node trusts the certificates your system trusts.",
     });
   }

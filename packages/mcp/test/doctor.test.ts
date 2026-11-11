@@ -163,6 +163,19 @@ describe("doctor", () => {
     expect(byCheck(other, "Name model")[0]).toMatchObject({ level: "pass", detail: expect.stringContaining("loads it on first use") });
   });
 
+  it("warns when certificate checks are off, and only for the value Node acts on", async () => {
+    const home = tempDir();
+    const opts: DoctorOptions = { workspace: path.join(home, "w"), project: home, atlassianCalls: false, model: "files" };
+    const env = (value: string) => ({ PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), NODE_TLS_REJECT_UNAUTHORIZED: value });
+    const off = await runDoctor(opts, deps(home, { env: env("0") }));
+    expect(byCheck(off, "Node").map((r) => r.level)).toEqual(["pass", "warn"]);
+    expect(formatChecks(off)).toMatch(/PASS {2}Node: Node 24\.11\.0\nWARN {2}Node: NODE_TLS_REJECT_UNAUTHORIZED=0 .*\n {6}Fix: Remove NODE_TLS_REJECT_UNAUTHORIZED.*--use-system-ca/);
+    // Node turns the checks off only for "0".
+    for (const value of ["1", "false", ""]) {
+      expect(byCheck(await runDoctor(opts, deps(home, { env: env(value) })), "Node")).toHaveLength(1);
+    }
+  });
+
   it("fails clearly: old Node, a half-set Atlassian config, huggingface.co out of reach, a broken sf", async () => {
     const home = tempDir();
     const d = deps(home, {
