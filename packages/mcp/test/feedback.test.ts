@@ -265,6 +265,10 @@ describe("feedback_jira_diff", () => {
     expect(rows[2]).toMatchObject({ kind: "jira_diff", role: "", model: "Opus 5.5 on Copilot", artifactVersion: 1, details: { criteria: [1, 2], status: "done", majorEditShare: 0.3 } });
     expect(JSON.stringify(rows)).not.toMatch(/CONFIDENTIAL|Karim|Lea/);
     expect(contexts.get("acme")!.settings.model).toBe("Opus 5.5 on Copilot");
+    // A label the host passes is masked too.
+    await call("feedback_jira_diff", { context: "acme", artifactId: id, model: "Lea Martin's\nCopilot" });
+    expect(contexts.get("acme")!.settings.model).toMatch(/^\[PERSON_\d+\]'s Copilot$/);
+    await call("feedback_jira_diff", { context: "acme", artifactId: id, model: "Opus 5.5 on Copilot" });
 
     // Run again with a stricter threshold: the rows are replaced, not added to.
     const strict = await call("feedback_jira_diff", { context: "acme", artifactId: id, majorEditShare: 0.01 });
@@ -483,6 +487,31 @@ describe("feedback_review", () => {
     expect(rows(c, "rating")).toEqual(["context:dev:5"]);
   });
 
+  it("sums up the success measure, people's verdicts before the Jira diff's guesses", async () => {
+    const c = await reviewed();
+    expect((await c.call("feedback_summary", { context: "acme" })).text).toContain("Stories accepted without major edits: 4 of 4 stories with feedback (100%), against the 90% target: met.");
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S1: "major", S2: "", S3: "", S4: "" }, ratings: { solution: { value: 3 } } });
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+    const r = await c.call("feedback_summary", { context: "acme" });
+    expect(r.text).toContain('Context "acme":');
+    expect(r.text).toContain("3 of 4 stories with feedback (75%), against the 90% target: not met.");
+    expect(r.text).toContain("1 decided by people (a guess left as it is on the review page counts as theirs), 3 by the Jira diff's guess only.");
+    expect(r.text).toContain("- acme, high-level, solution: 3.0 (1 rating)");
+    // Another context's stories count with allContexts only.
+    await c.call("context_add_text", { context: "beta", title: "Call", content: "Lea Martin sets the flag.", kind: "meeting-notes" });
+    const b = backlog();
+    b.title = "Beta backlog";
+    const saved = await c.call("backlog_save", { context: "beta", backlog: b });
+    const betaId = /as (doc-\w+)/.exec(saved.text)![1]!;
+    await c.call("jira_publish", { context: "beta", artifactId: betaId, projectKey: "PORT" });
+    await c.call("feedback_jira_diff", { context: "beta", artifactId: betaId });
+    const all = await c.call("feedback_summary", { context: "acme", allContexts: true });
+    expect(all.text).toContain("All contexts:");
+    expect(all.text).toContain("7 of 8 stories with feedback");
+    expect(all.text).toMatch(/- beta, .*: 4 of 4/);
+    expect((await c.call("feedback_summary", { context: "nowhere" })).text).toContain('There is no context "nowhere"');
+  });
+
   it("masks the model label the user types, and asks for it only once", async () => {
     const c = await reviewed();
     c.page.answer = (req) => ({ ...asBrowser(req as FeedbackRequest), model: "Karim Benali's Copilot" });
@@ -492,6 +521,9 @@ describe("feedback_review", () => {
     expect(JSON.stringify(c.feedback.list("acme"))).not.toContain("Karim");
     await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "sa" });
     expect(shownLast(c).askModel).toBe(false);
+    // Published again: the backlog keeps the label it was published under, for the report.
+    await c.call("jira_publish", { context: "acme", artifactId: c.id, projectKey: "PORT" });
+    expect((c.contexts.getDocument("acme", c.id)!.metadata as any).jira.model).toMatch(/^\[PERSON_\d+\]'s Copilot$/);
   });
 
   it("records nothing when the user cancels, and refuses what cannot be reviewed", async () => {

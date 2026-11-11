@@ -37,6 +37,8 @@ export interface JiraMapping {
   /** Dependency links already created, as "BLOCKER>BLOCKED" issue keys. */
   links: string[];
   publishedVersion?: number;
+  /** The context's model label (masked) when the backlog was last published, for the report. */
+  model?: string;
 }
 
 export type Artifact = SourceDocument & { metadata: ArtifactMeta };

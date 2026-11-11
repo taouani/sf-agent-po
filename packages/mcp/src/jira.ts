@@ -439,11 +439,16 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design } = await plan(args, doc, meta, backlog, client);
         const noteText = notes.length ? `\n\n${notes.join("\n")}` : "";
         const version = doc.metadata.version;
+        // The report credits the stories to the model label set when they were published.
+        const publishedModel = () => {
+          const m = contexts.get(context)?.settings.model;
+          return typeof m === "string" && m.trim() ? m.trim() : undefined;
+        };
         const markPublished = () =>
           updateArtifactMeta(contexts, context, doc, (m) => ({
             // Saved again while this ran: the new version is still unpublished.
             status: m.version === version ? "published" : "changed",
-            jira: { ...mapping, publishedVersion: version },
+            jira: { ...mapping, publishedVersion: version, ...(publishedModel() && { model: publishedModel() }) },
           }));
 
         // A story as sent, masked, for the Jira diff to compare with.

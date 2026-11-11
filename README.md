@@ -341,7 +341,16 @@ The new code lives in npm workspaces under `packages/`:
   behind the backlog. Ratings are kept by the section's heading without its number, so
   renumbering a design keeps them. Only what changed is written, a cleared verdict or rating is
   removed, and a comment is kept until a new one replaces it. Comments and the model label,
-  which the page asks for once when the context has none, are masked before they are saved. The four agent workflows
+  which the page asks for once when the context has none, are masked before they are saved.
+  `feedback_summary` and `npx sf-agent-po@next report` give the success measure: the share of
+  published stories accepted without major edits against the 90% target, by context, model
+  label (the one set when the backlog was published) and workflow, and the average rating of
+  each section of each design's current version. Each story still in a published backlog
+  counts once, at the version last sent to Jira; a person's verdict counts before the Jira
+  diff's guess, the PO's first. `report --context <name>` keeps one context and `--csv <file>`
+  writes the same numbers to a CSV file readable only by you, outside the workspace. The
+  command opens the workspace read-only and reads only masked data, so it needs no vault key,
+  and nothing leaves the machine. The four agent workflows
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
