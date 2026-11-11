@@ -180,7 +180,7 @@ export function createServer(opts: ServerOptions): McpServer {
   registerBacklogTools(server, publishKit);
   registerAgentPrompts(server, publishKit, { guided: Boolean(opts.workflows) });
   if (opts.feedback) {
-    registerFeedbackTools(server, { contexts, masker, feedback: opts.feedback, atlassian: opts.atlassian, guard, contextName, ...(opts.workflows && { workflows: opts.workflows.runs }) });
+    registerFeedbackTools(server, { contexts, masker, feedback: opts.feedback, atlassian: opts.atlassian, reviewerFor, guard, contextName, ...(opts.workflows && { workflows: opts.workflows.runs }) });
   }
   if (opts.metadata) {
     registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });

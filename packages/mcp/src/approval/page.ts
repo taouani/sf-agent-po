@@ -1,7 +1,7 @@
 // The approval page's HTML: plain forms, no script, every value escaped.
 
-import { REQUIREMENT_PRIORITIES } from "@sf-agent-po/core";
-import type { ApprovalRequest } from "./server.js";
+import { REQUIREMENT_PRIORITIES, VERDICT_VALUES } from "@sf-agent-po/core";
+import { type ApprovalRequest, MAX_MODEL_LABEL, MAX_SECTION_COMMENT } from "./server.js";
 
 export const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -72,6 +72,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .choices .tag { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 .choices .row { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; }
 .choices .row label { padding: 0; flex: 1; }
+.choices .row .grow { flex: 1; }
+.choices li.group { padding: 8px 12px; font-weight: 600; background: color-mix(in srgb, var(--line) 30%, transparent); }
 select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 input[type="text"] { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
 `;
@@ -181,6 +183,54 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
     );
   }
 
+  if (req.kind === "feedback") {
+    const verdictNames: Record<string, string> = { accepted: "Accepted as written", minor: "Minor edit", major: "Major edit", rejected: "Rejected" };
+    const guessNames: Record<string, string> = { unchanged: "unchanged", minor: "minor edit", major: "major edit", deleted: "deleted or not visible" };
+    const roleNames: Record<string, string> = { po: "the Product Owner", sa: "the Solution Architect", dev: "the dev team" };
+    const stories = req.stories
+      .map((st, i) => {
+        const options = `<option value="">No verdict</option>${VERDICT_VALUES.map((v) => `<option value="${v}"${v === st.verdict ? " selected" : ""}>${verdictNames[v]}</option>`).join("")}`;
+        const issue = st.key ? (st.url && /^https:\/\//.test(st.url) ? ` <a href="${escapeHtml(st.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(st.key)}</a>` : ` ${escapeHtml(st.key)}`) : "";
+        const guess = st.guess ? `Jira diff: ${guessNames[st.guess]}${st.detail ? `, ${escapeHtml(st.detail)}` : ""}` : "Not compared with Jira yet";
+        const saved = st.saved ? ` · you said: ${verdictNames[st.saved]!.toLowerCase()}` : st.verdict ? " · filled in from the Jira diff" : "";
+        return (
+          `<li><div class="row"><span class="grow"><code>${escapeHtml(st.item)}</code>${issue} ${markPseudonyms(st.summary)}<br><span class="detail">${guess}${saved}</span></span>` +
+          `<select name="verdict-${i}" aria-label="Verdict on ${escapeHtml(st.item)}">${options}</select></div></li>`
+        );
+      })
+      .join("");
+    let design: string | undefined;
+    const sections = req.sections
+      .map((sec, i) => {
+        const head = sec.designId !== design ? `<li class="group">${markPseudonyms(sec.design)}</li>` : "";
+        design = sec.designId;
+        const options = `<option value="">Not rated</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === sec.rating ? " selected" : ""}>${n}</option>`).join("")}`;
+        const said = sec.comment ? `<br><span class="detail">Your comment: ${markPseudonyms(sec.comment)}</span>` : "";
+        return (
+          `${head}<li><div class="row"><span class="grow">${markPseudonyms(sec.title)}${said}</span><select name="rating-${i}" aria-label="Rating of ${escapeHtml(sec.title)}">${options}</select></div>` +
+          `<div class="row"><input type="text" name="note-${i}" maxlength="${MAX_SECTION_COMMENT}" autocomplete="off" aria-label="Comment on ${escapeHtml(sec.title)}" placeholder="${sec.comment ? "New comment (empty keeps yours)" : "Comment (optional)"}"></div></li>`
+        );
+      })
+      .join("");
+    const model = req.askModel
+      ? `<label for="model">Which model wrote this work?</label><input type="text" id="model" name="model" maxlength="${MAX_MODEL_LABEL}" autocomplete="off" placeholder="Opus 5.5 on Copilot"><p class="hint">Asked once for this project: the report compares models. Your host does not say which one it runs.</p>`
+      : "";
+    return layout(
+      `Review: ${req.title}`,
+      `<h1>How did this work turn out?</h1><p class="sub">${markPseudonyms(req.title)} · feedback from ${roleNames[req.role]}</p>` +
+        form(
+          model +
+            (req.stories.length
+              ? `<h2 class="label">Stories</h2><p class="hint">Where you have no verdict yet, the Jira diff's guess is filled in: saving confirms it. Choose "No verdict" to leave a story out.</p><ul class="choices">${stories}</ul>`
+              : "") +
+            (req.sections.length ? `<h2 class="label">Design sections, from 1 (poor) to 5 (used as written)</h2><ul class="choices">${sections}</ul>` : "") +
+            `<p class="hint">Comments are masked before they are saved.</p>`,
+          `<button class="primary" name="decision" value="approved">Save the feedback</button><button name="decision" value="rejected">Cancel</button>`,
+        ),
+      opts.nonce,
+    );
+  }
+
   return layout(
     `Check input: ${req.title}`,
     `<h1>Check what the agent will see</h1><p class="sub">${escapeHtml(req.title)} · hidden: ${escapeHtml(describeCounts(req.counts))}</p><p>Highlighted values replace personal data. Look for names, emails, phone numbers or secrets that are still in clear.</p><pre>${markPseudonyms(req.content)}</pre>` +
@@ -198,6 +248,8 @@ const OUTCOMES: Record<string, string> = {
   reused: "This link works once, and it was opened again, so the request was withdrawn. Ask the agent to try again.",
   elsewhere: "Open this page from the link the agent opened for you, in the same browser.",
   expired: "This request expired.",
+  saved: "Thanks. Your feedback is saved.",
+  cancelled: "Cancelled. Nothing was saved.",
 };
 
 /** The page once a request is decided or gone. */

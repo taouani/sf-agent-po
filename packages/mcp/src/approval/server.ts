@@ -10,7 +10,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { REQUIREMENT_PRIORITIES, type RequirementKind, type RequirementPriority } from "@sf-agent-po/core";
+import { type JiraDiffValue, REQUIREMENT_PRIORITIES, type RequirementKind, type RequirementPriority, VERDICT_VALUES, type VerdictValue } from "@sf-agent-po/core";
 import { donePage, requestPage } from "./page.js";
 
 /** A rectangle in image pixels (x1 and y1 exclusive), as the masking reports it. */
@@ -112,7 +112,58 @@ export interface RequirementItem {
   note: string;
 }
 
-export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest | ScopeRequest | RequirementsRequest;
+/**
+ * Feedback on published work (phase 5, D1): a verdict on each story, the Jira diff's guess
+ * filled in, and a rating from 1 to 5 for each design section. Values are in clear: the page
+ * is only in the user's browser.
+ */
+export interface FeedbackRequest {
+  kind: "feedback";
+  /** The backlog's or design's title. */
+  title: string;
+  /** Who gives it: chosen before the page opens, so it starts from their own feedback. */
+  role: FeedbackGiver;
+  /** The context has no model label yet: the page asks for it. */
+  askModel: boolean;
+  stories: FeedbackStoryItem[];
+  sections: FeedbackSectionItem[];
+}
+
+export interface FeedbackStoryItem {
+  /** The story id, "S1". */
+  item: string;
+  /** Its Jira issue, as published. */
+  key?: string;
+  url?: string;
+  summary: string;
+  /** The Jira diff's guess, and what it found ("12% of the words changed"). */
+  guess?: JiraDiffValue;
+  detail?: string;
+  /** This role's verdict saved before, if any. */
+  saved?: VerdictValue;
+  /** The verdict selected when the page opens: the saved one, or the guess's. */
+  verdict?: VerdictValue;
+}
+
+export interface FeedbackSectionItem {
+  /** Unique on the page: the design's id and the section's stable id. */
+  key: string;
+  designId: string;
+  /** The section's stable id. */
+  item: string;
+  /** The design's title. */
+  design: string;
+  title: string;
+  /** This role's rating saved before, and its comment, if any. */
+  rating?: number;
+  comment?: string;
+}
+
+/** Who gives feedback: the Product Owner, the Solution Architect or the dev team. */
+export const FEEDBACK_GIVERS = ["po", "sa", "dev"] as const;
+export type FeedbackGiver = (typeof FEEDBACK_GIVERS)[number];
+
+export type ApprovalRequest = PublishRequest | ImageRequest | InputRequest | ScopeRequest | RequirementsRequest | FeedbackRequest;
 
 /**
  * What the user decided.
@@ -137,6 +188,16 @@ export interface Decision {
   priorities?: Record<string, RequirementPriority>;
   /** For requirements: the requirements the user typed, one per line, in clear. */
   lines?: string[];
+  /** For feedback: who gave it. */
+  role?: FeedbackGiver;
+  /** For feedback: the verdict set on each story, by story id. */
+  verdicts?: Record<string, VerdictValue>;
+  /** For feedback: the stories set to "No verdict" and the sections set to "Not rated". */
+  cleared?: string[];
+  /** For feedback: the rating set on each section, by section key, with a new comment in clear. */
+  ratings?: Record<string, { value: number; comment?: string }>;
+  /** For feedback: the model label typed, in clear. */
+  model?: string;
   digest: string;
 }
 
@@ -167,6 +228,7 @@ const CHOICES: Record<ApprovalRequest["kind"], readonly NonNullable<Decision["ch
   input: ["approved", "rejected"],
   scope: ["approved", "rejected"],
   requirements: ["approved", "rejected"],
+  feedback: ["approved", "rejected"],
 };
 
 /** Objects a user can type in on a scope page. */
@@ -175,8 +237,14 @@ const API_NAME = /^[A-Za-z][\w.]{0,120}$/;
 /** Requirements a user can type in on a requirements page, and how long each can be. */
 export const MAX_TYPED_LINES = 50;
 export const MAX_LINE = 1_000;
+/** How long a model label typed on the feedback page can be. */
+export const MAX_MODEL_LABEL = 80;
+/** How long a comment on a design section can be. */
+export const MAX_SECTION_COMMENT = 500;
 
 const MAX_FORM = 64 * 1024;
+/** A feedback page with every comment full, in characters URL-encoding takes 9 bytes for (CJK). */
+const formLimit = (req: ApprovalRequest) => (req.kind === "feedback" ? Math.min(MAX_FORM + req.sections.length * 9 * MAX_SECTION_COMMENT, 4 * 1024 * 1024) : MAX_FORM);
 const MAX_MISSED = 200;
 const MAX_TIMEOUT = 2 ** 31 - 1;
 
@@ -233,6 +301,9 @@ interface Entry {
   timer: NodeJS.Timeout;
   done?: Decision["status"];
 }
+
+/** What the done page says: feedback is saved or cancelled, not approved or rejected. */
+const outcome = (e: Entry): string => (e.req.kind === "feedback" && e.done === "approved" ? "saved" : e.req.kind === "feedback" && e.done === "rejected" ? "cancelled" : e.done!);
 
 const token = (bytes = 24) => randomBytes(bytes).toString("base64url");
 
@@ -358,7 +429,7 @@ export class ApprovalServer {
       if (req.method !== "GET" || entry.req.kind !== "image" || entry.done) return send(404, "Not found.", "text/plain");
       return send(200, entry.req.image, "image/png");
     }
-    if (req.method === "GET") return send(200, entry.done ? donePage(entry.done, nonce) : requestPage(entry.req, { action, csrf: entry.csrf, imageUrl: `${action}/image.png`, nonce }));
+    if (req.method === "GET") return send(200, entry.done ? donePage(outcome(entry), nonce) : requestPage(entry.req, { action, csrf: entry.csrf, imageUrl: `${action}/image.png`, nonce }));
     if (req.method !== "POST") return send(405, "Method not allowed.", "text/plain");
 
     // A form posted from another site is refused: browsers say where a post comes from.
@@ -366,9 +437,9 @@ export class ApprovalServer {
     const site = req.headers["sec-fetch-site"];
     const ownOrigin = from === `http://127.0.0.1:${this.port}` || from === `http://localhost:${this.port}` || (from === "null" && site === "same-origin");
     if (!ownOrigin || (site && site !== "same-origin")) return send(403, "This form can only be sent from its own page.", "text/plain");
-    if (entry.done) return send(409, donePage(entry.done, nonce));
+    if (entry.done) return send(409, donePage(outcome(entry), nonce));
 
-    const form = await readForm(req);
+    const form = await readForm(req, formLimit(entry.req));
     if (!form) return send(413, "The form is too large.", "text/plain");
     if (!same(form.get("csrf") ?? undefined, entry.csrf)) return send(403, "This form is out of date. Reload the page.", "text/plain");
     const choice = form.get("decision") as NonNullable<Decision["choice"]>;
@@ -395,6 +466,31 @@ export class ApprovalServer {
       entry.finish({ status: choice, choice, missed: [], selected, priorities, lines, ...(comment ? { comment } : {}) });
       return send(303, "", "text/plain", { location: action });
     }
+    if (entry.req.kind === "feedback") {
+      if (choice === "rejected") {
+        entry.finish({ status: choice, choice, missed: [] });
+        return send(303, "", "text/plain", { location: action });
+      }
+      // Rows are read by their place on the page: only values it offered count.
+      const verdicts: Record<string, VerdictValue> = {};
+      const cleared: string[] = [];
+      entry.req.stories.forEach((st, i) => {
+        const v = form.get(`verdict-${i}`);
+        if (v === "") cleared.push(st.item);
+        else if (v && (VERDICT_VALUES as readonly string[]).includes(v)) verdicts[st.item] = v as VerdictValue;
+      });
+      const ratings: Record<string, { value: number; comment?: string }> = {};
+      entry.req.sections.forEach((sec, i) => {
+        const v = form.get(`rating-${i}`);
+        if (v === "") cleared.push(sec.key);
+        if (!v || !/^[1-5]$/.test(v)) return;
+        const said = form.get(`note-${i}`)?.trim().slice(0, MAX_SECTION_COMMENT);
+        ratings[sec.key] = { value: Number(v), ...(said ? { comment: said } : {}) };
+      });
+      const model = entry.req.askModel ? form.get("model")?.trim().slice(0, MAX_MODEL_LABEL) || undefined : undefined;
+      entry.finish({ status: choice, choice, missed: [], role: entry.req.role, verdicts, cleared, ratings, ...(model ? { model } : {}) });
+      return send(303, "", "text/plain", { location: action });
+    }
     // Values still in clear come first: unless the input is rejected, it is checked again once they are hidden.
     entry.finish({ status: missed.length && choice !== "rejected" ? "revise" : choice, choice, missed, ...(comment ? { comment } : {}) });
     // Post, then redirect: a reload does not send the form again.
@@ -402,13 +498,13 @@ export class ApprovalServer {
   }
 }
 
-/** A url-encoded form body, or undefined if it is larger than MAX_FORM. */
-async function readForm(req: IncomingMessage): Promise<URLSearchParams | undefined> {
+/** A url-encoded form body, or undefined if it is larger than `limit`. */
+async function readForm(req: IncomingMessage, limit: number): Promise<URLSearchParams | undefined> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_FORM) return undefined;
+    if (size > limit) return undefined;
     chunks.push(chunk);
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
