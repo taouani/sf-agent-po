@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
 import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
-import { readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
+import { mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
@@ -22,10 +22,15 @@ const manifest = (types: Record<string, string[]>) =>
 function fakeSf(
   org: Record<string, string[]>,
   calls: { args: string[]; cwd?: string }[] = [],
-  behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean } = {},
+  behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean; dates?: Record<string, string>; asked?: { type: string; members: string[] }[][] } = {},
 ): SfRunner {
   return async (args, opts = {}) => {
     calls.push({ args, cwd: opts.cwd });
+    if (args[0] === "org" && args[1] === "list" && args[2] === "metadata") {
+      if (!behaviour.dates) throw new Error("sf org list failed: not in this fake");
+      const type = args[args.indexOf("--metadata-type") + 1]!;
+      return (org[type] ?? []).map((m) => ({ fullName: m, type, lastModifiedDate: behaviour.dates![`${type}:${m}`] ?? "2026-11-01T00:00:00.000Z" }));
+    }
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
     // Like the real CLI, which refuses both commands outside a Salesforce project.
     if (args[0] === "project" && !existsSync(path.join(opts.cwd!, "sfdx-project.json"))) throw new Error("sf project failed: RequiresProjectError");
@@ -35,6 +40,7 @@ function fakeSf(
     }
     if (args[1] === "retrieve") {
       const wanted = readManifest(readFileSync(path.join(opts.cwd!, args[args.indexOf("--manifest") + 1]!), "utf8"), Object.keys(org)).entries;
+      behaviour.asked?.push(wanted);
       const out = path.join(opts.cwd!, args[args.indexOf("--target-metadata-dir") + 1]!);
       if (behaviour.limit && wanted.reduce((n, e) => n + e.members.length, 0) > behaviour.limit) throw new Error("sf project retrieve failed: LIMIT_EXCEEDED: Too many files");
       if (behaviour.empty) {
@@ -69,7 +75,11 @@ function fakeSf(
           }
           if (e.type === "Profile") {
             const objs = wanted.find((w) => w.type === "CustomObject")?.members ?? [];
-            write(`profiles/${m}.profile`, `<?xml version="1.0"?><Profile><custom>false</custom>${objs.map((o) => `<objectPermissions><object>${o}</object><allowRead>true</allowRead></objectPermissions>`).join("")}<userLicense>Salesforce</userLicense></Profile>`);
+            const classes = wanted.find((w) => w.type === "ApexClass")?.members ?? [];
+            write(
+              `profiles/${m}.profile`,
+              `<?xml version="1.0"?><Profile><custom>false</custom>${objs.map((o) => `<objectPermissions><object>${o}</object><allowRead>true</allowRead></objectPermissions>`).join("")}${classes.map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<userLicense>Salesforce</userLicense></Profile>`,
+            );
           }
         }
       }
@@ -141,9 +151,11 @@ describe("retrieveOrgMetadata", () => {
     expect(retrieve.args).toEqual(["project", "retrieve", "start", "--manifest", "part-1.xml", "--target-metadata-dir", "part-1", "--unzip", "--wait", "60", "--target-org", "dev"]);
     // Only relative paths reach the CLI: the workspace path can hold the user's name.
     for (const c of calls) for (const a of c.args) expect(path.isAbsolute(a)).toBe(false);
-    expect(readdirSync(path.join(first.dir, "part-1"))).toEqual(["unpackaged"]);
-    // The work folder's project file is gone: it would steer the scan to an empty package folder.
-    expect(readdirSync(first.dir)).toEqual(["part-1"]);
+    // Every file is in one tree, at the same path from run to run; the parts and the project
+    // file (which would steer the scan to an empty package folder) are gone.
+    expect(readdirSync(first.dir)).toEqual(["metadata"]);
+    expect(readdirSync(path.join(first.dir, "metadata")).sort()).toEqual(["classes", "email", "objects"].filter((d) => existsSync(path.join(first.dir, "metadata", d))));
+    expect(existsSync(path.join(first.dir, "metadata", "classes", "RenewalService.cls"))).toBe(true);
     expect(current(dir)).toBe(path.basename(first.dir));
     // A second retrieval replaces the first, without renaming a folder, and the first goes.
     const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
@@ -177,6 +189,86 @@ describe("retrieveOrgMetadata", () => {
   });
 });
 
+describe("retrieveOrgMetadata, from one run to the next", () => {
+  const retrieves = (calls: { args: string[]; cwd?: string }[]) => calls.filter((c) => c.args[1] === "retrieve").length;
+
+  it("retrieves only what changed, keeps the rest, merges profiles and removes what was deleted", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["A", "B", "C"], CustomObject: ["Policy__c"], CustomField: ["Policy__c.Status__c"], Profile: ["Admin"] };
+    const dates: Record<string, string> = {};
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const asked: { type: string; members: string[] }[][] = [];
+    const sf = fakeSf(org, calls, { dates, asked });
+    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(first.incremental).toBeUndefined();
+    const tree = (r: { dir: string }) => path.join(r.dir, "metadata");
+    const profile = (r: { dir: string }) => readFileSync(path.join(tree(r), "profiles", "Admin.profile"), "utf8");
+    expect(profile(first).match(/<classAccesses>/g)).toHaveLength(3);
+
+    // Nothing changed: only the profile is retrieved, and it keeps its access to everything.
+    calls.length = 0;
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(second.incremental).toEqual({ retrieved: 1, deleted: 0 });
+    expect(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")).toContain('"layout":2');
+    expect(readdirSync(path.join(tree(second), "classes")).sort()).toEqual(["A.cls", "A.cls-meta.xml", "B.cls", "B.cls-meta.xml", "C.cls", "C.cls-meta.xml"]);
+    expect(profile(second).match(/<classAccesses>/g)).toHaveLength(3);
+    expect(profile(second).match(/<objectPermissions>/g)).toHaveLength(1);
+    expect(retrieves(calls)).toBe(1);
+
+    // B changed, C was deleted, and the object got a field: those are retrieved or removed.
+    dates["ApexClass:B"] = "2026-11-09T10:00:00.000Z";
+    org.ApexClass = ["A", "B"];
+    org.CustomField = ["Policy__c.Status__c", "Policy__c.Premium__c"];
+    asked.length = 0;
+    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(third.incremental).toEqual({ retrieved: 1 + 1 + 2 + 1, deleted: 1 });
+    // B, the object with all its fields, and the profile; not A.
+    expect(asked).toEqual([
+      [
+        { type: "ApexClass", members: ["B"] },
+        { type: "CustomObject", members: ["Policy__c"] },
+        { type: "CustomField", members: ["Policy__c.Premium__c", "Policy__c.Status__c"] },
+        { type: "Profile", members: ["Admin"] },
+      ],
+    ]);
+    expect(readdirSync(path.join(tree(third), "classes")).sort()).toEqual(["A.cls", "A.cls-meta.xml", "B.cls", "B.cls-meta.xml"]);
+    expect(readFileSync(path.join(tree(third), "objects", "Policy__c.object"), "utf8")).toContain("Premium__c");
+    // The profile keeps A, has B from this run, and lost the deleted C.
+    expect([...profile(third).matchAll(/<apexClass>(\w+)<\/apexClass>/g)].map((m) => m[1]).sort()).toEqual(["A", "B"]);
+    // The folders of earlier runs are gone.
+    expect(readdirSync(dir).sort()).toEqual([path.basename(third.dir), `${ORG_ID}.json`].sort());
+  });
+
+  it("retrieves everything when asked, a week after the last full run, or for a new profile", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["A", "B"], Profile: ["Admin"] };
+    const sf = fakeSf(org, [], { dates: {} });
+    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeDefined();
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, full: true })).incremental).toBeUndefined();
+    const file = path.join(dir, `${ORG_ID}.json`);
+    const pointer = JSON.parse(readFileSync(file, "utf8")) as { fullAt: string };
+    writeFileSync(file, JSON.stringify({ ...pointer, fullAt: new Date(Date.now() - 8 * 86_400_000).toISOString() }));
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+    org.Profile = ["Admin", "Sales"];
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+    // A retrieval by an earlier version (no layout) is redone in full too.
+    writeFileSync(file, JSON.stringify({ folder: (JSON.parse(readFileSync(file, "utf8")) as { folder: string }).folder, retrievedAt: pointer.fullAt }));
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+  });
+
+  it("merges access: what was retrieved wins, the rest of the last copy stays, changed components lose theirs", () => {
+    const last = "<Profile><classAccesses><apexClass>A</apexClass><enabled>true</enabled></classAccesses><classAccesses><apexClass>Gone</apexClass><enabled>true</enabled></classAccesses><fieldPermissions><field>Policy__c.Old__c</field></fieldPermissions><userLicense>Salesforce</userLicense></Profile>";
+    const now = "<Profile><classAccesses><apexClass>A</apexClass><enabled>false</enabled></classAccesses><userLicense>Salesforce</userLicense></Profile>";
+    const merged = mergeAccess(last, now, (type, member) => (type === "ApexClass" && member === "Gone") || (type === "CustomField" && member.startsWith("Policy__c.")));
+    expect(merged.match(/<classAccesses>/g)).toHaveLength(1);
+    expect(merged).toContain("<enabled>false</enabled>");
+    expect(merged).not.toContain("Gone");
+    expect(merged).not.toContain("Old__c");
+    expect(mergeAccess(last, now, () => false)).toContain("Gone");
+  });
+});
+
 describe("retrieveOrgMetadata, when things go wrong", () => {
   it("reports what the org could not return, and fails when it returns nothing", async () => {
     const dir = tmp();
@@ -199,7 +291,7 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     expect(r.parts).toBe(2);
     expect(calls.some((c) => c.args[1] === "display")).toBe(false);
     expect(calls.find((c) => c.args[1] === "generate")!.args).toContain("unlocked");
-    expect(readdirSync(path.join(r.dir, "part-2"), { recursive: true }).some((f) => String(f).endsWith(".cls"))).toBe(true);
+    expect(readdirSync(path.join(r.dir, "metadata", "classes")).filter((f) => f.endsWith(".cls")).sort()).toEqual(["A.cls", "B.cls", "C.cls", "D.cls"]);
   });
 
   it("removes the folders of runs that died, and of earlier versions, but not other orgs'", async () => {

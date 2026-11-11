@@ -311,7 +311,15 @@ The new code lives in npm workspaces under `packages/`:
   `npx sf-agent-po@next index --project <folder>` or `--org <alias>` fills the workspace's
   metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
   only; the types the index uses, in parts of at most 9,000 files, with profiles merged back),
-  under `<workspace>/orgs/<org id>-<suffix>`, the last complete one named by `<org id>.json`. A project is named by its folder and a hash of its path,
+  under `<workspace>/orgs/<org id>-<suffix>/metadata`, the last complete one named by
+  `<org id>.json` with each component's last-modified date (`sf org list metadata`). The next
+  run retrieves only what changed since (an object with all its children and layouts), into a
+  copy of the last retrieval, and removes what was deleted. Profiles and permission sets are
+  retrieved every time, since Salesforce does not date a change of access, and merged into
+  their last copy: access to components retrieved again comes from this run, the rest stays.
+  Labels, workflows and email templates are retrieved every time too. Everything is retrieved
+  again with `--full`, a week after the last full run, or when a profile or permission set is
+  new. A project is named by its folder and a hash of its path,
   an org by its id. `BackgroundIndexer` runs the same without blocking, for the server, whose
   metadata tools let the agents index and read the org: `metadata_index` (in the background),
   `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,

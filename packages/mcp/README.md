@@ -38,8 +38,10 @@ npx -y sf-agent-po@next index --org <alias or username>
 npx -y sf-agent-po@next index --project <folder>
 ```
 
-A run parses only the files that changed since the last one (an org is still retrieved in
-full), and each file at least once a week and after an upgrade; `--full` parses every file.
+A run reads only what changed since the last one: an org's components whose date changed
+(with profiles and permission sets every time), and the files whose content changed. An org
+is retrieved in full once a week, and every file parsed again at least weekly and after an
+upgrade; `--full` does both now.
 
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
 holds the masked inputs and the agents' work. Its masking key is kept in your OS keychain,
