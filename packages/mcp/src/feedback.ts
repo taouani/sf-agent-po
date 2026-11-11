@@ -25,7 +25,7 @@ import { itemHash, labelsFor, oneLine, storyFields } from "./jira.js";
 import { FEEDBACK_GIVERS, type FeedbackGiver, type FeedbackRequest, requestDigest } from "./approval/server.js";
 import type { DetailedDesign } from "./design/detailed-schema.js";
 import type { Reviewer } from "./inputs.js";
-import { feedbackReport, formatReport, TARGET_ACCEPTED } from "./report.js";
+import { feedbackReport, formatReport, reportScope, TARGET_ACCEPTED } from "./report.js";
 import type { CallContext } from "./review.js";
 
 type Text = { content: { type: "text"; text: string }[] };
@@ -241,7 +241,9 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
       await client.getProject(mapping.projectKey).catch((err: unknown) => {
         throw new Error(`Jira refused to show project ${mapping.projectKey}${err instanceof AtlassianError ? ` (HTTP ${err.status})` : ""}: check that the login can browse it. Nothing was recorded.`);
       });
-      if (model !== undefined || majorEditShare !== undefined) contexts.updateSettings(context, { ...(model !== undefined && { model: model.trim() }), ...(majorEditShare !== undefined && { majorEditShare }) });
+      // The label is free text from the host: masked and kept on one line, like the review page's.
+      const label0 = model !== undefined ? oneLine((await masker.maskOutput(context, model)).text).slice(0, 120) : undefined;
+      if (label0 || majorEditShare !== undefined) contexts.updateSettings(context, { ...(label0 && { model: label0 }), ...(majorEditShare !== undefined && { majorEditShare }) });
       const threshold = majorShare(contexts, context);
       const backlog = meta.backlog;
       const titles = new Map(contexts.documents(context).filter((d) => d.masked).map((d) => [d.id, d.title]));
@@ -536,7 +538,8 @@ export function registerFeedbackSummary(server: McpServer, kit: Pick<FeedbackKit
       title: "Summarise feedback",
       description:
         "The success measure: the share of published stories accepted without major edits, against the 90% target, by context, model label and workflow, and the average rating " +
-        "of each design section. A person's verdict counts before the Jira diff's guess (the Product Owner's first). Read from what feedback_jira_diff and feedback_review recorded; " +
+        "of each design section. Each story still in a published backlog counts once, at the version last sent to Jira; a person's verdict counts before the Jira diff's guess " +
+        "(the Product Owner's first). Read from what feedback_jira_diff and feedback_review recorded; " +
         "the same numbers come from `npx sf-agent-po@next report`, which can write them to a CSV file.",
       inputSchema: {
         context: kit.contextName,
@@ -547,7 +550,10 @@ export function registerFeedbackSummary(server: McpServer, kit: Pick<FeedbackKit
     kit.guard(async ({ context, allContexts }: { context: string; allContexts?: boolean }) => {
       const names = allContexts ? kit.contexts.list().map((c) => c.name) : [context];
       if (!allContexts && !kit.contexts.get(context)) throw new Error(`There is no context "${context}".`);
-      const report = feedbackReport(names.flatMap((n) => kit.feedback.list(n)));
+      const report = feedbackReport(
+        names.flatMap((n) => kit.feedback.list(n)),
+        reportScope(kit.contexts, kit.feedback, names),
+      );
       return text(`${allContexts ? "All contexts" : `Context "${context}"`}:\n\n${formatReport(report)}`);
     }),
   );
