@@ -7,6 +7,7 @@ import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, readApex, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer } from "../src/index.js";
+import { changeEventOf } from "../src/impact-tools.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -89,6 +90,15 @@ function project(): string {
   w("classes/PartnerClient.cls-meta.xml", "<ApexClass/>");
   w("classes/ErpClient.cls", "public class ErpClient { void x(HttpRequest r) { r.setEndpoint('callout:ERP/orders'); } }");
   w("classes/ErpClient.cls-meta.xml", "<ApexClass/>");
+  w("remoteSiteSettings/Old.remoteSite", `<?xml version="1.0"?><RemoteSiteSetting><url>https://old.example.com</url><isActive>false</isActive></RemoteSiteSetting>`);
+  w("classes/OldClient.cls", "public class OldClient { void x(HttpRequest r) { r.setEndpoint('https://old.example.com/x'); } }");
+  w("classes/OldClient.cls-meta.xml", "<ApexClass/>");
+  // A report type that offers Status__c, and a report on it that shows only Notes__c.
+  w(
+    "reportTypes/Policies.reportType",
+    `<?xml version="1.0"?><ReportType><baseObject>Policy__c</baseObject><label>Policies</label><sections><columns><field>Status__c</field><table>Policy__c</table></columns><columns><field>Notes__c</field><table>Policy__c</table></columns></sections></ReportType>`,
+  );
+  w("reports/Sales/On_Type.report", `<?xml version="1.0"?><Report><name>On type</name><reportType>Policies__c</reportType><columns><field>Policy__c$Notes__c</field></columns></Report>`);
   w("connectedApps/Mobile.connectedApp", `<?xml version="1.0"?><ConnectedApp><label>Mobile</label><oauthConfig><callbackUrl>https://app.example.com/cb</callbackUrl><scopes>Api</scopes></oauthConfig></ConnectedApp>`);
   return root;
 }
@@ -136,6 +146,12 @@ describe("dynamic Apex", () => {
 });
 
 describe("metadata_impact", () => {
+  it("names the change event of a standard and a custom object", () => {
+    expect(changeEventOf("Account")).toBe("AccountChangeEvent");
+    expect(changeEventOf("Policy__c")).toBe("Policy__ChangeEvent");
+    expect(changeEventOf("ns__Policy__C")).toBe("ns__Policy__ChangeEvent");
+  });
+
   it("lists what depends on a field and flags the weak links", async () => {
     const { call } = await connect();
     const r = await call("metadata_impact", { context: "acme", changes: [{ type: "CustomField", name: "Policy__c.Status__c" }] });
@@ -158,15 +174,33 @@ describe("metadata_impact", () => {
   it("names the reports and dashboards on a field, and the outside systems that receive it", async () => {
     const { call } = await connect();
     const r = await call("metadata_impact", { context: "acme", changes: [{ type: "CustomField", name: "Policy__c.Status__c" }] });
-    expect(r.text).toMatch(/Reports and dashboards \(1 report\(s\), 1 dashboard\(s\)\) show, group or filter on it: check[^\n]*First 2: Report [^;]+; Dashboard [^\n]+ \(through a report\)\./);
+    // Only what uses it on the first link: the report built on the report type, which shows another field, is two links away.
+    expect(r.text).toContain('Reports and report types that show, group, filter on or offer it (1 report(s), 1 report type(s)): check their columns and filters still make sense. They are: Report Sales/Pipeline "[PERSON_1] pipeline"; ReportType Policies "Policies".');
+    expect(r.text).toContain("Two links away (1 report(s), 1 dashboard(s)): dashboards that show those reports, reports built on those report types");
     // Reports are counted apart, not in the list of what depends on it.
     expect(r.text).not.toMatch(/Depends on it[^#]*- Report /);
     expect(r.text).toContain("An outside system receives it through 1 outbound message(s) (Policy__c.Notify_ERP to erp.example.com)");
     expect(r.text).toContain("Change data capture publishes Policy__c changes (channel ChangeEvents)");
     expect(r.text).not.toContain("Karim");
 
+    // Said once per object, and only for what change events carry.
+    const several = await call("metadata_impact", {
+      context: "acme",
+      changes: [
+        { type: "ValidationRule", name: "Policy__c.Status_Required" },
+        { type: "CustomField", name: "Policy__c.New__c", change: "add" },
+        { type: "CustomField", name: "Policy__c.Notes__c" },
+      ],
+    });
+    expect(several.text.match(/Change data capture publishes/g)).toHaveLength(1);
+    expect(several.text.indexOf("Change data capture")).toBeGreaterThan(several.text.indexOf("## Add CustomField Policy__c.New__c"));
+
     const site = await call("metadata_impact", { context: "acme", changes: [{ type: "RemoteSiteSetting", name: "Partner", change: "delete" }] });
-    expect(site.text).toContain("1 Apex class(es) call api.partner.example with an endpoint written in the code, not through a named credential: ApexClass PartnerClient.");
+    expect(site.text).toContain("1 Apex class(es) or trigger(s) call api.partner.example with an endpoint written in the code, which this setting allows: their callouts fail once it is deleted. ApexClass PartnerClient.");
+    // An inactive setting allows nothing, and a named credential does not allow a URL written in Apex.
+    for (const [type, name] of [["RemoteSiteSetting", "Old"], ["NamedCredential", "ERP"]]) {
+      expect((await call("metadata_impact", { context: "acme", changes: [{ type, name, change: "delete" }] })).text).not.toContain("endpoint written in the code");
+    }
   });
 
   it("summarizes where the org connects, and finds what calls a host", async () => {
@@ -174,14 +208,17 @@ describe("metadata_impact", () => {
     const r = await call("metadata_summary", { context: "acme" });
     const section = r.text.slice(r.text.indexOf("Integrations"));
     expect(section).toContain("- api.partner.example: through remote site setting Partner; an endpoint written in Apex; from ApexClass PartnerClient\n");
-    expect(section).toContain("- direct.example.org: through an endpoint written in Apex; from ApexClass PartnerClient [no remote site setting or named credential in the source allows this host]");
+    expect(section).toContain("- direct.example.org: through an endpoint written in Apex; from ApexClass PartnerClient [no active remote site setting in the source allows this host for the endpoint written in Apex]");
+    expect(section).toContain("- old.example.com: through remote site setting Old (inactive); an endpoint written in Apex; from ApexClass OldClient [no active remote site setting");
+    // The busiest host first.
+    expect(section.indexOf("- erp.example.com")).toBeLessThan(section.indexOf("- api.partner.example"));
     expect(section).toMatch(/- erp\.example\.com: through named credential ERP; outbound message Policy__c\.Notify_ERP \(sends 1 field\(s\) of Policy__c\); from [^\n]*ApexClass ErpClient/);
     expect(section).toMatch(/- erp\.example\.com: [^\n]*ExternalServiceRegistration Orders "Orders"[^\n]*Flow Send_Order \(through one of these\)/);
     expect(section).toContain('Connected apps (systems that sign in to the org):\n- ConnectedApp Mobile "Mobile": scopes Api; returns to app.example.com');
     expect(section).toContain("Event channels (what subscribers outside the org receive):\n- ChangeEvents (change data capture): Policy__ChangeEvent");
     expect(section).not.toContain("/hook");
 
-    const found = await call("metadata_search", { context: "acme", query: "erp.example.com" });
+    const found = await call("metadata_search", { context: "acme", query: "ERP.Example.com" });
     expect(found.text).toContain("- NamedCredential ERP");
     expect(found.text).toContain("- WorkflowOutboundMessage Policy__c.Notify_ERP");
   });
