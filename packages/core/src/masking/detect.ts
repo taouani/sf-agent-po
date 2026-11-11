@@ -41,7 +41,8 @@ export const MODEL_CACHE_LENGTH = 200;
  * The model with its answers kept for short texts, the most recently used first: metadata
  * keys, labels and Jira fields come back again and again, and the model gives the same text
  * the same answer, so a kept answer changes nothing but the time. A failed run is not kept.
- * The texts stay in this process's memory only, as they already were while being masked.
+ * Up to that many short texts stay in this process's memory, across contexts, until it exits;
+ * they are never written anywhere.
  */
 export function cachedDetector(model: EntityDetector, entries = MODEL_CACHE_ENTRIES, length = MODEL_CACHE_LENGTH): EntityDetector {
   const kept = new Map<string, Promise<Span[]>>();

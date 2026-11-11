@@ -208,7 +208,7 @@ The new code lives in npm workspaces under `packages/`:
   `loadDetectionModel` downloads the model on first use (138 MB, checked against pinned
   SHA-256 checksums, cached in the user's cache folder or `SF_AGENT_PO_MODEL_DIR`) and runs it
   on the WebAssembly build of ONNX Runtime that the package ships in `vendor/` (no native code).
-  The model's answers for short texts (up to 200 characters, the last 5,000) are kept in
+  The model's answers for short texts (up to 200 characters, the 5,000 most recently used) are kept in
   memory, so metadata keys, labels and Jira fields that come back are not run again; the model
   gives the same text the same answer, so this changes only the time. (Running short texts
   together was tried in #76: about half as fast, and it changed detections.)

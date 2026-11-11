@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPolicy,
   cachedDetector,
+  MODEL_CACHE_LENGTH,
   cnIdValid,
   detect,
   compileDictionary,
@@ -315,5 +316,34 @@ describe("the model's kept answers", () => {
     await expect(cached("Ada")).rejects.toThrow("model down");
     fail = false;
     await expect(cached("Ada")).resolves.toEqual([]);
+  });
+
+  it("fails every caller of a failed run, and a late failure does not drop a newer answer", async () => {
+    const runs: { reject: (e: Error) => void; resolve: (s: Span[]) => void }[] = [];
+    const cached = cachedDetector(() => new Promise<Span[]>((resolve, reject) => runs.push({ resolve, reject })), 1);
+    const a1 = cached("Ada");
+    const a2 = cached("Ada");
+    // "Bob" pushes "Ada" out; "Ada" asked again starts a second run.
+    const b = cached("Bob");
+    const a3 = cached("Ada");
+    expect(runs).toHaveLength(3);
+    runs[0]!.reject(new Error("model down"));
+    await expect(a1).rejects.toThrow("model down");
+    await expect(a2).rejects.toThrow("model down");
+    runs[1]!.resolve([]);
+    runs[2]!.resolve([{ start: 0, end: 3, type: "PER", source: "ner" }]);
+    await b;
+    await expect(a3).resolves.toHaveLength(1);
+    await expect(cached("Ada")).resolves.toHaveLength(1);
+    expect(runs).toHaveLength(3);
+  });
+
+  it("keeps a text of the longest kept length, and not one longer", async () => {
+    const { calls, model } = counting();
+    const cached = cachedDetector(model);
+    const kept = "x".repeat(MODEL_CACHE_LENGTH);
+    const longer = `${kept}x`;
+    for (const t of [kept, kept, longer, longer]) await cached(t);
+    expect(calls).toEqual([kept, longer, longer]);
   });
 });

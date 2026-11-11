@@ -176,7 +176,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 - **The index cannot see inside dynamic code.** Queries built from strings, classes named at run time and describe calls are flagged as weak links, not followed. Formula chains, report usage and outside integrations are not traced yet (phase 5).
 - **Untyped Apex field uses are linked by name.** A use such as `getAccount().Foo__c` is linked only when one object has a field of that name, or, in an email template, the recipient types (Contact, Lead, User) list it.
 - **Old indexes miss the #58 links.** An index built before next.6 has no Visualforce, email template, field set or untyped Apex links: re-index after updating.
-- **Masking is slow on large inputs.** One detector call per string, on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory. Since #60, tool calls that mask at the same time wait for each other.
+- **Masking is slow on large inputs.** One detector call per string (a repeated short string's answer is kept, #76), on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory. Since #60, tool calls that mask at the same time wait for each other.
 - **The model download needs huggingface.co.** Behind a proxy or a company certificate it needs a setting, or the file placed by hand; the error now says which (#57).
 - **Metadata text is masked on the way out, not when it is stored.** The index keeps it unmasked in the local, git-ignored workspace.
 - **G3 was accepted on models other than the D4 set.** See above; the 0.x baseline was never run.
