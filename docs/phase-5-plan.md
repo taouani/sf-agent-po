@@ -162,7 +162,7 @@ Fifteen PRs, in this order: the npm token deadline first, then the index (your r
 | 10 | Feedback store and Jira diff | Migration 12, `feedback_jira_diff` | D2 |
 | 11 | Review page | Story verdicts and design ratings | D1, 10 |
 | 12 | Report | `feedback_summary` and `report` | 11 |
-| 13 | Batched masking | One model call for up to 32 short strings |  |
+| 13 | Faster masking (batching dropped) | One model call for up to 32 short strings. Built and measured in #76: batches were about half as fast and changed detections (the quantized model scales each call by all its strings), so #76 keeps the model's answers for repeated short strings instead |  |
 | 14 | Hosts | Cursor skills, Claude Code fixes from your host check | your host check |
 | 15 | Remove 0.x | Tag `v0-final`, delete 0.x, v1 user guide, contributor and troubleshooting guides, issue templates | D4 |
 
@@ -185,7 +185,7 @@ Fifteen PRs, in this order: the npm token deadline first, then the index (your r
 | Salesforce's last-modified dates miss a change, so an incremental run keeps a stale component | Profiles and permission sets always retrieved; `--full` at least weekly; `doctor` shows each snapshot's age |
 | Reports make the full org run too slow | Folders listed once; a cap per run (D3); G2 measured again |
 | The Jira diff calls edits major that the team sees as minor | The review page shows the guess and you override it; the threshold is a setting |
-| Batching changes detections | Identical-output check on the spike sentences in the CI model job before merge |
+| Batching changes detections | Identical-output check on the spike sentences in the CI model job before merge. It happened (#76): batching was dropped |
 | Removing 0.x breaks someone's setup | Tag `v0-final`, a note in the README and release notes |
 
 | ID | Question | Options | My recommendation | Your answer |

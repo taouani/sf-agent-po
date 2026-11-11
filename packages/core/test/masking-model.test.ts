@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   alignTokens,
+  cachedDetector,
   decodeSpans,
   defaultModelDir,
   detect,
@@ -311,6 +312,30 @@ describe.runIf(process.env.SF_AGENT_PO_MODEL_TEST === "1")("the detection model"
       // The same spans as a call made alone, and each text's own person.
       expect(all[0]).toEqual(alone);
       for (const [i, spans] of all.entries()) expect(spans.map((s) => texts[i]!.slice(s.start, s.end))).toContain(people[i % 4]);
+    } finally {
+      await model.release();
+    }
+  });
+
+  it("gives the same text the same answer, so a kept answer changes nothing", { timeout: 600_000 }, async () => {
+    const model = await loadDetectionModel();
+    try {
+      // The samples, and short strings as metadata and Jira fields are.
+      const texts = [...SAMPLES.map((s) => s.text), ...SAMPLES.flatMap((s) => s.text.split(/(?<=[.!?])\s+/u)).filter((t) => t.trim())];
+      const cached = cachedDetector(model.detect);
+      let t0 = performance.now();
+      const first: Span[][] = [];
+      for (const t of texts) first.push(await cached(t));
+      const run = performance.now() - t0;
+      const again: Span[][] = [];
+      for (const t of texts) again.push(await model.detect(t));
+      t0 = performance.now();
+      const kept: Span[][] = [];
+      for (const t of texts) kept.push(await cached(t));
+      const hit = performance.now() - t0;
+      console.log(`${texts.length} strings: model ${Math.round(run)} ms, kept answers ${Math.round(hit)} ms`);
+      expect(again).toEqual(first);
+      expect(kept).toEqual(first);
     } finally {
       await model.release();
     }

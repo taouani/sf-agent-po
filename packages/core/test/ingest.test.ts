@@ -138,6 +138,25 @@ describe("masking inputs", () => {
   });
 });
 
+describe("masking with the model's kept answers", () => {
+  it("runs the model once for each different short string, and masks every copy alike", async () => {
+    const calls: string[] = [];
+    // Later copies are found by the kept answer and the known values alike; masking.test.ts checks the kept answers.
+    const model = fakeModel(["Karim Benali"]);
+    const { masker } = setup(async (t) => (calls.push(t), model(t)));
+    const rows = Array.from({ length: 50 }, (_, i) => ({ owner: "Karim Benali", type: "Text", row: i % 2 }));
+    const doc = await masker.maskDocument("acme", { kind: "meeting-notes", title: "Owners", source: "owners.csv", content: "The owners, by row.", metadata: { rows } });
+    const masked = doc.metadata!.rows as { owner: string; type: string; row: number }[];
+    expect(new Set(masked.map((r) => r.owner))).toEqual(new Set(["[PERSON_1]"]));
+    expect(masked[1]).toEqual({ owner: "[PERSON_1]", type: "Text", row: 1 });
+    // Every copy is still counted.
+    expect((doc.metadata!.masking as { counts: Record<string, number> }).counts).toEqual({ PERSON: 50 });
+    // Title, content, then: rows, owner, Karim Benali, type, Text, row, 0, 1.
+    expect(calls).toHaveLength(10);
+    expect(new Set(calls).size).toBe(calls.length);
+  });
+});
+
 describe("known values", () => {
   it("replaces a re-added source's document, under the same pseudonym", async () => {
     const { contexts, masker } = setup();

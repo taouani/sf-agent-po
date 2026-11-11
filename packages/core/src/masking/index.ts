@@ -1,4 +1,4 @@
-export { allowKey, DOMAIN_ALLOWLIST, applyPolicy, detect, type DetectOptions, type EntityDetector } from "./detect.js";
+export { allowKey, cachedDetector, DOMAIN_ALLOWLIST, applyPolicy, detect, MODEL_CACHE_ENTRIES, MODEL_CACHE_LENGTH, type DetectOptions, type EntityDetector } from "./detect.js";
 export { compileDictionary, detectWithDictionary, type CompiledDictionary, type DictionaryEntry } from "./dictionary.js";
 export { cnIdValid, detectWithRules, ibanValid, luhnValid, nirValid } from "./rules.js";
 export { MASKED_TYPES, mergeSpans, normaliseType, replaceSpans, VISIBLE_TYPES, type MaskedType, type Span } from "./spans.js";

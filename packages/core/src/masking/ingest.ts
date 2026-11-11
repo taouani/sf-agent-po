@@ -2,7 +2,7 @@
 // everything the model sees hold pseudonyms; real values come back only on publish.
 
 import type { ContextRepository, NewDocument, SourceDocument } from "../store/contexts.js";
-import { allowKey, detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
+import { allowKey, cachedDetector, detect, DOMAIN_ALLOWLIST, type EntityDetector } from "./detect.js";
 import { detectWithRules } from "./rules.js";
 import { blackOut, decodeImage, encodePng, orient, pageText, redactionBox, TRUSTED_FROM, UNCERTAIN_BELOW, worthChecking, type Box, type OcrResult, type RgbaImage, type TextRecognizer } from "./image.js";
 import type { Span } from "./spans.js";
@@ -190,9 +190,12 @@ function checkBoxes(ocr: OcrResult, img: RgbaImage): void {
 export class Masker {
   private readonly known = new Map<string, KnownCache>();
   private readonly allowed: Set<string>;
+  /** The model, with its answers for short texts kept (see cachedDetector). */
+  private readonly model?: EntityDetector;
 
   constructor(private readonly opts: MaskerOptions) {
     this.allowed = new Set((opts.allowlist ?? DOMAIN_ALLOWLIST).map(allowKey));
+    if (opts.model) this.model = cachedDetector(opts.model);
   }
 
   /** The known values of a context, compiled; brought up to date with only what changed. */
@@ -272,7 +275,7 @@ export class Masker {
   /** What to mask in `text`, counted into `report`. */
   private async spansFor(context: string, text: string, dictionary: readonly DictionaryEntry[], report: MaskReport): Promise<Span[]> {
     if (!text.trim()) return [];
-    const spans = await detect(text, { dictionary, compiled: this.knownValues(context), model: this.opts.model, allowlist: this.opts.allowlist });
+    const spans = await detect(text, { dictionary, compiled: this.knownValues(context), model: this.model, allowlist: this.opts.allowlist });
     for (const s of spans) report.counts[s.type] = (report.counts[s.type] ?? 0) + 1;
     return spans;
   }

@@ -50,7 +50,7 @@ export interface ModelRunner {
 
 export interface DetectionModel {
   detect: EntityDetector;
-  /** Tokens seen and tokens that could not be placed in the text. */
+  /** Tokens seen and tokens that could not be placed in the text, in the runs made (an answer a Masker kept is not run again). */
   stats: DecodeStats;
   /** Frees the session. WebAssembly worker threads may still keep the process alive; a CLI should exit explicitly. */
   release(): Promise<void>;

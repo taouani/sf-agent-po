@@ -33,6 +33,36 @@ export const allowKey = (term: string) => term.toLowerCase().replace(/[^\p{L}\p{
 /** A detection model: finds names (and other entities) that no rule can. */
 export type EntityDetector = (text: string) => Promise<Span[]>;
 
+/** How many short texts the model's answers are kept for, and how long a text may be to be kept. */
+export const MODEL_CACHE_ENTRIES = 5_000;
+export const MODEL_CACHE_LENGTH = 200;
+
+/**
+ * The model with its answers kept for short texts, the most recently used first: metadata
+ * keys, labels and Jira fields come back again and again, and the model gives the same text
+ * the same answer, so a kept answer changes nothing but the time. A failed run is not kept.
+ * Up to that many short texts stay in this process's memory, across contexts, until it exits;
+ * they are never written anywhere.
+ */
+export function cachedDetector(model: EntityDetector, entries = MODEL_CACHE_ENTRIES, length = MODEL_CACHE_LENGTH): EntityDetector {
+  const kept = new Map<string, Promise<Span[]>>();
+  return async (text) => {
+    if (text.length > length) return model(text);
+    let answer = kept.get(text);
+    if (answer) kept.delete(text);
+    else {
+      const run = model(text);
+      answer = run;
+      run.catch(() => {
+        if (kept.get(text) === run) kept.delete(text);
+      });
+    }
+    kept.set(text, answer);
+    if (kept.size > entries) kept.delete(kept.keys().next().value!);
+    return (await answer).map((s) => ({ ...s }));
+  };
+}
+
 export interface DetectOptions {
   /** Values the context already knows, for example the org's users. */
   dictionary?: readonly DictionaryEntry[];
