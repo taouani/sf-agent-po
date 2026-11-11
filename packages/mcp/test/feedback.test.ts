@@ -366,12 +366,39 @@ describe("design sections", () => {
       { id: "data-model", title: "4. Data model" },
       { id: "data-model-2", title: "4. Data model" },
     ]);
+    // A suffix never lands on another section's id.
+    expect(designSections("## Data model\n## Data model 2\n## Data model").map((x) => x.id)).toEqual(["data-model", "data-model-2", "data-model-3"]);
     expect(designSections("## 12. Sécurité et accès")[0]!.id).toBe("securite-et-acces");
+    expect(designSections("## 4.2 Fields")[0]!.id).toBe("fields");
+    // A year is part of the title, not a section number.
+    expect(designSections("## 2024 roadmap\n## 2025 roadmap").map((x) => x.id)).toEqual(["2024-roadmap", "2025-roadmap"]);
+    expect(designSections("## Apex vs C#")[0]!.title).toBe("Apex vs C#");
+    expect(designSections("## Done ##")[0]!.title).toBe("Done");
     expect(designSections("## 显示")[0]!.id).toBe("显示");
     expect(designSections("## ***")[0]!.id).toBe("section");
-    expect(designSections(Array.from({ length: 50 }, (_, i) => `## S${i}`).join("\n"))).toHaveLength(40);
+    // A fence closes only with its own kind.
+    expect(designSections("~~~\n```\n## Inside\n~~~\n## After").map((x) => x.title)).toEqual(["After"]);
+    expect(designSections("````\n```\n## Inside\n````\n## After").map((x) => x.title)).toEqual(["After"]);
   });
 });
+
+/** What a browser posts: every select as it stands, so prefilled values come back. */
+const asBrowser = (req: FeedbackRequest, change: { verdicts?: Record<string, string>; ratings?: Record<string, { value: number | ""; comment?: string }> } = {}): Partial<Decision> => {
+  const verdicts: Record<string, any> = {};
+  const ratings: Record<string, { value: number; comment?: string }> = {};
+  const cleared: string[] = [];
+  for (const st of req.stories) {
+    const v = change.verdicts?.[st.item] ?? st.verdict ?? "";
+    if (v) verdicts[st.item] = v;
+    else cleared.push(st.item);
+  }
+  for (const sec of req.sections) {
+    const r = change.ratings?.[sec.item] ?? (sec.rating !== undefined ? { value: sec.rating } : { value: "" as const });
+    if (r.value === "") cleared.push(sec.key);
+    else ratings[sec.key] = { value: r.value, ...(r.comment && { comment: r.comment }) };
+  }
+  return { role: req.role, verdicts, ratings, cleared };
+};
 
 describe("feedback_review", () => {
   /** A published backlog whose first story cites a design, with a Jira diff run. */
@@ -387,72 +414,122 @@ describe("feedback_review", () => {
     await c.call("feedback_jira_diff", { context: "acme", artifactId: id });
     return { ...c, id, designId };
   }
+  const shownLast = (c: { page: { shown: ApprovalRequest[] } }) => c.page.shown.at(-1) as FeedbackRequest;
+  const rows = (c: { feedback: FeedbackRepository }, kind: "verdict" | "rating") => c.feedback.list("acme", { kind }).map((f) => `${f.item}:${f.role}:${f.value}${f.comment ? `:${f.comment}` : ""}`);
 
   it("shows the stories with the Jira diff's guess and the design's sections, in clear, and records what the user saves", async () => {
     const c = await reviewed();
-    c.page.answer = (req) => {
-      const r = req as FeedbackRequest;
-      return { role: "po", model: "Opus 5.5 on Copilot", verdicts: { S1: "accepted", S2: "major" }, ratings: { [r.sections[0]!.key]: { value: 4, comment: "Karim Benali liked it" }, [r.sections[1]!.key]: { value: 2 } } };
-    };
-    const r = await c.call("feedback_review", { context: "acme", artifactId: c.id });
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S2: "major", S4: "" }, ratings: { context: { value: 4, comment: "Karim Benali liked it" }, solution: { value: 2 } } });
+    // Published, then edited here: the page shows the story as it is in Jira.
+    const edited = backlog();
+    edited.epics[0]!.stories[0]!.sourceIds = [c.designId];
+    edited.epics[0]!.stories[2]!.summary = "Report on the VIPs of the quarter";
+    await c.call("backlog_save", { context: "acme", backlog: edited });
+    const r = await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
     expect(r.isError).toBeFalsy();
-    const shown = c.page.shown.at(-1) as FeedbackRequest;
-    expect(shown).toMatchObject({ kind: "feedback", title: "VIP flag backlog", askModel: true });
+    const shown = shownLast(c);
+    expect(shown).toMatchObject({ kind: "feedback", title: "VIP flag backlog", role: "po", askModel: true });
     expect(shown.stories.map((st) => `${st.item}:${st.guess}:${st.verdict}`)).toEqual(["S1:unchanged:accepted", "S2:minor:minor", "S3:unchanged:accepted", "S4:unchanged:accepted"]);
+    expect(shown.stories[2]!.summary).toBe("Report on VIPs");
     expect(shown.stories[1]).toMatchObject({ key: expect.stringMatching(/^PORT-\d+$/), url: expect.stringMatching(/^https:\/\/acme\.atlassian\.net\/browse\//), detail: expect.stringMatching(/% of the words changed/) });
-    // The page is in clear: the real name is back in the summary and the design.
+    // The page is in clear.
     expect(JSON.stringify(shown)).not.toMatch(/\[PERSON_\d+\]/);
-    expect(shown.sections.map((sec) => sec.key.split(":")[1])).toEqual(["context", "solution", "data-model", "data-model-2"]);
-    expect(shown.sections[0]).toMatchObject({ design: "VIP flag HLD", title: "1. Context" });
+    expect(shown.sections.map((sec) => sec.item)).toEqual(["context", "solution", "data-model", "data-model-2"]);
+    expect(shown.sections[0]).toMatchObject({ designId: c.designId, design: "VIP flag HLD", title: "1. Context" });
 
-    expect(r.text).toContain('Recorded feedback from the Product Owner on "VIP flag backlog": 2 story verdict(s) (1 accepted, 1 major edit) and 2 design section rating(s), average 3.0 of 5.');
-    expect(r.text).toContain("2 stories were left without a verdict");
-    expect(r.text).toContain('The model label is now "Opus 5.5 on Copilot".');
+    // The guesses left as they were are confirmed; S4 was set to "No verdict".
+    expect(r.text).toContain('Recorded feedback from the Product Owner on "VIP flag backlog": 3 story verdict(s) (2 accepted, 1 major edit) and 2 design section rating(s), average 3.0 of 5.');
+    expect(r.text).toContain("1 story has no verdict from the Product Owner");
     expect(r.text).not.toMatch(/Karim|Lea/);
-    expect(c.contexts.get("acme")!.settings.model).toBe("Opus 5.5 on Copilot");
-
-    const verdicts = c.feedback.list("acme", { kind: "verdict" });
-    expect(verdicts.map((f) => `${f.item}:${f.role}:${f.value}`)).toEqual(["S1:po:accepted", "S2:po:major"]);
-    expect(verdicts[1]).toMatchObject({ artifact: c.id, artifactVersion: 1, model: "Opus 5.5 on Copilot", details: { guess: "minor" } });
-    const ratings = c.feedback.list("acme", { kind: "rating" });
-    expect(ratings.map((f) => `${f.artifact === c.designId}:${f.item}:${f.value}`)).toEqual(["true:context:4", "true:solution:2"]);
+    expect(rows(c, "verdict")).toEqual(["S1:po:accepted", "S2:po:major", "S3:po:accepted"]);
+    expect(c.feedback.list("acme", { kind: "verdict" })[1]).toMatchObject({ artifact: c.id, artifactVersion: 1, details: { guess: "minor" } });
     // The comment is masked before it is saved.
-    expect(ratings[0]!.comment).toMatch(/^\[PERSON_\d+\] liked it$/);
+    expect(rows(c, "rating")).toEqual([expect.stringMatching(/^context:po:4:\[PERSON_\d+\] liked it$/), "solution:po:2"]);
+    expect(c.feedback.list("acme", { kind: "rating" })[0]!.artifact).toBe(c.designId);
+  });
 
-    // Opened again: what was given is shown, and the model is not asked for again.
-    c.page.answer = () => ({ role: "dev", verdicts: { S2: "minor" } });
-    const again = await c.call("feedback_review", { context: "acme", artifactId: c.id });
-    const second = c.page.shown.at(-1) as FeedbackRequest;
-    expect(second.askModel).toBe(false);
-    expect(second.stories[1]!.verdict).toBe("major");
-    expect(second.sections[0]!.rating).toBe(4);
-    expect(again.text).toContain("Recorded feedback from the dev team");
-    // Each role keeps its own verdict.
-    expect(c.feedback.list("acme", { kind: "verdict" }).map((f) => `${f.item}:${f.role}:${f.value}`)).toEqual(["S1:po:accepted", "S2:dev:minor", "S2:po:major"]);
+  it("starts each role from its own feedback, keeps comments when saved again, and clears what the user clears", async () => {
+    const c = await reviewed();
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S2: "major" }, ratings: { solution: { value: 2, comment: "Missed the sharing model" } } });
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+
+    // The dev team opens it: the PO's verdicts and ratings are not theirs.
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S1: "", S3: "", S4: "" }, ratings: { context: { value: 5 } } });
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "dev" });
+    expect(shownLast(c).stories[1]).toMatchObject({ verdict: "minor" });
+    expect(shownLast(c).stories[1]!.saved).toBeUndefined();
+    expect(shownLast(c).sections[1]!.rating).toBeUndefined();
+    expect(rows(c, "verdict")).toEqual(["S1:po:accepted", "S2:dev:minor", "S2:po:major", "S3:po:accepted", "S4:po:accepted"]);
+    expect(rows(c, "rating")).toEqual(["context:dev:5", "solution:po:2:Missed the sharing model"]);
+
+    // The PO again, changing one story: the rest is kept, comment included.
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S1: "minor" } });
+    const again = await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+    const second = shownLast(c);
+    expect(second.stories[1]).toMatchObject({ saved: "major", verdict: "major" });
+    expect(second.sections[1]).toMatchObject({ rating: 2, comment: "Missed the sharing model" });
+    expect(again.text).toContain("1 story verdict(s) (1 minor edit) and 0 design section rating(s)");
+    expect(again.text).toContain("4 kept as saved before.");
+    expect(rows(c, "rating")).toContain("solution:po:2:Missed the sharing model");
+
+    // A new rating without a new comment keeps the comment; clearing removes the row.
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S4: "" }, ratings: { solution: { value: 3 } } });
+    const third = await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+    expect(third.text).toContain("1 cleared.");
+    expect(rows(c, "rating")).toContain("solution:po:3:Missed the sharing model");
+    expect(rows(c, "verdict")).toEqual(["S1:po:minor", "S2:dev:minor", "S2:po:major", "S3:po:accepted"]);
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { ratings: { solution: { value: "" } } });
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+    expect(rows(c, "rating")).toEqual(["context:dev:5"]);
+  });
+
+  it("masks the model label the user types, and asks for it only once", async () => {
+    const c = await reviewed();
+    c.page.answer = (req) => ({ ...asBrowser(req as FeedbackRequest), model: "Karim Benali's Copilot" });
+    const r = await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "sa" });
+    expect(r.text).toMatch(/The model label is now "\[PERSON_\d+\]'s Copilot"\./);
+    expect(c.contexts.get("acme")!.settings.model).toMatch(/^\[PERSON_\d+\]'s Copilot$/);
+    expect(JSON.stringify(c.feedback.list("acme"))).not.toContain("Karim");
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "sa" });
+    expect(shownLast(c).askModel).toBe(false);
   });
 
   it("records nothing when the user cancels, and refuses what cannot be reviewed", async () => {
     const c = await reviewed();
     c.page.answer = () => ({ status: "rejected" });
-    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id })).text).toContain("Nothing was recorded: the user cancelled the review.");
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" })).text).toContain("Nothing was recorded: the user cancelled the review.");
     c.page.answer = () => ({ status: "expired" });
-    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id })).text).toContain("did not send the page in time");
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" })).text).toContain("did not send the page in time");
     expect(c.feedback.list("acme", { kind: "verdict" })).toEqual([]);
 
     const saved = await c.call("backlog_save", { context: "acme", backlog: { ...backlog(), title: "Other backlog" } });
     const draft = /as (doc-\w+)/.exec(saved.text)![1]!;
-    expect((await c.call("feedback_review", { context: "acme", artifactId: draft })).text).toContain("has not been published to Jira yet");
+    expect((await c.call("feedback_review", { context: "acme", artifactId: draft, role: "po" })).text).toContain("has not been published to Jira yet");
     const input = c.contexts.documents("acme").find((d) => d.kind === "meeting-notes")!;
-    expect((await c.call("feedback_review", { context: "acme", artifactId: input.id })).isError).toBe(true);
+    expect((await c.call("feedback_review", { context: "acme", artifactId: input.id, role: "po" })).isError).toBe(true);
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po", designIds: [draft] })).text).toContain(`${draft} is not a design artifact`);
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "boss" })).isError).toBe(true);
+    const bare = await c.call("design_save", { context: "acme", title: "Notes only", designType: "high-level", content: "No sections here." });
+    const bareId = /(doc-[0-9a-f]{10})/.exec(bare.text)![1]!;
+    expect((await c.call("feedback_review", { context: "acme", artifactId: bareId, role: "sa" })).text).toContain("There is nothing to review");
   });
 
-  it("rates a design on its own", async () => {
+  it("rates a design on its own, or several with a backlog, and says what did not fit", async () => {
     const c = await reviewed();
-    c.page.answer = (req) => ({ role: "sa", ratings: { [(req as FeedbackRequest).sections[1]!.key]: { value: 5 } } });
-    const r = await c.call("feedback_review", { context: "acme", artifactId: c.designId });
-    expect((c.page.shown.at(-1) as FeedbackRequest).stories).toEqual([]);
-    expect(r.text).toContain("Recorded feedback from the Solution Architect on \"VIP flag HLD\": 0 story verdict(s) and 1 design section rating(s), average 5.0 of 5.");
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { ratings: { solution: { value: 5 } } });
+    const r = await c.call("feedback_review", { context: "acme", artifactId: c.designId, role: "sa" });
+    expect(shownLast(c).stories).toEqual([]);
+    expect(r.text).toContain('Recorded feedback from the Solution Architect on "VIP flag HLD": 0 story verdict(s) and 1 design section rating(s), average 5.0 of 5.');
     expect(c.feedback.list("acme", { kind: "rating" })).toMatchObject([{ item: "solution", role: "sa", value: "5", artifactVersion: 1 }]);
+
+    const long = await c.call("design_save", { context: "acme", title: "Long design", designType: "detailed", content: Array.from({ length: 45 }, (_, i) => `## Part ${i}\n\nText.`).join("\n\n") });
+    const longId = /(doc-[0-9a-f]{10})/.exec(long.text)![1]!;
+    c.page.answer = () => ({ role: "sa", verdicts: {}, ratings: {} });
+    const both = await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "sa", designIds: [c.designId, longId] });
+    const keys = shownLast(c).sections.map((sec) => sec.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.filter((k) => k.startsWith(longId))).toHaveLength(40);
+    expect(both.text).toContain(`Only the first 40 of the 45 sections of ${longId} were on the page.`);
   });
 });
 

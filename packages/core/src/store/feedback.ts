@@ -41,6 +41,9 @@ export interface FeedbackEntry {
   recordedAt: string;
 }
 
+/** What names one entry. */
+export type FeedbackKey = Pick<FeedbackEntry, "context" | "artifact" | "artifactVersion" | "item" | "kind" | "role">;
+
 export type FeedbackInput = Omit<FeedbackEntry, "recordedAt" | "details" | "role"> & { role?: FeedbackRole; details?: Record<string, unknown> };
 
 interface Row {
@@ -141,11 +144,16 @@ export class FeedbackRepository {
 
   /**
    * Records feedback, in one transaction, replacing what was recorded before for the same
-   * artifact version, item, kind and role. The artifact must be a document of the context.
+   * artifact version, item, kind and role, and removing the entries `remove` names (a verdict
+   * or rating the user cleared). The artifact must be a document of the context.
    */
-  record(entries: readonly FeedbackInput[]): FeedbackEntry[] {
-    if (!entries.length) return [];
-    return this.database.write(() => this.put(entries));
+  record(entries: readonly FeedbackInput[], remove: readonly FeedbackKey[] = []): FeedbackEntry[] {
+    if (!entries.length && !remove.length) return [];
+    return this.database.write(() => {
+      const drop = this.db.prepare("DELETE FROM feedback WHERE context = ? AND artifact = ? AND artifact_version = ? AND item = ? AND kind = ? AND role = ?");
+      for (const k of remove) drop.run(k.context, k.artifact, k.artifactVersion, k.item, k.kind, k.role);
+      return this.put(entries);
+    });
   }
 
   /**

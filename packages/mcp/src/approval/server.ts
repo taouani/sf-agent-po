@@ -121,6 +121,8 @@ export interface FeedbackRequest {
   kind: "feedback";
   /** The backlog's or design's title. */
   title: string;
+  /** Who gives it: chosen before the page opens, so it starts from their own feedback. */
+  role: FeedbackGiver;
   /** The context has no model label yet: the page asks for it. */
   askModel: boolean;
   stories: FeedbackStoryItem[];
@@ -137,18 +139,24 @@ export interface FeedbackStoryItem {
   /** The Jira diff's guess, and what it found ("12% of the words changed"). */
   guess?: JiraDiffValue;
   detail?: string;
-  /** The verdict selected when the page opens: one given before, or the guess's. */
+  /** This role's verdict saved before, if any. */
+  saved?: VerdictValue;
+  /** The verdict selected when the page opens: the saved one, or the guess's. */
   verdict?: VerdictValue;
 }
 
 export interface FeedbackSectionItem {
   /** Unique on the page: the design's id and the section's stable id. */
   key: string;
+  designId: string;
+  /** The section's stable id. */
+  item: string;
   /** The design's title. */
   design: string;
   title: string;
-  /** A rating given before. */
+  /** This role's rating saved before, and its comment, if any. */
   rating?: number;
+  comment?: string;
 }
 
 /** Who gives feedback: the Product Owner, the Solution Architect or the dev team. */
@@ -182,9 +190,11 @@ export interface Decision {
   lines?: string[];
   /** For feedback: who gave it. */
   role?: FeedbackGiver;
-  /** For feedback: the verdict set on each story, by story id; a story left blank has none. */
+  /** For feedback: the verdict set on each story, by story id. */
   verdicts?: Record<string, VerdictValue>;
-  /** For feedback: the rating set on each section, by section key, with its comment in clear. */
+  /** For feedback: the stories set to "No verdict" and the sections set to "Not rated". */
+  cleared?: string[];
+  /** For feedback: the rating set on each section, by section key, with a new comment in clear. */
   ratings?: Record<string, { value: number; comment?: string }>;
   /** For feedback: the model label typed, in clear. */
   model?: string;
@@ -229,8 +239,12 @@ export const MAX_TYPED_LINES = 50;
 export const MAX_LINE = 1_000;
 /** How long a model label typed on the feedback page can be. */
 export const MAX_MODEL_LABEL = 80;
+/** How long a comment on a design section can be. */
+export const MAX_SECTION_COMMENT = 500;
 
 const MAX_FORM = 64 * 1024;
+/** A feedback page with every comment full, in characters URL-encoding takes 9 bytes for (CJK). */
+const formLimit = (req: ApprovalRequest) => (req.kind === "feedback" ? Math.min(MAX_FORM + req.sections.length * 9 * MAX_SECTION_COMMENT, 4 * 1024 * 1024) : MAX_FORM);
 const MAX_MISSED = 200;
 const MAX_TIMEOUT = 2 ** 31 - 1;
 
@@ -425,7 +439,7 @@ export class ApprovalServer {
     if (!ownOrigin || (site && site !== "same-origin")) return send(403, "This form can only be sent from its own page.", "text/plain");
     if (entry.done) return send(409, donePage(outcome(entry), nonce));
 
-    const form = await readForm(req);
+    const form = await readForm(req, formLimit(entry.req));
     if (!form) return send(413, "The form is too large.", "text/plain");
     if (!same(form.get("csrf") ?? undefined, entry.csrf)) return send(403, "This form is out of date. Reload the page.", "text/plain");
     const choice = form.get("decision") as NonNullable<Decision["choice"]>;
@@ -457,22 +471,24 @@ export class ApprovalServer {
         entry.finish({ status: choice, choice, missed: [] });
         return send(303, "", "text/plain", { location: action });
       }
-      const role = form.get("role") as FeedbackGiver | null;
-      if (!role || !FEEDBACK_GIVERS.includes(role)) return send(400, "Choose who gives this feedback, then send it again.", "text/plain");
+      // Rows are read by their place on the page: only values it offered count.
       const verdicts: Record<string, VerdictValue> = {};
+      const cleared: string[] = [];
       entry.req.stories.forEach((st, i) => {
-        const v = form.get(`verdict-${i}`) as VerdictValue | null;
-        if (v && VERDICT_VALUES.includes(v)) verdicts[st.item] = v;
+        const v = form.get(`verdict-${i}`);
+        if (v === "") cleared.push(st.item);
+        else if (v && (VERDICT_VALUES as readonly string[]).includes(v)) verdicts[st.item] = v as VerdictValue;
       });
       const ratings: Record<string, { value: number; comment?: string }> = {};
       entry.req.sections.forEach((sec, i) => {
         const v = form.get(`rating-${i}`);
+        if (v === "") cleared.push(sec.key);
         if (!v || !/^[1-5]$/.test(v)) return;
-        const said = form.get(`note-${i}`)?.trim().slice(0, MAX_LINE);
+        const said = form.get(`note-${i}`)?.trim().slice(0, MAX_SECTION_COMMENT);
         ratings[sec.key] = { value: Number(v), ...(said ? { comment: said } : {}) };
       });
       const model = entry.req.askModel ? form.get("model")?.trim().slice(0, MAX_MODEL_LABEL) || undefined : undefined;
-      entry.finish({ status: choice, choice, missed: [], role, verdicts, ratings, ...(model ? { model } : {}) });
+      entry.finish({ status: choice, choice, missed: [], role: entry.req.role, verdicts, cleared, ratings, ...(model ? { model } : {}) });
       return send(303, "", "text/plain", { location: action });
     }
     // Values still in clear come first: unless the input is rejected, it is checked again once they are hidden.
@@ -482,13 +498,13 @@ export class ApprovalServer {
   }
 }
 
-/** A url-encoded form body, or undefined if it is larger than MAX_FORM. */
-async function readForm(req: IncomingMessage): Promise<URLSearchParams | undefined> {
+/** A url-encoded form body, or undefined if it is larger than `limit`. */
+async function readForm(req: IncomingMessage, limit: number): Promise<URLSearchParams | undefined> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_FORM) return undefined;
+    if (size > limit) return undefined;
     chunks.push(chunk);
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));

@@ -1,7 +1,7 @@
 // The approval page's HTML: plain forms, no script, every value escaped.
 
 import { REQUIREMENT_PRIORITIES, VERDICT_VALUES } from "@sf-agent-po/core";
-import { type ApprovalRequest, MAX_LINE, MAX_MODEL_LABEL } from "./server.js";
+import { type ApprovalRequest, MAX_MODEL_LABEL, MAX_SECTION_COMMENT } from "./server.js";
 
 export const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -186,25 +186,29 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
   if (req.kind === "feedback") {
     const verdictNames: Record<string, string> = { accepted: "Accepted as written", minor: "Minor edit", major: "Major edit", rejected: "Rejected" };
     const guessNames: Record<string, string> = { unchanged: "unchanged", minor: "minor edit", major: "major edit", deleted: "deleted or not visible" };
+    const roleNames: Record<string, string> = { po: "the Product Owner", sa: "the Solution Architect", dev: "the dev team" };
     const stories = req.stories
       .map((st, i) => {
         const options = `<option value="">No verdict</option>${VERDICT_VALUES.map((v) => `<option value="${v}"${v === st.verdict ? " selected" : ""}>${verdictNames[v]}</option>`).join("")}`;
         const issue = st.key ? (st.url && /^https:\/\//.test(st.url) ? ` <a href="${escapeHtml(st.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(st.key)}</a>` : ` ${escapeHtml(st.key)}`) : "";
         const guess = st.guess ? `Jira diff: ${guessNames[st.guess]}${st.detail ? `, ${escapeHtml(st.detail)}` : ""}` : "Not compared with Jira yet";
+        const saved = st.saved ? ` · you said: ${verdictNames[st.saved]!.toLowerCase()}` : st.verdict ? " · filled in from the Jira diff" : "";
         return (
-          `<li><div class="row"><span class="grow"><code>${escapeHtml(st.item)}</code>${issue} ${markPseudonyms(st.summary)}<br><span class="detail">${guess}</span></span>` +
+          `<li><div class="row"><span class="grow"><code>${escapeHtml(st.item)}</code>${issue} ${markPseudonyms(st.summary)}<br><span class="detail">${guess}${saved}</span></span>` +
           `<select name="verdict-${i}" aria-label="Verdict on ${escapeHtml(st.item)}">${options}</select></div></li>`
         );
       })
       .join("");
-    let design = "";
+    let design: string | undefined;
     const sections = req.sections
       .map((sec, i) => {
-        const head = sec.design !== design ? `<li class="group">${markPseudonyms((design = sec.design))}</li>` : "";
+        const head = sec.designId !== design ? `<li class="group">${markPseudonyms(sec.design)}</li>` : "";
+        design = sec.designId;
         const options = `<option value="">Not rated</option>${[1, 2, 3, 4, 5].map((n) => `<option value="${n}"${n === sec.rating ? " selected" : ""}>${n}</option>`).join("")}`;
+        const said = sec.comment ? `<br><span class="detail">Your comment: ${markPseudonyms(sec.comment)}</span>` : "";
         return (
-          `${head}<li><div class="row"><span class="grow">${markPseudonyms(sec.title)}</span><select name="rating-${i}" aria-label="Rating">${options}</select></div>` +
-          `<div class="row"><input type="text" name="note-${i}" maxlength="${MAX_LINE}" autocomplete="off" aria-label="Comment on ${escapeHtml(sec.title)}" placeholder="Comment (optional)"></div></li>`
+          `${head}<li><div class="row"><span class="grow">${markPseudonyms(sec.title)}${said}</span><select name="rating-${i}" aria-label="Rating of ${escapeHtml(sec.title)}">${options}</select></div>` +
+          `<div class="row"><input type="text" name="note-${i}" maxlength="${MAX_SECTION_COMMENT}" autocomplete="off" aria-label="Comment on ${escapeHtml(sec.title)}" placeholder="${sec.comment ? "New comment (empty keeps yours)" : "Comment (optional)"}"></div></li>`
         );
       })
       .join("");
@@ -213,16 +217,15 @@ export function requestPage(req: ApprovalRequest, opts: { action: string; csrf: 
       : "";
     return layout(
       `Review: ${req.title}`,
-      `<h1>How did this work turn out?</h1><p class="sub">${markPseudonyms(req.title)}</p>` +
+      `<h1>How did this work turn out?</h1><p class="sub">${markPseudonyms(req.title)} · feedback from ${roleNames[req.role]}</p>` +
         form(
-          `<label for="role">Who is giving this feedback?</label><select id="role" name="role" required><option value="">Choose</option><option value="po">Product Owner</option><option value="sa">Solution Architect</option><option value="dev">Dev team</option></select>` +
-            model +
+          model +
             (req.stories.length
-              ? `<h2 class="label">Stories</h2><p class="hint">Filled in from the Jira diff where there is no verdict yet. Major edit: more than a few words rewritten, or a criterion added or removed.</p><ul class="choices">${stories}</ul>`
+              ? `<h2 class="label">Stories</h2><p class="hint">Where you have no verdict yet, the Jira diff's guess is filled in: saving confirms it. Choose "No verdict" to leave a story out.</p><ul class="choices">${stories}</ul>`
               : "") +
             (req.sections.length ? `<h2 class="label">Design sections, from 1 (poor) to 5 (used as written)</h2><ul class="choices">${sections}</ul>` : "") +
             `<p class="hint">Comments are masked before they are saved.</p>`,
-          `<button class="primary" name="decision" value="approved">Save the feedback</button><button name="decision" value="rejected" formnovalidate>Cancel</button>`,
+          `<button class="primary" name="decision" value="approved">Save the feedback</button><button name="decision" value="rejected">Cancel</button>`,
         ),
       opts.nonce,
     );

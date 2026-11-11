@@ -260,69 +260,85 @@ describe("approval page", () => {
     expect(await pending.decision).toEqual({ status: "approved", choice: "approved", missed: [], selected: ["n1"], priorities: { R1: "wont" }, lines: ["Send a reminder", "x".repeat(1_000)], digest: pending.digest });
   });
 
-  it("takes feedback: who gives it, a verdict per story, ratings with comments, and the model label when asked", async () => {
+  it("takes feedback: a verdict per story, ratings with comments, cleared rows, and the model label when asked", async () => {
     const s = server();
     const req: ApprovalRequest = {
       kind: "feedback",
       title: "VIP <backlog>",
+      role: "po",
       askModel: true,
       stories: [
         { item: "S1", key: "PORT-1", url: "https://acme.atlassian.net/browse/PORT-1", summary: "Show the flag to Sarah Whitfield", guess: "minor", detail: "12% of the words changed", verdict: "minor" },
-        { item: "S2", key: "PORT-2", url: "javascript:alert(1)", summary: "Set the <flag>" },
+        { item: "S2", key: "PORT-2", url: "javascript:alert(1)", summary: "Set the <flag>", saved: "major", verdict: "major" },
         { item: "S3", summary: "Report on VIPs" },
       ],
       sections: [
-        { key: "doc-1:solution", design: "HLD", title: "3. Solution", rating: 4 },
-        { key: "doc-1:data-model", design: "HLD", title: "4. Data model" },
+        { key: "doc-1:solution", designId: "doc-1", item: "solution", design: "HLD", title: "3. Solution", rating: 4, comment: "Good <enough>" },
+        { key: "doc-1:data-model", designId: "doc-1", item: "data-model", design: "HLD", title: "4. Data model" },
+        { key: "doc-2:solution", designId: "doc-2", item: "solution", design: "HLD", title: "Solution" },
       ],
     };
     const pending = await s.request(req);
     const tab = await open(pending.url);
     const html = (await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString();
+    expect(html).toContain("feedback from the Product Owner");
     expect(html).toContain("Show the flag to Sarah Whitfield");
     expect(html).toContain("Set the &#60;flag&#62;");
     expect(html).toContain('<a href="https://acme.atlassian.net/browse/PORT-1"');
     expect(html).not.toContain("javascript:");
-    expect(html).toContain("Jira diff: minor edit, 12% of the words changed");
+    expect(html).toContain("Jira diff: minor edit, 12% of the words changed · filled in from the Jira diff");
+    expect(html).toContain("you said: major edit");
     expect(html).toContain("Not compared with Jira yet");
-    expect(html).toMatch(/name="verdict-0"[^>]*>.*<option value="minor" selected>/);
+    expect(html).toMatch(/name="verdict-0"[^>]*><option value="">No verdict<\/option><option value="accepted">[^<]*<\/option><option value="minor" selected>/);
     expect(html).toMatch(/name="rating-0"[^>]*>.*<option value="4" selected>/);
+    expect(html).toContain("Your comment: Good &#60;enough&#62;");
+    expect(html).toContain('aria-label="Rating of 3. Solution"');
+    // Two designs with the same title still get a header each.
+    expect(html.match(/<li class="group">/g)).toHaveLength(2);
     expect(html).toContain('name="model"');
-    expect(html).toContain('<select id="role" name="role" required>');
 
-    // Who gives it is required.
-    expect((await submit(tab, { decision: "approved", "verdict-0": "accepted" })).status).toBe(400);
     const r = await submit(tab, {
       decision: "approved",
-      role: "po",
+      role: "dev",
       model: "  Opus 5.5 on Copilot  ",
       "verdict-0": "major",
-      "verdict-1": "fine",
-      "verdict-2": "",
+      "verdict-1": "",
+      "verdict-2": "fine",
       "verdict-9": "accepted",
-      "rating-0": "2",
-      "note-0": " Missed the sharing model ",
-      "rating-1": "9",
+      "rating-0": "",
+      "rating-1": "2",
+      "note-1": ` ${"x".repeat(600)} `,
+      "rating-2": "9",
     });
     expect(r.status).toBe(303);
     const d = await pending.decision;
-    expect(d).toMatchObject({ status: "approved", role: "po", model: "Opus 5.5 on Copilot", verdicts: { S1: "major" }, ratings: { "doc-1:solution": { value: 2, comment: "Missed the sharing model" } }, digest: requestDigest(req) });
+    // The role is the one the page was opened for, whatever the form says.
+    expect(d).toMatchObject({ status: "approved", role: "po", model: "Opus 5.5 on Copilot", verdicts: { S1: "major" }, cleared: ["S2", "doc-1:solution"], digest: requestDigest(req) });
     expect(Object.keys(d.verdicts!)).toEqual(["S1"]);
-    expect(Object.keys(d.ratings!)).toEqual(["doc-1:solution"]);
+    expect(Object.keys(d.ratings!)).toEqual(["doc-1:data-model"]);
+    expect(d.ratings!["doc-1:data-model"]!.comment).toHaveLength(500);
     expect((await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString()).toContain("Your feedback is saved.");
   });
 
-  it("does not ask for the model label when the context has one, and cancels without a role", async () => {
+  it("takes a full feedback form in any language, does not ask for the model label when the context has one, and cancels", async () => {
     const s = server();
-    const pending = await s.request({ kind: "feedback", title: "HLD", askModel: false, stories: [], sections: [{ key: "doc-1:solution", design: "HLD", title: "Solution" }] });
-    const tab = await open(pending.url);
+    const sections = Array.from({ length: 400 }, (_, i) => ({ key: `doc-1:s${i}`, designId: "doc-1", item: `s${i}`, design: "HLD", title: `S${i}` }));
+    const full = await s.request({ kind: "feedback", title: "HLD", role: "sa", askModel: false, stories: [], sections });
+    const tab = await open(full.url);
     const html = (await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString();
     expect(html).not.toContain('name="model"');
-    expect(html).not.toContain("<h2 class=\"label\">Stories");
-    expect((await submit(tab, { decision: "rejected", model: "x" })).status).toBe(303);
+    expect(html).not.toContain('<h2 class="label">Stories');
+    const fields: Record<string, string> = { decision: "approved" };
+    sections.forEach((_, i) => Object.assign(fields, { [`rating-${i}`]: "3", [`note-${i}`]: "显".repeat(500) }));
+    expect((await submit(tab, fields)).status).toBe(303);
+    expect(Object.keys((await full.decision).ratings!)).toHaveLength(400);
+
+    const pending = await s.request({ kind: "feedback", title: "HLD", role: "sa", askModel: false, stories: [], sections: sections.slice(0, 1) });
+    const other = await open(pending.url);
+    expect((await submit(other, { decision: "rejected", "rating-0": "5" })).status).toBe(303);
     expect(await pending.decision).toMatchObject({ status: "rejected", missed: [] });
-    expect((await pending.decision).role).toBeUndefined();
-    expect((await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString()).toContain("Cancelled. Nothing was saved.");
+    expect((await pending.decision).ratings).toBeUndefined();
+    expect((await call(other.page, { headers: { cookie: other.cookie } })).body.toString()).toContain("Cancelled. Nothing was saved.");
   });
 
   it("expires requests that wait too long, are cancelled, or are open when the server closes", async () => {

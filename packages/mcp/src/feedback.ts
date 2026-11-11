@@ -9,6 +9,7 @@ import {
   type ContextRepository,
   type FeedbackEntry,
   type FeedbackInput,
+  type FeedbackKey,
   type FeedbackRepository,
   type JiraDiffValue,
   type Masker,
@@ -21,7 +22,7 @@ import { z } from "zod";
 import { type ArtifactMeta, getArtifact } from "./artifacts.js";
 import type { Backlog, Story } from "./backlog.js";
 import { itemHash, labelsFor, oneLine, storyFields } from "./jira.js";
-import { type FeedbackRequest, requestDigest } from "./approval/server.js";
+import { FEEDBACK_GIVERS, type FeedbackGiver, type FeedbackRequest, requestDigest } from "./approval/server.js";
 import type { DetailedDesign } from "./design/detailed-schema.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
@@ -154,7 +155,7 @@ export function workflowOf(runs: WorkflowRepository | undefined, context: string
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const STATUS: Record<string, string> = { new: "to do", indeterminate: "in progress", done: "done" };
 
-/** Sections a design can have rated, at most. */
+/** Sections of one design on the page, at most. */
 const MAX_SECTIONS = 40;
 /** Designs rated on one page, at most. */
 const MAX_DESIGNS = 10;
@@ -165,26 +166,29 @@ const MAX_DESIGNS = 10;
  */
 export function designSections(content: string): { id: string; title: string }[] {
   const out: { id: string; title: string }[] = [];
-  const seen = new Map<string, number>();
-  let fence = false;
+  const used = new Set<string>();
+  let fence: string | undefined;
   for (const line of content.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
-    const m = fence ? null : /^## +(.+?)\s*#*\s*$/.exec(line);
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (f && !fence) fence = f;
+    else if (f && fence && f[0] === fence[0] && f.length >= fence.length && /^ {0,3}[`~]+\s*$/.test(line)) fence = undefined;
+    const m = fence || f ? null : /^## +(.+?)(?:\s+#+)?\s*$/.exec(line);
     if (!m) continue;
     const title = m[1]!;
     const base =
       title
-        .replace(/^\d+(\.\d+)*\.?\s+/, "")
+        // "3. Solution", "4.2 Fields": a section number, not "2024 roadmap".
+        .replace(/^\d+(?:\.\d+)*\.\s+|^\d+(?:\.\d+)+\s+/, "")
         .normalize("NFKD")
         .replace(/\p{M}/gu, "")
         .toLowerCase()
         .replace(/[^\p{L}\p{N}]+/gu, "-")
         .replace(/^-+|-+$/g, "")
         .slice(0, 60) || "section";
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    out.push({ id: n === 1 ? base : `${base}-${n}`, title });
-    if (out.length >= MAX_SECTIONS) break;
+    let id = base;
+    for (let n = 2; used.has(id); n++) id = `${base}-${n}`;
+    used.add(id);
+    out.push({ id, title });
   }
   return out;
 }
@@ -364,11 +368,12 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
       inputSchema: {
         context: contextName,
         artifactId: z.string().describe("A backlog published to Jira, or a design to rate on its own."),
+        role: z.enum(FEEDBACK_GIVERS).describe("Who gives the feedback: po (Product Owner), sa (Solution Architect) or dev (the dev team). Ask the user."),
         designIds: z.array(z.string()).max(MAX_DESIGNS).optional().describe("Designs to rate with the backlog; by default the designs its stories cite and the detailed designs that build it."),
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
-    guard(async ({ context, artifactId, designIds }: { context: string; artifactId: string; designIds?: string[] }, call: CallContext) => {
+    guard(async ({ context, artifactId, role, designIds }: { context: string; artifactId: string; role: FeedbackGiver; designIds?: string[] }, call: CallContext) => {
       if (!kit.reviewerFor) throw new Error("The review page is not available on this server.");
       const doc = getArtifact(contexts, context, artifactId);
       const meta = doc.metadata as ArtifactMeta & { backlog?: Backlog };
@@ -390,11 +395,14 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
           .map((d) => getArtifact(contexts, context, d.id));
       }
       for (const d of designs) if (d.kind !== "design") throw new Error(`${d.id} is not a design artifact.`);
-      designs = [...new Map(designs.map((d) => [d.id, d])).values()].slice(0, MAX_DESIGNS);
+      designs = [...new Map(designs.map((d) => [d.id, d])).values()];
+      const notes: string[] = [];
+      if (designs.length > MAX_DESIGNS) notes.push(`Only the first ${MAX_DESIGNS} of ${designs.length} designs were on the page: pass designIds to rate the others.`);
+      designs = designs.slice(0, MAX_DESIGNS);
 
-      const before = kit.feedback.list(context);
-      const latest = (artifact: string, version: number, item: string, kind: FeedbackEntry["kind"]) =>
-        before.filter((f) => f.artifact === artifact && f.artifactVersion === version && f.item === item && f.kind === kind).sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))[0];
+      // This role's own feedback, which the page starts from.
+      const mine = new Map(kit.feedback.list(context).filter((f) => f.role === role || f.kind === "jira_diff").map((f) => [`${f.artifact}|${f.artifactVersion}|${f.item}|${f.kind}`, f]));
+      const find = (artifact: string, version: number, item: string, kind: FeedbackEntry["kind"]) => mine.get(`${artifact}|${version}|${item}|${kind}`);
 
       // What the page shows is in clear; a comment quoting it is masked with these values.
       const revealed: { type: string; value: string }[] = [];
@@ -412,28 +420,42 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
       const req: FeedbackRequest = {
         kind: "feedback",
         title: real(doc.title),
+        role,
         askModel: !modelLabel(contexts, context),
         stories: stories.map((st) => {
           const entry = mapping!.items[st.id]!;
           const v = storyVersion(st.id);
-          const diff = latest(doc.id, v, st.id, "jira_diff");
-          const verdict = (latest(doc.id, v, st.id, "verdict")?.value as VerdictValue | undefined) ?? (diff ? GUESSED_VERDICT[diff.value as JiraDiffValue] : undefined);
+          const diff = find(doc.id, v, st.id, "jira_diff");
+          const saved = find(doc.id, v, st.id, "verdict")?.value as VerdictValue | undefined;
+          const verdict = saved ?? (diff ? GUESSED_VERDICT[diff.value as JiraDiffValue] : undefined);
           const detail = diff ? diffDetail(diff) : "";
           return {
             item: st.id,
             key: entry.key,
             url: entry.url,
-            summary: oneLine(real(st.summary)),
+            // As it was published: the verdict is on what is in Jira.
+            summary: oneLine(real(sent.get(st.id)?.summary ?? st.summary)),
             ...(diff && { guess: diff.value as JiraDiffValue }),
             ...(detail && { detail }),
+            ...(saved && { saved }),
             ...(verdict && { verdict }),
           };
         }),
         sections: designs.flatMap((d) => {
           const title = real(d.title);
-          return designSections(d.content).map((sec) => {
-            const rating = latest(d.id, d.metadata.version, sec.id, "rating");
-            return { key: `${d.id}:${sec.id}`, design: title, title: real(sec.title), ...(rating && { rating: Number(rating.value) }) };
+          const all = designSections(d.content);
+          if (all.length > MAX_SECTIONS) notes.push(`Only the first ${MAX_SECTIONS} of the ${all.length} sections of ${d.id} were on the page.`);
+          return all.slice(0, MAX_SECTIONS).map((sec) => {
+            const rating = find(d.id, d.metadata.version, sec.id, "rating");
+            return {
+              key: `${d.id}:${sec.id}`,
+              designId: d.id,
+              item: sec.id,
+              design: title,
+              title: real(sec.title),
+              ...(rating && { rating: Number(rating.value) }),
+              ...(rating?.comment && { comment: real(rating.comment) }),
+            };
           });
         }),
       };
@@ -441,57 +463,68 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
 
       const decision = await kit.reviewerFor(call).review(req);
       if (decision.digest !== requestDigest(req)) throw new Error("The feedback does not match what was shown, so nothing was recorded.");
-      if (decision.status !== "approved" || !decision.role) {
+      if (decision.status !== "approved") {
         return text(`Nothing was recorded: the user ${decision.status === "expired" ? "did not send the page in time, or closed it" : "cancelled the review"}.`);
       }
-      const role = decision.role;
-      if (decision.model) contexts.updateSettings(context, { model: decision.model });
-      const label = modelLabel(contexts, context);
-      const workflow = isBacklog ? workflowOf(kit.workflows, context, doc.id) : undefined;
       const dictionary = revealed.map((r) => ({ ...r, caseSensitive: false }));
+      // The label is the user's own words: masked like a comment.
+      if (decision.model) contexts.updateSettings(context, { model: oneLine((await masker.mask(context, decision.model, dictionary)).text).slice(0, 120) });
+      const label = modelLabel(contexts, context);
+      const cleared = new Set(decision.cleared ?? []);
       const entries: FeedbackInput[] = [];
+      const remove: FeedbackKey[] = [];
+      const counts = { verdicts: 0, ratings: 0, kept: 0, cleared: 0 };
+      const workflow = isBacklog ? workflowOf(kit.workflows, context, doc.id) : undefined;
       for (const st of req.stories) {
         const value = decision.verdicts?.[st.item];
-        if (!value) continue;
-        entries.push({ context, artifact: doc.id, artifactVersion: storyVersion(st.item), item: st.item, kind: "verdict", role, value, ...(label && { model: label }), ...(workflow && { workflow }), details: { ...(st.key && { key: st.key }), ...(st.guess && { guess: st.guess }) } });
+        const at = { context, artifact: doc.id, artifactVersion: storyVersion(st.item), item: st.item, kind: "verdict" as const, role };
+        if (value && value === st.saved) counts.kept++;
+        else if (value) {
+          counts.verdicts++;
+          entries.push({ ...at, value, ...(label && { model: label }), ...(workflow && { workflow }), details: { ...(st.key && { key: st.key }), ...(st.guess && { guess: st.guess }) } });
+        } else if (cleared.has(st.item) && st.saved) {
+          counts.cleared++;
+          remove.push(at);
+        }
       }
+      const ratedWorkflow = new Map(designs.map((d) => [d.id, workflowOf(kit.workflows, context, d.id)]));
       const byDesign = new Map(designs.map((d) => [d.id, d]));
+      const ratings: number[] = [];
       for (const sec of req.sections) {
         const rating = decision.ratings?.[sec.key];
-        if (!rating) continue;
-        const [designId, item] = [sec.key.slice(0, sec.key.indexOf(":")), sec.key.slice(sec.key.indexOf(":") + 1)];
-        const d = byDesign.get(designId)!;
-        const comment = rating.comment ? (await masker.mask(context, rating.comment, dictionary)).text : undefined;
-        entries.push({
-          context,
-          artifact: designId,
-          artifactVersion: d.metadata.version,
-          item,
-          kind: "rating",
-          role,
-          value: String(rating.value),
-          ...(comment && { comment }),
-          ...(label && { model: label }),
-          ...(workflowOf(kit.workflows, context, designId) && { workflow: workflowOf(kit.workflows, context, designId) }),
-          details: { design: d.metadata.artifactType ?? "design" },
-        });
+        const d = byDesign.get(sec.designId)!;
+        const at = { context, artifact: d.id, artifactVersion: d.metadata.version, item: sec.item, kind: "rating" as const, role };
+        if (rating && rating.value === sec.rating && !rating.comment) counts.kept++;
+        else if (rating) {
+          counts.ratings++;
+          ratings.push(rating.value);
+          // A new comment replaces the saved one; none keeps it.
+          const comment = rating.comment ? (await masker.mask(context, rating.comment, dictionary)).text : find(d.id, d.metadata.version, sec.item, "rating")?.comment;
+          const wf = ratedWorkflow.get(d.id);
+          entries.push({ ...at, value: String(rating.value), ...(comment && { comment }), ...(label && { model: label }), ...(wf && { workflow: wf }), details: { design: d.metadata.artifactType ?? "design" } });
+        } else if (cleared.has(sec.key) && sec.rating !== undefined) {
+          counts.cleared++;
+          remove.push(at);
+        }
       }
-      kit.feedback.record(entries);
+      kit.feedback.record(entries, remove);
 
       const verdicts = entries.filter((e) => e.kind === "verdict");
-      const ratings = entries.filter((e) => e.kind === "rating");
       const tally = (["accepted", "minor", "major", "rejected"] as const)
         .map((v) => [v, verdicts.filter((e) => e.value === v).length] as const)
         .filter(([, n]) => n)
         .map(([v, n]) => `${n} ${v === "accepted" ? "accepted" : v === "rejected" ? "rejected" : `${v} edit`}`);
       const parts = [
-        `Recorded feedback from ${ROLE_NAMES[role]} on "${doc.title}": ${verdicts.length} story verdict(s)${tally.length ? ` (${tally.join(", ")})` : ""} and ${ratings.length} design section rating(s)${ratings.length ? `, average ${(ratings.reduce((n, e) => n + Number(e.value), 0) / ratings.length).toFixed(1)} of 5` : ""}.`,
+        `Recorded feedback from ${ROLE_NAMES[role]} on "${doc.title}": ${counts.verdicts} story verdict(s)${tally.length ? ` (${tally.join(", ")})` : ""} and ${counts.ratings} design section rating(s)${ratings.length ? `, average ${(ratings.reduce((n, v) => n + v, 0) / ratings.length).toFixed(1)} of 5` : ""}.`,
       ];
       if (verdicts.length) parts.push(`Verdicts: ${verdicts.map((e) => `${e.item} ${e.value}`).join(", ")}.`);
-      const skipped = req.stories.length - verdicts.length;
-      if (skipped) parts.push(`${skipped} stor${skipped === 1 ? "y was" : "ies were"} left without a verdict; their Jira diff guess, if any, still counts.`);
+      if (counts.kept) parts.push(`${counts.kept} kept as saved before.`);
+      if (counts.cleared) parts.push(`${counts.cleared} cleared.`);
+      const none = req.stories.filter((st) => !decision.verdicts?.[st.item]).length;
+      if (none) parts.push(`${none} stor${none === 1 ? "y has" : "ies have"} no verdict from ${ROLE_NAMES[role]}; their Jira diff guess, if any, counts for them.`);
       if (decision.model) parts.push(`The model label is now "${label}".`);
       else if (!label) parts.push("No model label is set for this context, so the report cannot compare models.");
+      parts.push(...notes);
       return text(parts.join("\n"));
     }),
   );

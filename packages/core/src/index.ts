@@ -47,6 +47,7 @@ export {
   type PublishedStory,
   type FeedbackEntry,
   type FeedbackInput,
+  type FeedbackKey,
   type FeedbackKind,
   type FeedbackRole,
   type JiraDiffValue,
