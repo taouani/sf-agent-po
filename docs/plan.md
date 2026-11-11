@@ -206,14 +206,20 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Inputs needed from you
 
-- [ ] Start the Release next workflow for 1.0.0-next.6; PR #62 (merged) bumped the version. Your run on 8 Nov stopped because it was still next.5.
-- [ ] Update, re-index your UAT org with `npx sf-agent-po@next index --org <alias>`, and run the Lifetime Spent check again.
-- [ ] Try one guided design and backlog on Copilot with next.6, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
-- [x] Decide on G3: done on 10 Nov 2026, accepted on the three models measured.
+Updated 11 Nov 2026, in the order to do them. Done before: the next.6 release, the G3 decision (10 Nov), the OpenRouter credit ($0.49).
+
+- [ ] Set up trusted publishing on npmjs.com (section 6 of the [phase 5 plan](phase-5-plan.md)): package Settings, Trusted publishing, GitHub Actions, user `taouani`, repository `sf-agent-po`, workflow `release-next.yml`, environment `npm-next`; tick `npm dist-tag` if offered.
+- [ ] Delete the `NPM_TOKEN` secret from the `npm-next` environment.
+- [ ] Within 2 days of the setup, start the Release next workflow: it publishes 1.0.0-next.8 (next.7 was never published). If its summary says `latest` was not moved, run the command it gives after `npm login`.
+- [ ] Set Publishing access to "Require two-factor authentication and disallow tokens", then delete the npm token.
+- [ ] Push the `v0-final` tag on the last 0.x commit: `git fetch origin && git tag v0-final e1dae46 && git push origin v0-final`.
+- [ ] Say whether you have 0.x contexts to bring over (no command imports them yet).
+- [ ] Run `npx -y sf-agent-po@next doctor` on your laptop and send the output.
+- [ ] Re-index your UAT org in full (`index --org <alias> --full`) and send the time: G2 again, with reports and integrations, against 30 minutes. After a few changes, run it without `--full`, against 5 minutes.
+- [ ] Run the Lifetime Spent check again; if an Apex class is still missed, send its name or the line that reads the field.
+- [ ] Test the Claude Code host (`init --host claude-code`, `/sa-hld`, `/po-backlog`) and send the results, for PR 14b.
+- [ ] In Cursor 2.4 or later, check that the workflows appear as skills, and delete the old `.cursor/commands` files.
+- [ ] One guided design and backlog, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
+- [ ] Let your team edit that backlog in Jira, then compare it with Jira and give your verdicts on the review page (gate item 3).
 - [ ] Review the French word list in `packages/core/content/checks/fr.md`.
-- [ ] Send the name of the Apex class that was missed in the Lifetime Spent check, or the line that reads the field, so I can confirm #58 covers it.
-- [ ] Tell me the OpenRouter credit left after the 8 Nov runs.
-- [ ] Set up trusted publishing for sf-agent-po on npmjs.com (steps in section 6 of the [phase 5 plan](phase-5-plan.md)), then start the Release next workflow. It publishes 1.0.0-next.8 (bumped in #79; next.7 was never published, so next.8 carries everything since next.6). The workflow already uses trusted publishing (#64); the first publish must happen within 2 days of the setup.
-- [ ] With next.8, re-index your UAT org in full (`npx sf-agent-po@next index --org <alias> --full`) and send the time it took: G2 again, now with reports and integrations, against 30 minutes. Then run it again without `--full` after a few changes, against 5 minutes.
-- [ ] Test the Claude Code host when you are ready.
 - [ ] Optional: two or three anonymised real requirement sets, in English and French, to use as scenarios.
