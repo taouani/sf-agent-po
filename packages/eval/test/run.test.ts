@@ -3,19 +3,35 @@ import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
-import { documentId } from "../../core/src/index.js";
+import { BackgroundIndexer } from "../../connectors/src/index.js";
+import { ContextRepository, Database, documentId, Masker, MetadataIndex, newVaultKey, Vault } from "../../core/src/index.js";
+import { ApprovalServer, createServer } from "../../mcp/src/index.js";
+import { databaseFile } from "../../mcp/src/startup.js";
 import { listScenarios, parseVerdicts, reportMarkdown, runScenario, UNATTENDED, withLanguage, type CallTool, type Connect, type Model, type ToolSpec } from "../src/index.js";
 
-// Today's server, in process, as the baseline run uses it over stdio. It is imported by path so the
-// package's strict type check does not cover 0.x code, which compiles with its own settings.
-const legacyServer = "../../../src/server.js";
-const { createServer } = (await import(legacyServer)) as { createServer: (opts: { workspaceDir: string }) => { connect(t: unknown): Promise<void> } };
-
+/** The server in process, without workflows or input review: the agent saves with the save tools, as in a revision. */
 const inProcess: Connect = async (workspaceDir) => {
-  const server = createServer({ workspaceDir });
+  const db = new Database(databaseFile(workspaceDir));
+  const metadata = new MetadataIndex(db);
+  const approval = new ApprovalServer();
+  const server = createServer({
+    contexts: new ContextRepository(db),
+    masker: new Masker({ vault: new Vault(db, newVaultKey()) }),
+    approval,
+    recognizer: async () => Promise.reject(new Error("no OCR")),
+    // A release, so input review is off by default and no page opens.
+    version: "1.0.0",
+    metadata: { index: metadata, indexer: new BackgroundIndexer(metadata, { workspace: workspaceDir }) },
+  });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "eval-test", version: "0" });
   await Promise.all([server.connect(a), client.connect(b)]);
+  const close = client.close.bind(client);
+  client.close = async () => {
+    await close();
+    await approval.close();
+    db.close();
+  };
   return client;
 };
 
@@ -215,7 +231,7 @@ describe("judging and reporting", () => {
 
   it("summarises scores against the target and lists missed criteria", async () => {
     const r = await runScenario(insurance, new ScriptedModel(), new FakeJudge(), inProcess);
-    const md = reportMarkdown([r], { server: "0.x", judge: "fake:judge", date: "2026-11-07" });
+    const md = reportMarkdown([r], { server: "v1", judge: "fake:judge", date: "2026-11-07" });
     expect(md).toContain("| fake:scripted | 7.5 | n/a | design 10, backlog 5 |");
     expect(md).toContain("### Backlog: 5/10");
     expect(md).toContain("- Missed: ");
@@ -223,6 +239,6 @@ describe("judging and reporting", () => {
     // What the input owed to the cache, when the provider says.
     r.sections[0]!.agent!.cachedInputTokens = 80;
     r.sections[0]!.agent!.cacheWriteTokens = 15;
-    expect(reportMarkdown([r], { server: "0.x", judge: "j", date: "d" })).toContain("100 input (80 read from the cache, 15 written to it) and 50 output tokens");
+    expect(reportMarkdown([r], { server: "v1", judge: "j", date: "d" })).toContain("100 input (80 read from the cache, 15 written to it) and 50 output tokens");
   }, 30_000);
 });

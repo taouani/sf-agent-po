@@ -40,7 +40,7 @@ export type Task = keyof typeof TASKS;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
-/** The scenarios kept in the repository: the 0.x samples in `examples/` and the eval package's own. */
+/** The scenarios kept in the repository: the samples in `examples/` and the eval package's own. */
 export const BUILTIN_SCENARIO_ROOTS = [join(REPO_ROOT, "examples"), join(REPO_ROOT, "packages", "eval", "scenarios")];
 
 export function listScenarios(roots: readonly string[] = BUILTIN_SCENARIO_ROOTS): Scenario[] {

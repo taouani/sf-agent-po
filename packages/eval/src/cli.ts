@@ -21,7 +21,6 @@ the output against each scenario's rubric, and writes report.md and results.json
   --server     Command that starts the MCP server, split on spaces, or a JSON array
                such as '["C:/Program Files/nodejs/node.exe","dist/main.js"]'
                (default: the v1 server, node packages/mcp/dist/main.js)
-  --baseline   Run against the 0.x server (node dist/index.js) instead, for comparison
   --out        Output folder (default: eval-results/<date>)
   --max-turns  Turn limit per task (default: 80)
   --list       List the scenarios and exit
@@ -37,7 +36,6 @@ async function main(): Promise<number> {
       judge: { type: "string" },
       scenarios: { type: "string" },
       server: { type: "string" },
-      baseline: { type: "boolean" },
       out: { type: "string" },
       "max-turns": { type: "string" },
       list: { type: "boolean" },
@@ -59,7 +57,6 @@ async function main(): Promise<number> {
   }
   const wanted = values.scenarios?.split(",").map((s) => s.trim()).filter(Boolean);
   const scenarios = wanted ? wanted.map((id) => all.find((s) => s.id === id) ?? fail(`Unknown scenario "${id}". Known: ${all.map((s) => s.id).join(", ")}`)) : all;
-  if (values.server && values.baseline) fail("Give --server or --baseline, not both.");
   const specs = values.models.split(",").map((m) => m.trim());
   const models = specs.map((m) => createModel(m));
   const judge = values.judge ? createModel(values.judge) : models[0]!;
@@ -69,11 +66,11 @@ async function main(): Promise<number> {
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   const [command, ...args] = values.server
     ? serverCommand(values.server)
-    : [process.execPath, values.baseline ? join(repoRoot, "dist", "index.js") : join(repoRoot, "packages", "mcp", "dist", "main.js")];
+    : [process.execPath, join(repoRoot, "packages", "mcp", "dist", "main.js")];
   // Answers the pages the server opens; the server finds it through SF_AGENT_PO_BROWSER.
   const approver = new Approver();
   const connect = stdioServer(command!, args, await approver.listen());
-  const serverName = values.server ?? (values.baseline ? "0.x (dist/index.js)" : "v1 (packages/mcp/dist/main.js)");
+  const serverName = values.server ?? "v1 (packages/mcp/dist/main.js)";
   // UTC to the second, without colons so the folder name works on Windows.
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z").replaceAll(":", "-");
   const out = resolve(values.out ?? join("eval-results", date));

@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-// The 0.x store, so the test reads files exactly as 0.x writes them.
-import { ContextStore } from "../../../src/context/store.js";
+// Files exactly as 0.x wrote them.
+import { LegacyStore } from "./fixtures/legacy-store.js";
 import { ContextRepository, Database, documentId, importLegacyWorkspace, parseLegacyContext } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "sf-agent-import-"));
@@ -14,7 +14,7 @@ const workspace = () => join(dir, `ws-${++n}`);
 describe("importLegacyWorkspace", () => {
   it("imports contexts written by 0.x with their ids, dates and metadata", async () => {
     const ws = workspace();
-    const legacy = new ContextStore(ws);
+    const legacy = new LegacyStore(ws);
     await legacy.addDocuments("renewal", [
       { kind: "meeting-notes", title: "Kick-off", source: "notes/kickoff.md", content: "Boutique opening in Paris" },
       { kind: "jira", title: "LUX-12", source: "LUX-12", content: "Clienteling story", metadata: { status: "To Do" } },
@@ -54,7 +54,7 @@ describe("importLegacyWorkspace", () => {
 
   it("leaves contexts already in the database alone unless asked to replace them", async () => {
     const ws = workspace();
-    const legacy = new ContextStore(ws);
+    const legacy = new LegacyStore(ws);
     await legacy.addDocuments("c", [{ kind: "other", title: "v1", source: "a.md", content: "v1" }]);
     const db = new Database(join(ws, "sf-agent.db"));
     await importLegacyWorkspace(ws, db);
@@ -93,7 +93,7 @@ describe("importLegacyWorkspace", () => {
   it("keeps the order of documents that 0.x added in one batch", async () => {
     const ws = workspace();
     const sources = ["f", "a", "e", "b", "d", "c"].map((s) => `notes/${s}.md`);
-    await new ContextStore(ws).addDocuments("c", sources.map((source) => ({ kind: "meeting-notes" as const, title: source, source, content: "" })));
+    await new LegacyStore(ws).addDocuments("c", sources.map((source) => ({ kind: "meeting-notes" as const, title: source, source, content: "" })));
     const db = new Database(join(ws, "sf-agent.db"));
     await importLegacyWorkspace(ws, db);
     expect(new ContextRepository(db).documents("c").map((d) => d.source)).toEqual(sources);

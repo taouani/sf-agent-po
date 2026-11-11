@@ -18,7 +18,7 @@ assumptions and finishes.
 
 ## Running it
 
-It calls paid APIs. Build first (the default server is today's `dist/index.js`):
+It calls paid APIs. Build first (the default server is `packages/mcp/dist/main.js`):
 
 ```bash
 npm run build
@@ -31,7 +31,7 @@ With one OpenRouter key, name models as OpenRouter lists them:
 OpenRouter does not list stops the run at once, with that vendor's ids to choose from.
 
 Options: `--judge` (default: the first model), `--scenarios` (ids, default: all), `--server`
-(a command that starts another MCP server, for example v1; split on spaces, or a JSON array
+(a command that starts another MCP server, for example an installed release; split on spaces, or a JSON array
 when a path has spaces), `--out` (default `eval-results/<date>`), `--max-turns` (default 40),
 `--list`.
 
@@ -67,5 +67,5 @@ A scenario folder holds:
 - `rubric.md`: one `## <title> (<task>)` section per task, with `- [ ]` criteria. Sections
   without a task in brackets are notes for people. Tasks: `sa_high_level_design`, `po_backlog`.
 
-0.x has no luxury industry template and no output language setting, so its baseline on the
-luxury scenarios shows what v1 has to improve.
+The 0.x server is gone (phase 5). To compare against it, check out the tag `v0-final`, build it,
+and run that checkout's runner with `--baseline`.
