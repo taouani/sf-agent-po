@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
 import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
-import { capReports, mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
+import { capReports, mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
@@ -92,6 +92,11 @@ function fakeSf(
           }
           if (e.type === "PermissionSet") {
             write(`permissionsets/${m}.permissionset`, `<?xml version="1.0"?><PermissionSet>${(behaviour.permissionSets?.[m] ?? []).map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<label>${m}</label></PermissionSet>`);
+          }
+          if (e.type === "ConnectedApp") {
+            // Built at run time: a key-shaped literal would trip secret scanning.
+            const key = ["3MVG9", "x".repeat(20)].join("");
+            write(`connectedApps/${m}.connectedApp`, `<?xml version="1.0"?>\n<ConnectedApp>\n    <contactEmail>jane.doe@example.com</contactEmail>\n    <label>${m}</label>\n    <oauthConfig>\n        <callbackUrl>https://app.example.com/cb</callbackUrl>\n        <certificate>-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----</certificate>\n        <consumerKey>${key}</consumerKey>\n        <consumerSecret>${key}SECRET</consumerSecret>\n        <oauthClientCredentialUser>jane.doe@example.com</oauthClientCredentialUser>\n        <scopes>Api</scopes>\n    </oauthConfig>\n</ConnectedApp>\n`);
           }
           if (e.type === "CustomObject") objects.set(m, objects.get(m) ?? []);
           if (e.type === "CustomField") {
@@ -191,6 +196,18 @@ describe("retrieveOrgMetadata", () => {
     expect(second.dir).not.toBe(first.dir);
     expect(readdirSync(dir).sort()).toEqual([path.basename(second.dir), `${ORG_ID}.json`].sort());
     expect(current(dir)).toBe(path.basename(second.dir));
+  });
+
+  it("keeps no secret, key, certificate, username or email in the retrieved files", async () => {
+    const dir = tmp();
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ConnectedApp: ["Mobile"] }) });
+    const kept = readFileSync(path.join(r.dir, "metadata", "connectedApps", "Mobile.connectedApp"), "utf8");
+    for (const gone of ["3MVG9", "SECRET", "CERTIFICATE", "jane.doe", "consumerKey"]) expect(kept).not.toContain(gone);
+    expect(kept).toBe(`<?xml version="1.0"?>\n<ConnectedApp>\n    <label>Mobile</label>\n    <oauthConfig>\n        <callbackUrl>https://app.example.com/cb</callbackUrl>\n        <scopes>Api</scopes>\n    </oauthConfig>\n</ConnectedApp>\n`);
+    expect(withoutSecrets("Workflow", "<Workflow><outboundMessages><integrationUser>a@b.c</integrationUser><name>N</name></outboundMessages><alerts><recipients><recipient>a@b.c</recipient><type>user</type></recipients></alerts></Workflow>"))
+      .toBe("<Workflow><outboundMessages><name>N</name></outboundMessages><alerts><recipients><type>user</type></recipients></alerts></Workflow>");
+    expect(withoutSecrets("Dashboard", "<Dashboard><runningUser/><title>T</title></Dashboard>")).toBe("<Dashboard><title>T</title></Dashboard>");
+    expect(withoutSecrets("ApexClass", "<x><username>u</username></x>")).toBe("<x><username>u</username></x>");
   });
 
   it("refuses an org argument the CLI could read as more, and cleans up after a failure", async () => {

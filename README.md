@@ -269,12 +269,24 @@ The new code lives in npm workspaces under `packages/`:
   capitalised names for standard columns are left out); dashboards read the reports their
   components show; custom report types read their base object and their columns' fields.
   Filter values and dashboards' running users are never kept: only the fields filters are
-  on (the retrieved XML in the workspace still holds them, as the org returned it). Joined
+  on (the retrieved XML in the workspace still holds filter values; running users are taken
+  out). Joined
   reports are read block by block. An org run retrieves reports, dashboards and report types
   too, with their dates and their folders' from three queries (`sf data query`), or one
   listing per folder when a query fails; past 5,000 reports only the most recently changed
   are retrieved, and the rest are reported. Reports in private folders are not listed by
-  Salesforce, so they are not indexed. Every other
+  Salesforce, so they are not indexed. Integrations are read for where the org connects:
+  named credentials (their host, and the external credential they use), external credentials
+  (protocol, auth provider), remote site settings (host), connected apps (OAuth scopes and
+  callback hosts), external services (the named credential they call through, their
+  operations), outbound messages in workflows (host and the fields they send) and platform
+  event channels and members. Apex adds `calls` to a named credential for each `callout:Name`,
+  the host of each literal `setEndpoint` URL (`calloutHosts`), and `writes` to each platform
+  event it publishes (`EventBus.publish` of a `new Foo__e`). Only hosts are kept of URLs,
+  descriptions included, an IP address shows as "(an IP address)", and never a consumer key,
+  certificate, parameter value, username or email; a host can still name a client. An org run
+  takes those elements out of the files it keeps too. Auth providers hold a secret and are not
+  retrieved: an external credential names its provider in its attrs. Every other
   type in Salesforce's metadata type registry (copied from source-deploy-retrieve 13.12.0,
   Apache-2.0, by `scripts/metadata-registry.mjs`; the library itself is not a dependency) is
   indexed by name and file, including bundles, static resources, sites, documents, folders

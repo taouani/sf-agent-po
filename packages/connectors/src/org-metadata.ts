@@ -10,7 +10,9 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
  * What is retrieved by default: what the index reads in detail, and what flows, Apex and
  * layouts point at. Email templates are retrieved for their merge fields; the index keeps
  * none of their text. Reports and dashboards are retrieved for the fields and reports they
- * use; the index keeps no filter value. Left out: types whose content is records or people's
+ * use; the index keeps no filter value. Integrations (credentials, remote sites, connected apps,
+ * event channels) are retrieved for where the org connects; the index keeps hosts, never a
+ * secret or a username. Left out: types whose content is records or people's
  * text (documents, custom metadata records) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
@@ -19,6 +21,7 @@ export const DEFAULT_ORG_TYPES = [
   "PermissionSetGroup", "Profile", "Layout", "LightningComponentBundle", "AuraDefinitionBundle", "QuickAction",
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
   "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
+  "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "PlatformEventChannel", "PlatformEventChannelMember",
 ] as const;
 
 /** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */
@@ -49,6 +52,29 @@ const MERGED = new Set(["Profile"]);
 const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate"]);
 /** Files of these types go when their type is retrieved again: an email folder with its templates. */
 const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate", ReportFolder: "Report", DashboardFolder: "Dashboard" };
+
+/**
+ * Elements taken out of a retrieved file before it is kept: secrets, keys, certificates,
+ * usernames and emails. The index reads none of them, and the retrieval stays on disk.
+ */
+export const SECRET_ELEMENTS: Readonly<Record<string, readonly string[]>> = {
+  ConnectedApp: ["consumerKey", "consumerSecret", "certificate", "encryptionCertificate", "oauthClientCredentialUser", "contactEmail", "contactPhone"],
+  NamedCredential: ["username", "password", "certificate", "oauthToken", "oauthRefreshToken", "awsAccessKey", "awsAccessSecret"],
+  ExternalCredential: ["parameterValue"],
+  Workflow: ["integrationUser", "recipient", "ccEmails", "senderAddress", "assignedTo"],
+  WorkflowOutboundMessage: ["integrationUser"],
+  WorkflowAlert: ["recipient", "ccEmails", "senderAddress"],
+  WorkflowTask: ["assignedTo"],
+  Dashboard: ["runningUser"],
+};
+
+/** A retrieved file of this type without its SECRET_ELEMENTS. */
+export function withoutSecrets(type: string, xml: string): string {
+  const names = SECRET_ELEMENTS[type];
+  if (!names?.length) return xml;
+  const tags = names.join("|");
+  return xml.replace(new RegExp(`[ \\t]*<(${tags})(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</\\1\\s*>)[ \\t]*\\r?\\n?`, "g"), "");
+}
 
 /** A retrieval older than this is redone in full: dates can miss a change (access on a profile). */
 export const FULL_RETRIEVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -411,7 +437,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
           }
         }
         await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, text);
+        await writeFile(target, kind && Object.hasOwn(SECRET_ELEMENTS, kind) ? withoutSecrets(kind, text.toString("utf8")) : text);
       }
       await remove(path.join(work, part));
     }
