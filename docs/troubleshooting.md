@@ -15,6 +15,7 @@ When you open an issue, paste the `doctor` output. It shows no token, username o
 | What `doctor` says | What to do |
 | --- | --- |
 | `Node 22.x; sf-agent-po needs Node 24 or later.` | Install Node 24 LTS from nodejs.org, or `nvm install 24`. If your shell has Node 24 but your tool does not, see [The server does not start](#the-server-does-not-start). |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0 turns off certificate checks` | Remove that variable from your shell and from your tool's MCP settings. Behind a proxy that inspects HTTPS, set `NODE_OPTIONS=--use-system-ca` instead: Node then trusts the certificates your system trusts. |
 
 ## Workspace
 

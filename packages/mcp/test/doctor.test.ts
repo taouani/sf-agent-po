@@ -84,7 +84,7 @@ describe("doctor", () => {
     const project = path.join(home, "proj");
     const opts: DoctorOptions = { workspace: path.join(project, ".sf-agent"), project, atlassianCalls: true, model: "load" };
     const results = await runDoctor(opts, deps(home));
-    expect(byCheck(results, "Node")[0]).toMatchObject({ level: "pass", detail: "Node 24.11.0" });
+    expect(byCheck(results, "Node")).toEqual([expect.objectContaining({ level: "pass", detail: "Node 24.11.0" })]);
     expect(byCheck(results, "Workspace")[0]).toMatchObject({ level: "warn", detail: expect.stringContaining(path.join("~", "proj", ".sf-agent")) });
     // No workspace was created to check it.
     expect(() => new Database(databaseFile(opts.workspace), [], { readOnly: true })).toThrow();
@@ -163,11 +163,24 @@ describe("doctor", () => {
     expect(byCheck(other, "Name model")[0]).toMatchObject({ level: "pass", detail: expect.stringContaining("loads it on first use") });
   });
 
+  it("warns when certificate checks are off, and only for the value Node acts on", async () => {
+    const home = tempDir();
+    const opts: DoctorOptions = { workspace: path.join(home, "w"), project: home, atlassianCalls: false, model: "files" };
+    const env = (value: string) => ({ PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), NODE_TLS_REJECT_UNAUTHORIZED: value });
+    const off = await runDoctor(opts, deps(home, { env: env("0") }));
+    expect(byCheck(off, "Node").map((r) => r.level)).toEqual(["pass", "warn"]);
+    expect(formatChecks(off)).toMatch(/PASS {2}Node: Node 24\.11\.0\nWARN {2}Node: NODE_TLS_REJECT_UNAUTHORIZED=0 .*\n {6}Fix: Remove NODE_TLS_REJECT_UNAUTHORIZED.*--use-system-ca/);
+    // Node turns the checks off only for "0".
+    for (const value of ["1", "false", ""]) {
+      expect(byCheck(await runDoctor(opts, deps(home, { env: env(value) })), "Node")).toHaveLength(1);
+    }
+  });
+
   it("fails clearly: old Node, a half-set Atlassian config, huggingface.co out of reach, a broken sf", async () => {
     const home = tempDir();
     const d = deps(home, {
       nodeVersion: "22.3.0",
-      env: { PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), ATLASSIAN_EMAIL: "me@x.com" },
+      env: { PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), ATLASSIAN_EMAIL: "me@x.com", NODE_TLS_REJECT_UNAUTHORIZED: "0" },
       fetch: (async () => {
         throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND huggingface.co"), { code: "ENOTFOUND" }) });
       }) as typeof fetch,
@@ -177,6 +190,7 @@ describe("doctor", () => {
     });
     const results = await runDoctor({ workspace: path.join(home, "w"), project: home, atlassianCalls: true, model: "load" }, d);
     expect(byCheck(results, "Node")[0]).toMatchObject({ level: "fail" });
+    expect(byCheck(results, "Node")[1]).toMatchObject({ level: "warn", detail: expect.stringContaining("NODE_TLS_REJECT_UNAUTHORIZED=0"), fix: expect.stringContaining("--use-system-ca") });
     expect(byCheck(results, "Jira and Confluence")[0]).toMatchObject({ level: "fail", detail: "ATLASSIAN_SITE_URL and ATLASSIAN_API_TOKEN are not set in this shell." });
     expect(byCheck(results, "Name model")[0]).toMatchObject({ level: "fail", detail: expect.stringContaining("ENOTFOUND"), fix: expect.stringContaining("HTTPS_PROXY") });
     expect(byCheck(results, "Salesforce CLI")[0]).toMatchObject({ level: "fail", detail: "sf org list failed: boom" });
