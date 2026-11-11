@@ -56,6 +56,8 @@ export interface ServerOptions {
   review?: { open?: (url: string) => Promise<boolean> | boolean; progressEveryMs?: number };
   /** Overrides how each call reaches the user, for tests. */
   reviewer?: (call: CallContext) => Reviewer;
+  /** The `doctor` checks as text, without the Atlassian calls: the server_status tool is offered with them. */
+  status?: () => Promise<string>;
   /** The metadata index and its background runs: the metadata tools are offered with them. */
   metadata?: { index: MetadataIndex; indexer: BackgroundIndexer };
   /** The requirements and workflow runs: the workflow tools are offered with them. */
@@ -184,6 +186,26 @@ export function createServer(opts: ServerOptions): McpServer {
   }
 
   const add = async (context: string, docs: NewDocument[], call: CallContext) => summary(context, await intakeFor(call).addDocuments(context, docs));
+
+  if (opts.status) {
+    const status = opts.status;
+    server.registerTool(
+      "server_status",
+      {
+        title: "Check the server",
+        description:
+          "Checks what this server needs (Node, workspace, masking key, name model, sf CLI and orgs, Jira and Confluence settings, git, gh, glab, AI tool files, index age) and says how to fix each problem. Use it when a tool fails for a reason outside the inputs, or when the user asks what is set up.",
+        inputSchema: {},
+      },
+      // Error messages from the CLIs and the keychain reach the checks: masked like any input.
+      guard(async () => {
+        const out = await status();
+        const fallback = opts.errorMasker ?? masker;
+        const masked = await ((opts.modelReady?.() ?? true) ? masker : fallback).mask("default", out).catch(() => fallback.mask("default", out));
+        return text(masked.text);
+      }),
+    );
+  }
 
   server.registerTool(
     "context_list",

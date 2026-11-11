@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
+import { DOCTOR_USAGE } from "./doctor.js";
 import { INDEX_USAGE } from "./index-command.js";
 import { keyExportHint, keyImportHint, KEY_USAGE } from "./key-command.js";
 
@@ -49,7 +50,12 @@ async function main(): Promise<void> {
   };
   const metadata = new MetadataIndex(database);
   const indexer = new BackgroundIndexer(metadata, { workspace });
-  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian, metadata: { index: metadata, indexer },
+  const status = async () => {
+    const { defaultDoctorDeps, formatChecks, runDoctor } = await import("./doctor.js");
+    const opts = { workspace, project: process.cwd(), atlassianCalls: false, model: "files" as const, database, modelLoaded: detector.ready(), keyLoaded: true };
+    return formatChecks(await runDoctor(opts, await defaultDoctorDeps()));
+  };
+  const server = createServer({ contexts, masker, errorMasker: new Masker({ vault }), modelReady: detector.ready, approval, recognizer, version, atlassian, status, metadata: { index: metadata, indexer },
     workflows: { requirements: new RequirementRepository(database), runs: new WorkflowRepository(database) },
   });
   const shutdown = async () => {
@@ -116,6 +122,27 @@ async function index(argv: string[]): Promise<void> {
   }
 }
 
+/** `doctor` checks what the server needs and says how to fix what is missing. */
+async function doctor(argv: string[]): Promise<void> {
+  let failed = true;
+  try {
+    const { defaultDoctorDeps, formatChecks, parseDoctorArgs, runDoctor } = await import("./doctor.js");
+    const opts = parseDoctorArgs(argv);
+    if ("help" in opts) {
+      console.log(opts.help);
+      failed = false;
+    } else {
+      const results = await runDoctor({ ...opts, model: "load" }, await defaultDoctorDeps());
+      console.log(formatChecks(results));
+      failed = results.some((r) => r.level === "fail");
+    }
+  } catch (err) {
+    console.error((err as Error).message);
+  }
+  // The model's WebAssembly threads would keep the process alive.
+  process.exit(failed ? 1 : 0);
+}
+
 /** `key` backs up the workspace's vault key, or puts a backup back. */
 async function key(argv: string[]): Promise<void> {
   try {
@@ -133,8 +160,9 @@ const command = process.argv[2];
 if (command === "init") await init(process.argv.slice(3));
 else if (command === "index") await index(process.argv.slice(3));
 else if (command === "key") await key(process.argv.slice(3));
+else if (command === "doctor") await doctor(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}`);
+  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}\n\n${DOCTOR_USAGE}`);
   process.exitCode = 1;
 } else await main();

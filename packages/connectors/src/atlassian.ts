@@ -63,6 +63,14 @@ export class AtlassianClient {
     return body ? JSON.parse(body) : undefined;
   }
 
+  /**
+   * One read call that needs a valid login: the current user in Jira, one space in
+   * Confluence. For `doctor`; throws AtlassianError with the status when refused.
+   */
+  async ping(product: "jira" | "confluence"): Promise<void> {
+    await this.request(product === "jira" ? "/rest/api/3/myself" : "/wiki/api/v2/spaces?limit=1");
+  }
+
   /** Follows nextPageToken until maxResults issues are collected or Jira reports the last page. */
   async searchIssues(jql: string, maxResults = 50): Promise<NewDocument[]> {
     const docs: NewDocument[] = [];

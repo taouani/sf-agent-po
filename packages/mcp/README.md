@@ -56,6 +56,18 @@ workspace's and saves it in your keychain; add `--allow-key-file` to save it in 
 instead when the keychain cannot be used. The key is never read from the command line, which
 your shell history keeps, and neither command changes the workspace database.
 
+To check the set-up, run `doctor` in your project folder. It checks Node, the workspace and
+its masking key, the name detection model, the `sf` CLI and its orgs, the Jira and Confluence
+settings (with one call to each), `git`, `gh` and `glab`, the AI tool files and the age of
+each index, and gives the fix for each problem. Its output shows no token, username or
+masked value, and `~` for your home folder, so you can paste it into an issue. Your AI tool
+sets the server's environment, which your shell may not have: the `server_status` tool runs
+the same checks from inside the server, without the calls to Jira and Confluence.
+
+```bash
+npx -y sf-agent-po@next doctor   # --workspace <folder>, --dir <project folder>, --no-calls
+```
+
 The name detection model (about 140 MB) is downloaded on first use, pinned and checked.
 It comes from huggingface.co, whose larger files are served from its download hosts
 (`*.hf.co`). Behind a company proxy, add `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` to the
