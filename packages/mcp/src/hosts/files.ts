@@ -17,6 +17,8 @@ export interface HostFile {
   content: string;
   /** Not written when this other file is present or written in the same run, because the host would load both. */
   unlessPresent?: { path: string; reason: string };
+  /** A file an earlier version wrote for the same purpose; left alone, but `init` and `doctor` say to delete it. */
+  replaces?: string;
 }
 
 interface Workflow {
@@ -142,13 +144,19 @@ export function hostFiles(host: Host): HostFile[] {
       ];
     }
     case "cursor": {
-      const contextText = `The requirement context to work from is the one the user named with this command or in their message; any further text is extra scope or focus. If they named none, call \`context_list\` and ask which to use (use "default" when it is the only one). Pass \`context: "<that name>"\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
+      const contextText = `The requirement context to work from is the one the user named when running this or in their message; any further text is extra scope or focus. If they named none, call \`context_list\` and ask which to use (use "default" when it is the only one). Pass \`context: "<that name>"\` to every sf-agent-po tool call. ${INDUSTRY_LINE}`;
       return [
         ...AGENTS.map((a) => ({
           path: `.cursor/rules/${a.id}.mdc`,
           content: `---\ndescription: ${a.description}\nglobs:\nalwaysApply: false\n---\n\n${a.body}\n`,
         })),
-        ...WORKFLOWS.map((w) => ({ path: `.cursor/commands/${w.id}.md`, content: guidedPrompt(w.workflow, { contextText }) + "\n" })),
+        // Skills (Cursor 2.4 and later), run with /<name> only: Cursor is moving custom commands to skills.
+        ...WORKFLOWS.map((w) => ({
+          path: `.cursor/skills/${w.id}/SKILL.md`,
+          // The name bare, as the rules above have their fields: ids are lowercase letters, digits and hyphens.
+          content: `---\nname: ${w.id}\n` + frontmatter({ description: w.description, "disable-model-invocation": true }).slice(4) + guidedPrompt(w.workflow, { contextText }) + "\n",
+          replaces: `.cursor/commands/${w.id}.md`,
+        })),
       ];
     }
     case "copilot": {
