@@ -126,7 +126,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
   1. Open the `sf-agent-po` package, then **Settings**, then **Trusted publishing**. Choose **GitHub Actions** and fill in "Organization or user" `taouani`, "Repository" `sf-agent-po`, "Workflow filename" `release-next.yml` and "Environment name" `npm-next`. Under "Allowed actions", tick `npm publish`: a publisher made since September 2026 allows only `npm stage publish` by default, and the release then fails with "OIDC permission denied for this action" (seen on 11 Nov). Tick `npm dist-tag` too, so the workflow can move `latest`.
   2. Delete the `NPM_TOKEN` secret from the `npm-next` environment, then run Release next within two days, since npm drops an unused setup. A release that works without the secret proves trusted publishing works.
   3. Set **Publishing access** to "Require two-factor authentication and disallow tokens", then delete the npm token itself.
-- **If npm will not move `latest`.** Trusted publishing covers `npm publish`; moving a tag works with it only if npm allows that action. When it does not, the release still goes out, and its summary gives the one command to run on your machine after `npm login`.
+- **If npm will not move `latest`.** Trusted publishing covers `npm publish` once that action is ticked; moving a tag works with it only if npm allows that action. When it does not, the release still goes out, and its summary gives the one command to run on your machine after `npm login`.
 
 **The `latest` tag.** D5.
 
