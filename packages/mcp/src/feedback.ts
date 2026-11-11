@@ -25,6 +25,7 @@ import { itemHash, labelsFor, oneLine, storyFields } from "./jira.js";
 import { FEEDBACK_GIVERS, type FeedbackGiver, type FeedbackRequest, requestDigest } from "./approval/server.js";
 import type { DetailedDesign } from "./design/detailed-schema.js";
 import type { Reviewer } from "./inputs.js";
+import { feedbackReport, formatReport, TARGET_ACCEPTED } from "./report.js";
 import type { CallContext } from "./review.js";
 
 type Text = { content: { type: "text"; text: string }[] };
@@ -44,8 +45,6 @@ export interface FeedbackKit {
 
 /** D2: an edit is major past this share of the words changed (or a criterion added or removed). A context setting can change it. */
 export const DEFAULT_MAJOR_SHARE = 0.3;
-/** The success measure's target: stories accepted without major edits. */
-export const TARGET_ACCEPTED = 0.9;
 /** Words compared per story: a longer description is compared on its first words. Keep it under 65,536: the comparison counts in 16 bits. */
 const MAX_WORDS = 3_000;
 
@@ -526,6 +525,30 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
       else if (!label) parts.push("No model label is set for this context, so the report cannot compare models.");
       parts.push(...notes);
       return text(parts.join("\n"));
+    }),
+  );
+}
+
+export function registerFeedbackSummary(server: McpServer, kit: Pick<FeedbackKit, "contexts" | "feedback" | "guard" | "contextName">): void {
+  server.registerTool(
+    "feedback_summary",
+    {
+      title: "Summarise feedback",
+      description:
+        "The success measure: the share of published stories accepted without major edits, against the 90% target, by context, model label and workflow, and the average rating " +
+        "of each design section. A person's verdict counts before the Jira diff's guess (the Product Owner's first). Read from what feedback_jira_diff and feedback_review recorded; " +
+        "the same numbers come from `npx sf-agent-po@next report`, which can write them to a CSV file.",
+      inputSchema: {
+        context: kit.contextName,
+        allContexts: z.boolean().optional().describe("Every context of the workspace, not only this one."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    kit.guard(async ({ context, allContexts }: { context: string; allContexts?: boolean }) => {
+      const names = allContexts ? kit.contexts.list().map((c) => c.name) : [context];
+      if (!allContexts && !kit.contexts.get(context)) throw new Error(`There is no context "${context}".`);
+      const report = feedbackReport(names.flatMap((n) => kit.feedback.list(n)));
+      return text(`${allContexts ? "All contexts" : `Context "${context}"`}:\n\n${formatReport(report)}`);
     }),
   );
 }

@@ -483,6 +483,20 @@ describe("feedback_review", () => {
     expect(rows(c, "rating")).toEqual(["context:dev:5"]);
   });
 
+  it("sums up the success measure, people's verdicts before the Jira diff's guesses", async () => {
+    const c = await reviewed();
+    expect((await c.call("feedback_summary", { context: "acme" })).text).toContain("Stories accepted without major edits: 4 of 4 (100%), against the 90% target: met.");
+    c.page.answer = (req) => asBrowser(req as FeedbackRequest, { verdicts: { S1: "major", S2: "", S3: "", S4: "" }, ratings: { solution: { value: 3 } } });
+    await c.call("feedback_review", { context: "acme", artifactId: c.id, role: "po" });
+    const r = await c.call("feedback_summary", { context: "acme" });
+    expect(r.text).toContain('Context "acme":');
+    expect(r.text).toContain("3 of 4 (75%), against the 90% target: not met.");
+    expect(r.text).toContain("1 decided by people, 3 by the Jira diff's guess only.");
+    expect(r.text).toContain("- acme, high-level, solution: 3.0 (1 rating)");
+    expect((await c.call("feedback_summary", { context: "acme", allContexts: true })).text).toContain("All contexts:");
+    expect((await c.call("feedback_summary", { context: "nowhere" })).text).toContain('There is no context "nowhere"');
+  });
+
   it("masks the model label the user types, and asks for it only once", async () => {
     const c = await reviewed();
     c.page.answer = (req) => ({ ...asBrowser(req as FeedbackRequest), model: "Karim Benali's Copilot" });

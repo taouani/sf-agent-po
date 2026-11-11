@@ -8,6 +8,7 @@ import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
 import { DOCTOR_USAGE } from "./doctor.js";
 import { INDEX_USAGE } from "./index-command.js";
 import { keyExportHint, keyImportHint, KEY_USAGE } from "./key-command.js";
+import { REPORT_USAGE } from "./report-command.js";
 
 async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
@@ -161,13 +162,27 @@ async function key(argv: string[]): Promise<void> {
   }
 }
 
+/** `report` prints the success measure and the design ratings, and writes them to CSV when asked. */
+async function report(argv: string[]): Promise<void> {
+  try {
+    const { parseReportArgs, runReport } = await import("./report-command.js");
+    const opts = parseReportArgs(argv);
+    if ("help" in opts) return console.log(opts.help);
+    process.exitCode = await runReport(opts, { out: (t) => console.log(t) });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
 const command = process.argv[2];
 if (command === "init") await init(process.argv.slice(3));
 else if (command === "index") await index(process.argv.slice(3));
 else if (command === "key") await key(process.argv.slice(3));
 else if (command === "doctor") await doctor(process.argv.slice(3));
+else if (command === "report") await report(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}\n\n${DOCTOR_USAGE}`);
+  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}\n\n${DOCTOR_USAGE}\n\n${REPORT_USAGE}`);
   process.exitCode = 1;
 } else await main();

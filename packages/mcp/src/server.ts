@@ -26,7 +26,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
-import { registerFeedbackTools } from "./feedback.js";
+import { registerFeedbackSummary, registerFeedbackTools } from "./feedback.js";
 import { registerTraceTools } from "./trace.js";
 import { registerImpactTools } from "./impact-tools.js";
 import { registerScopeTools } from "./scope-tools.js";
@@ -181,6 +181,7 @@ export function createServer(opts: ServerOptions): McpServer {
   registerAgentPrompts(server, publishKit, { guided: Boolean(opts.workflows) });
   if (opts.feedback) {
     registerFeedbackTools(server, { contexts, masker, feedback: opts.feedback, atlassian: opts.atlassian, reviewerFor, guard, contextName, ...(opts.workflows && { workflows: opts.workflows.runs }) });
+    registerFeedbackSummary(server, { contexts, feedback: opts.feedback, guard, contextName });
   }
   if (opts.metadata) {
     registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
