@@ -21,6 +21,8 @@ export interface IndexOptions {
   force?: boolean;
   /** Parse every file again, reusing nothing from the last run. */
   full?: boolean;
+  /** Let git and gh ask for credentials: a run in a terminal, not the server's. */
+  interactive?: boolean;
 }
 
 /**
@@ -117,7 +119,7 @@ export async function indexRemote(index: MetadataIndex, spec: string | MetadataS
       { source: repoSource(repo), kind: "repo" },
       // Fetched under the lease, so that two runs of one repository never share a checkout.
       (lease, cache) => scrubbing(options.workspace, async () => {
-        const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress });
+        const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress, interactive: options.interactive });
         lease.renew();
         const revision = await gitRevision(dir);
         if (revision) lease.setRevision(revision);

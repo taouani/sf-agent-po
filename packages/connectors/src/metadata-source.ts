@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { run } from "./exec.js";
 
@@ -26,7 +26,7 @@ export const REPO_SPEC_HELP =
   "github:owner/repo, gitlab:group/repo, azure-devops:<clone URL> or git:<clone URL>, with #<branch or tag> to pick one";
 
 /** A branch or tag: nothing git could read as an option, a range or a path out of the repository. */
-const REF = /^(?!-)(?!.*\.\.)[\w./-]+$/;
+const REF = /^(?!-)(?!.*\.\.)(?!HEAD$)(?!.*\.lock$)[\w./-]*[\w-]$/;
 /** owner/repo, or group/subgroup/repo on GitLab. */
 const SLUG = /^[\w.-]+(?:\/[\w.-]+)+$/;
 
@@ -36,25 +36,46 @@ const SLUG = /^[\w.-]+(?:\/[\w.-]+)+$/;
  * helpers (`ext::`, `fd::`) are refused, as is anything git could read as an option.
  */
 export function parseRepoSpec(text: string): MetadataSourceSpec & { provider: RepoProvider } {
+  // Nothing after the provider is quoted back until it is known to hold no credentials.
   const colon = text.indexOf(":");
   const provider = text.slice(0, colon) as RepoProvider;
-  if (colon < 0 || !REPO_PROVIDERS.includes(provider)) throw new Error(`"${redactLocation(text)}" is not a repository: give ${REPO_SPEC_HELP}.`);
+  if (colon < 0 || !REPO_PROVIDERS.includes(provider)) {
+    const named = /^[\w-]{1,30}$/.test(provider) ? ` "${provider}" is not one:` : "";
+    throw new Error(`That is not a repository:${named} give ${REPO_SPEC_HELP}.`);
+  }
   let location = text.slice(colon + 1).trim();
   let ref: string | undefined;
   const hash = location.lastIndexOf("#");
   if (hash >= 0) {
     ref = location.slice(hash + 1);
     location = location.slice(0, hash);
-    if (!REF.test(ref)) throw new Error(`"${ref}" is not a branch or tag name.`);
+    if (!REF.test(ref)) throw new Error("The branch or tag after # is not a name git takes.");
   }
   const shown = redactLocation(location);
   if (!location || location.startsWith("-")) throw new Error(`"${shown}" is not a repository: give ${REPO_SPEC_HELP}.`);
   if (provider === "github" || provider === "gitlab") {
-    if (!SLUG.test(location) && !/^https:\/\/[^\s]+$/.test(location)) throw new Error(`"${shown}" is not a ${provider} repository: give owner/repo or its https URL.`);
-  } else if (location.includes("::") || !/^(?:https:\/\/|ssh:\/\/|file:\/\/|[\w.-]+@[\w.-]+:)\S+$/.test(location)) {
+    if (!SLUG.test(location) && !(/^https:\/\//.test(location) && cloneUrl(location))) throw new Error(`"${shown}" is not a ${provider} repository: give owner/repo or its https URL.`);
+  } else if (!cloneUrl(location)) {
     throw new Error(`"${shown}" is not a clone URL: give an https, ssh or file URL, or user@host:path.`);
   }
   return { provider, location, ...(ref ? { ref } : {}) };
+}
+
+/**
+ * Whether git may be given `location` to clone: an https, ssh or file URL that parses, with a
+ * host that cannot be read as an option, or `user@host:path`. Transport helpers (`ext::`) are
+ * not URLs and are refused.
+ */
+function cloneUrl(location: string): boolean {
+  if (/\s/.test(location) || location.includes("::")) return false;
+  if (/^[\w.-]+@\w[\w.-]*:(?!\/\/)\S+$/.test(location)) return true;
+  if (!/^(?:https|ssh|file):\/\//.test(location)) return false;
+  try {
+    const url = new URL(location);
+    return !url.hostname.startsWith("-") && (url.protocol === "file:" || url.hostname !== "");
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -65,7 +86,8 @@ export function parseRepoSpec(text: string): MetadataSourceSpec & { provider: Re
 export function repoSource(spec: MetadataSourceSpec): string {
   const where = redactLocation(spec.location).replace(/\.git$/, "").replace(/\/+$/, "");
   const name = where.split(/[/:]/).filter(Boolean).pop() ?? spec.provider;
-  const key = `${spec.provider}:${where.toLowerCase()}#${spec.ref ?? ""}`;
+  // GitHub and GitLab do not care about case in names; other servers may.
+  const key = `${spec.provider}:${spec.provider === "github" || spec.provider === "gitlab" ? where.toLowerCase() : where}#${spec.ref ?? ""}`;
   return `repo:${name}${spec.ref ? `@${spec.ref}` : ""}#${createHash("sha256").update(key).digest("hex").slice(0, 8)}`;
 }
 
@@ -77,7 +99,11 @@ export function repoSource(spec: MetadataSourceSpec): string {
  * brought to the remote's latest commit (a force push included); when that
  * fails, it is cloned again.
  */
-export async function resolveMetadataSource(spec: MetadataSourceSpec, workspaceDir: string, options: { progress?: (message: string) => void } = {}): Promise<string> {
+export async function resolveMetadataSource(
+  spec: MetadataSourceSpec,
+  workspaceDir: string,
+  options: { progress?: (message: string) => void; /** Let git and gh ask for credentials (a run in a terminal). */ interactive?: boolean } = {},
+): Promise<string> {
   if (spec.provider === "local") {
     const dir = path.resolve(spec.location);
     if (!(await stat(dir)).isDirectory()) throw new Error(`${dir} is not a directory.`);
@@ -90,46 +116,64 @@ export async function resolveMetadataSource(spec: MetadataSourceSpec, workspaceD
   }
 
   const shown = redactLocation(spec.location);
-  const redacted = (err: unknown) => new Error(((err as Error)?.message ?? String(err)).split(spec.location).join(shown));
-  const dest = path.join(workspaceDir, "repos", slug(spec));
+  const redacted = (err: unknown, prefix = "") => new Error(prefix + ((err as Error)?.message ?? String(err)).split(spec.location).join(shown));
+  // One folder per source: names that differ only by a character the folder name cannot hold
+  // stay apart.
+  const dest = path.join(workspaceDir, "repos", checkoutName(spec));
+  const quiet = { ...(options.interactive ? {} : { env: NON_INTERACTIVE }) };
+  let fetchError: unknown;
   if (await exists(path.join(dest, ".git"))) {
     options.progress?.(`Fetching ${shown}`);
     try {
-      // gh's own credential helper, as gh repo clone used it, after the user's own helpers.
-      const helper = spec.provider === "github" ? ["-c", "credential.helper=!gh auth git-credential"] : [];
-      await run("git", [...helper, "-C", dest, "fetch", "--quiet", "--depth", "1", "origin", spec.ref ?? "HEAD"], { timeoutMs: 15 * 60_000 });
+      // gh's own credential helper, set as gh repo clone sets it.
+      const helper = spec.provider === "github" ? ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"] : [];
+      await run("git", [...helper, "-C", dest, "fetch", "--quiet", "--depth", "1", "origin", spec.ref ?? "HEAD"], { timeoutMs: 15 * 60_000, ...quiet });
       await run("git", ["-C", dest, "reset", "--quiet", "--hard", "FETCH_HEAD"]);
       return dest;
-    } catch {
-      // A checkout git cannot bring up to date (a broken one, a remote that moved) is cloned again.
-      await rm(dest, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (err) {
+      // A checkout git cannot bring up to date (a broken one, a remote that moved) is cloned
+      // again, beside it: the old one goes only once the new one is complete.
+      fetchError = err;
     }
   }
 
   options.progress?.(`Cloning ${shown}`);
   await mkdir(path.dirname(dest), { recursive: true });
+  const next = fetchError ? `${dest}.next` : dest;
+  await rm(next, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   const gitFlags = ["--depth", "1", ...(spec.ref ? ["--branch", spec.ref] : [])];
-  const timeoutMs = 30 * 60_000;
+  const cloning = { timeoutMs: 30 * 60_000, ...quiet };
   try {
     switch (spec.provider) {
       case "github":
-        await run("gh", ["repo", "clone", spec.location, dest, "--", ...gitFlags], { timeoutMs });
+        await run("gh", ["repo", "clone", spec.location, next, "--", ...gitFlags], cloning);
         break;
       case "gitlab":
-        await run("glab", ["repo", "clone", spec.location, dest, "--", ...gitFlags], { timeoutMs });
+        await run("glab", ["repo", "clone", spec.location, next, "--", ...gitFlags], cloning);
         break;
       case "azure-devops":
       case "git":
-        await run("git", ["clone", ...gitFlags, "--", spec.location, dest], { timeoutMs });
+        await run("git", ["clone", ...gitFlags, "--", spec.location, next], cloning);
         break;
     }
   } catch (err) {
     // A clone that failed halfway would be taken for a checkout next time.
-    await rm(dest, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
+    await rm(next, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
+    if (fetchError) throw redacted(err, `${redacted(fetchError).message}\nCloning again failed too: `);
     throw redacted(err);
+  }
+  if (fetchError) {
+    await rm(dest, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    await rename(next, dest);
   }
   return dest;
 }
+
+/**
+ * What keeps git, gh and Git Credential Manager from asking for a password or a sign-in where
+ * no one answers (the server's background runs): the run fails, and says why, instead.
+ */
+const NON_INTERACTIVE: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1", GCM_INTERACTIVE: "never" };
 
 /**
  * Removes credentials embedded in a clone URL (e.g. an Azure DevOps PAT in
@@ -137,23 +181,26 @@ export async function resolveMetadataSource(spec: MetadataSourceSpec, workspaceD
  * saved contexts or the model.
  */
 export function redactLocation(location: string): string {
+  let out = location;
   try {
     const url = new URL(location);
-    if (!url.username && !url.password) return location;
-    url.username = "";
-    url.password = "";
-    return url.toString();
+    if (url.username || url.password || url.search) {
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      out = url.toString();
+    }
   } catch {
-    return location;
+    // Not a URL Node can read, though git may: credentials go by pattern instead.
   }
+  // What a URL holds before its host, and its query (a token as private_token=...).
+  return out.replace(/([a-z][\w+.-]*:\/\/)[^/\s]*@/gi, "$1").replace(/(:\/\/[^\s?#]*)\?[^\s#]*/g, "$1");
 }
 
-function slug(spec: MetadataSourceSpec): string {
-  const base = redactLocation(spec.location)
-    .replace(/^https?:\/\//, "")
-    .replace(/\.git$/, "")
-    .replace(/[^\w.-]+/g, "_");
-  return `${spec.provider}_${base}${spec.ref ? `@${spec.ref.replace(/[^\w.-]+/g, "_")}` : ""}`;
+/** A checkout's folder: the source name, as a folder name. */
+function checkoutName(spec: MetadataSourceSpec): string {
+  const [, name, hash] = /^repo:(.*)#([0-9a-f]{8})$/.exec(repoSource(spec))!;
+  return `${spec.provider}_${name!.replace(/[^\w.-]+/g, "_").slice(0, 60)}_${hash}`;
 }
 
 async function exists(p: string): Promise<boolean> {

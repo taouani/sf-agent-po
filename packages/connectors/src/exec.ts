@@ -17,7 +17,7 @@ export interface ExecResult {
 export async function run(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs?: number; shell?: boolean; parseFailureOutput?: boolean } = {},
+  opts: { cwd?: string; timeoutMs?: number; shell?: boolean; parseFailureOutput?: boolean; /** Added to this process's environment. */ env?: NodeJS.ProcessEnv } = {},
 ): Promise<ExecResult> {
   try {
     // With a shell, Node joins the arguments without quoting them and warns (DEP0190), so
@@ -25,6 +25,7 @@ export async function run(
     const { stdout, stderr } = await execFileAsync(opts.shell ? [cmd, ...args].join(" ") : cmd, opts.shell ? [] : args, {
       cwd: opts.cwd,
       shell: opts.shell,
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
       timeout: opts.timeoutMs ?? 120_000,
       maxBuffer: 64 * 1024 * 1024,
     });

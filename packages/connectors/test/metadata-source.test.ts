@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,17 +25,27 @@ describe("metadata sources", () => {
     expect(parseRepoSpec("gitlab:acme/sales/core#release/2.1")).toEqual({ provider: "gitlab", location: "acme/sales/core", ref: "release/2.1" });
     expect(parseRepoSpec("azure-devops:https://dev.azure.com/acme/core/_git/sf#main")).toEqual({ provider: "azure-devops", location: "https://dev.azure.com/acme/core/_git/sf", ref: "main" });
     expect(parseRepoSpec("git:git@host.example:acme/sf.git")).toMatchObject({ provider: "git", location: "git@host.example:acme/sf.git" });
-    expect(() => parseRepoSpec("bitbucket:acme/core")).toThrow(/is not a repository/);
-    expect(() => parseRepoSpec("acme/core")).toThrow(/is not a repository/);
+    expect(() => parseRepoSpec("bitbucket:acme/core")).toThrow(/"bitbucket" is not one/);
+    expect(() => parseRepoSpec("acme/core")).toThrow(/not a repository/);
     expect(() => parseRepoSpec("github:acme")).toThrow(/owner\/repo/);
     expect(() => parseRepoSpec("git:ext::sh -c touch% /tmp/x")).toThrow(/not a clone URL/);
     expect(() => parseRepoSpec("git:--upload-pack=x")).toThrow(/is not a repository/);
-    expect(() => parseRepoSpec("github:acme/core#-x")).toThrow(/not a branch/);
-    expect(() => parseRepoSpec("github:acme/core#a..b")).toThrow(/not a branch/);
-    // A token in the URL is never quoted back.
+    for (const ref of ["-x", "a..b", "HEAD", "main/", "main.lock"]) expect(() => parseRepoSpec(`github:acme/core#${ref}`), ref).toThrow(/branch or tag after #/);
+    // Hosts git could read as an option, URLs that do not parse.
+    for (const bad of ["ssh://-oProxyCommand=x/y", "ssh://u@-oProxyCommand=x/y", "a@-host:x", "https://host:99999/x"]) expect(() => parseRepoSpec(`git:${bad}`), bad).toThrow(/not a clone URL/);
+    // A token in the text is never quoted back, wherever it is.
     const token = ["sec", "ret"].join("");
-    expect(() => parseRepoSpec(`git:http://${token}@host/x`)).toThrow(/not a clone URL/);
-    expect(() => parseRepoSpec(`git:http://${token}@host/x`)).not.toThrow(new RegExp(token));
+    for (const text of [`git:http://${token}@host/x`, `azure:https://${token}@dev.azure.com/a`, `git:https://u:ab#${token}@host/x`, `git:https://${token}@host:99999/x`]) {
+      expect(() => parseRepoSpec(text), text).toThrow();
+      expect(() => parseRepoSpec(text), text).not.toThrow(new RegExp(token));
+    }
+  });
+
+  it("takes credentials out of a location, also where Node cannot read the URL", () => {
+    const token = ["P", "AT9"].join("");
+    expect(redactLocation(`https://${token}@host:99999/x`)).toBe("https://host:99999/x");
+    expect(redactLocation(`https://gitlab.com/a/b.git?private_token=${token}`)).toBe("https://gitlab.com/a/b.git");
+    expect(redactLocation(`clone https://u:${token}@host/x failed`)).toBe("clone https://host/x failed");
   });
 
   it("names a repository by its name, branch and a hash of where it is, without credentials", () => {
@@ -45,6 +55,9 @@ describe("metadata sources", () => {
     expect(repoSource(parseRepoSpec(`azure-devops:https://${token}@dev.azure.com/acme/core/_git/salesforce#main`))).toBe(a);
     expect(repoSource(parseRepoSpec("github:acme/core"))).toMatch(/^repo:core#[0-9a-f]{8}$/);
     expect(repoSource(parseRepoSpec("github:acme/core"))).not.toBe(repoSource(parseRepoSpec("github:other/core")));
+    // GitHub names do not care about case; other servers' may.
+    expect(repoSource(parseRepoSpec("github:Acme/Core"))).toBe(repoSource(parseRepoSpec("github:acme/core")).replace("core#", "Core#"));
+    expect(repoSource(parseRepoSpec("git:https://h/A/b"))).not.toBe(repoSource(parseRepoSpec("git:https://h/a/b")));
   });
 
   it("uses a local folder as it is", async () => {
@@ -83,7 +96,34 @@ describe("metadata sources", () => {
     rmSync(join(dest, ".git", "HEAD"));
     expect(await resolveMetadataSource(spec, workspace)).toBe(dest);
     expect(execFileSync("git", ["-C", dest, "log", "--format=%s"]).toString().trim()).toBe("rewritten");
+    // When the remote cannot be reached, the checkout stays for the next run, and the error says why.
+    renameSync(origin, `${origin}-away`);
+    try {
+      await expect(resolveMetadataSource(spec, workspace)).rejects.toThrow(/Cloning again failed too/);
+      expect(execFileSync("git", ["-C", dest, "log", "--format=%s"]).toString().trim()).toBe("rewritten");
+    } finally {
+      renameSync(`${origin}-away`, origin);
+    }
     // Real git processes: Windows runners have taken over 5 s.
+  }, 30_000);
+
+  it("keeps repositories whose names differ only by a character a folder name cannot hold apart", async () => {
+    const a = join(workspace, "a_b");
+    const b = join(workspace, "a-b");
+    for (const [dir, file] of [[a, "one"], [b, "two"]] as const) {
+      execFileSync("git", ["init", "-q", dir]);
+      writeFileSync(join(dir, file), file);
+      execFileSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "add", "."]);
+      execFileSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", file]);
+    }
+    // Two branches whose names give the same folder characters: release/2 and release_2.
+    execFileSync("git", ["-C", a, "branch", "release/2"]);
+    execFileSync("git", ["-C", a, "branch", "release_2"]);
+    const url = pathToFileURL(a).href;
+    const one = await resolveMetadataSource({ provider: "git", location: url, ref: "release/2" }, workspace);
+    const two = await resolveMetadataSource({ provider: "git", location: url, ref: "release_2" }, workspace);
+    expect(one).not.toBe(two);
+    expect(await resolveMetadataSource({ provider: "git", location: pathToFileURL(b).href }, workspace)).not.toBe(one);
   }, 30_000);
 
   it("indexes a repository, reading again only the files a new commit changed", async () => {

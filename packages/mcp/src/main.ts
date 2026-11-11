@@ -94,7 +94,9 @@ async function index(argv: string[]): Promise<void> {
     const opts = parseIndexArgs(argv);
     if ("help" in opts) return console.log(opts.help);
     const { Database, MetadataIndex } = await import("@sf-agent-po/core");
-    const { indexTarget } = await import("@sf-agent-po/connectors");
+    const { indexTarget, parseRepoSpec } = await import("@sf-agent-po/connectors");
+    // A repository is checked before the workspace is made for it.
+    if (opts.target.kind === "remote" && typeof opts.target.repo === "string") opts.target = { kind: "remote", repo: parseRepoSpec(opts.target.repo) };
     const { databaseFile, ensureWorkspace } = await import("./startup.js");
     ensureWorkspace(opts.workspace);
     database = new Database(databaseFile(opts.workspace));
@@ -112,6 +114,7 @@ async function index(argv: string[]): Promise<void> {
       workspace: opts.workspace,
       force: opts.force,
       full: opts.full,
+      interactive: Boolean(process.stdin.isTTY),
       progress: (m) => console.error(m),
     });
     for (const line of describeSnapshot(snapshot)) console.log(line);
