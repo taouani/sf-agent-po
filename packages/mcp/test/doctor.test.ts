@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, openVault, Vault, type KeyStore } from "@sf-agent-po/core";
 import { ApprovalServer, createServer } from "../src/index.js";
-import { DOCTOR_USAGE, formatChecks, parseDoctorArgs, runDoctor, tidyPath, type DoctorDeps, type DoctorOptions } from "../src/doctor.js";
+import { DOCTOR_USAGE, formatChecks, parseDoctorArgs, runDoctor, tidyPath, tidyText, type DoctorDeps, type DoctorOptions } from "../src/doctor.js";
 import { hostFiles } from "../src/hosts/files.js";
 import { databaseFile } from "../src/startup.js";
 
@@ -25,6 +25,8 @@ function memoryStore(): KeyStore {
   return { name: "the test keychain", get: (i) => keys.get(i), set: (i, k) => (keys.set(i, Buffer.from(k)), { where: "memory" }) };
 }
 
+const ORG_ID = "00D5g000000AbCdEAF";
+
 // Built at run time, so that no token-shaped literal sits in the repository.
 const TOKEN = ["tok", "en", "-", "x".repeat(20)].join("");
 
@@ -38,6 +40,7 @@ function deps(home: string, over: Partial<DoctorDeps> = {}): DoctorDeps & { fetc
     home,
     keyStore: memoryStore,
     keyTool: () => ({ name: "secret-tool", present: false }),
+    runtimePresent: () => true,
     loadModel: async () => ({ detect: async () => [{ start: 0, end: 15, type: "PERSON", source: "ner" as const }], stats: { tokens: 0, unaligned: 0 }, release: async () => {} }),
     fetch: (async (url: string | URL | Request) => {
       fetched.push(String(url));
@@ -47,7 +50,10 @@ function deps(home: string, over: Partial<DoctorDeps> = {}): DoctorDeps & { fetc
       if (cmd === "git") return { stdout: "git version 2.43.0\n" };
       throw new Error(`Command "${cmd}" was not found. Install it and make sure it is on PATH.`);
     },
-    sf: async () => ({ nonScratchOrgs: [{ username: "a@b.c", connectedStatus: "Connected" }], scratchOrgs: [{ username: "s@b.c", status: "Active", isExpired: false }] }),
+    sf: async () => ({
+      nonScratchOrgs: [{ username: "a@b.c", alias: "uat", orgId: ORG_ID, connectedStatus: "Connected" }],
+      scratchOrgs: [{ username: "s@b.c", status: "Active", isExpired: false }],
+    }),
     now: () => new Date("2026-11-10T12:00:00Z"),
     ...over,
   };
@@ -105,11 +111,14 @@ describe("doctor", () => {
     mkdirSync(workspace, { recursive: true });
     const db = new Database(databaseFile(workspace));
     openVault(db, store);
-    await new MetadataIndex(db).build({ source: "org:uat", kind: "org" }, async () => ({ components: [], edges: [], skipped: [] }) as never);
+    const index = new MetadataIndex(db);
+    await index.build({ source: `org:${ORG_ID}`, kind: "org" }, async () => ({ components: [], edges: [], skipped: [] }) as never);
+    await index.build({ source: "repo:proj#abcd1234", kind: "repo" }, async () => ({ components: [], edges: [], skipped: [] }) as never);
     db.close();
     for (const [i, f] of hostFiles("claude-code").entries()) {
       mkdirSync(path.dirname(path.join(project, f.path)), { recursive: true });
-      writeFileSync(path.join(project, f.path), i === 0 ? "edited" : f.content);
+      // One edited, one with CRLF line ends as a Windows checkout has them (the same file).
+      writeFileSync(path.join(project, f.path), i === 0 ? "edited" : i === 1 ? f.content.replace(/\n/g, "\r\n") : f.content);
     }
     const { DEFAULT_MODEL } = await import("@sf-agent-po/core");
     const modelDir = path.join(home, "models", DEFAULT_MODEL.id, DEFAULT_MODEL.revision);
@@ -134,7 +143,10 @@ describe("doctor", () => {
     expect(byCheck(results, "Jira and Confluence").map((r) => r.level)).toEqual(["pass", "fail"]);
     expect(calls).toEqual(["https://x.atlassian.net/rest/api/3/myself", "https://x.atlassian.net/wiki/api/v2/spaces?limit=1"]);
     expect(byCheck(results, "AI tool files")).toEqual([expect.objectContaining({ level: "warn", detail: expect.stringContaining("1 from another version or edited") })]);
-    expect(byCheck(results, "Metadata index")[0]).toMatchObject({ level: "warn", detail: expect.stringContaining("org:uat (org) was indexed 9 day(s) ago"), fix: expect.stringContaining("index --org uat") });
+    expect(byCheck(results, "Metadata index")).toEqual([
+      expect.objectContaining({ level: "warn", detail: `repo:proj#abcd1234 was indexed 9 day(s) ago.`, fix: expect.stringContaining("index --project <its folder>") }),
+      expect.objectContaining({ level: "warn", detail: `org:${ORG_ID} (uat) was indexed 9 day(s) ago.`, fix: expect.stringContaining("index --org uat") }),
+    ]);
     expect(formatChecks(results)).not.toContain(TOKEN);
 
     // Another computer: the key is missing, and the fix names key import.
@@ -164,6 +176,44 @@ describe("doctor", () => {
     expect(formatChecks(results)).toMatch(/FAIL {2}Node: Node 22\.3\.0.*\n {6}Fix: Install Node 24/);
   });
 
+  it("keeps the home folder, emails and address passwords out of any message", () => {
+    expect(tidyText("open C:/Users/Tarek/p and c:\\users\\tarek\\q and \"C:\\\\Users\\\\Tarek\\\\r\"", "C:\\Users\\Tarek", "win32")).toBe('open ~/p and ~\\q and "~\\\\r"');
+    expect(tidyText("/home/al/x and /home/alice/y", "/home/al", "linux")).toBe("~/x and /home/alice/y");
+    expect(tidyText("/HOME/al/x", "/home/al", "linux")).toBe("/HOME/al/x");
+    expect(tidyText("sf failed for tarek.a+uat@acme.example.com at https://me:pw@x.example.com/", "/h", "linux")).toBe("sf failed for <email> at https://x.example.com/");
+    expect(formatChecks([{ check: "x", level: "warn", detail: "a\nb", fix: "c" }])).toContain("WARN  x: a\n      b\n      Fix: c");
+  });
+
+  it("tells a missing sf on Windows, an unreadable database and an older workspace apart", async () => {
+    const home = tempDir();
+    const missing = await runDoctor(
+      { workspace: path.join(home, "w"), project: home, atlassianCalls: false, model: "files" },
+      deps(home, {
+        platform: "win32",
+        sf: async () => {
+          throw new Error("sf org list failed: 'sf' is not recognized as an internal or external command, operable program or batch file.");
+        },
+      }),
+    );
+    expect(byCheck(missing, "Salesforce CLI")[0]).toMatchObject({ level: "warn", detail: expect.stringContaining("not installed") });
+
+    const broken = path.join(home, "broken");
+    mkdirSync(broken);
+    writeFileSync(databaseFile(broken), "not a database at all, but long enough to be read as one ".repeat(20));
+    const bad = await runDoctor({ workspace: broken, project: home, atlassianCalls: false, model: "files" }, deps(home));
+    expect(byCheck(bad, "Workspace")[0]!.level).toBe("fail");
+    expect(byCheck(bad, "Masking key")[0]).toMatchObject({ level: "warn", detail: expect.stringContaining("Not checked") });
+
+    const older = path.join(home, "older");
+    mkdirSync(older);
+    const db = new Database(databaseFile(older));
+    db.db.exec("DELETE FROM schema_migration WHERE version = (SELECT max(version) FROM schema_migration)");
+    db.close();
+    const old = await runDoctor({ workspace: older, project: home, atlassianCalls: false, model: "files" }, deps(home));
+    expect(byCheck(old, "Workspace")[0]).toMatchObject({ level: "warn", fix: expect.stringContaining("upgrades it") });
+    expect(byCheck(old, "Metadata index")).toEqual([]);
+  });
+
   it("is offered to the model as server_status when the server has the checks", async () => {
     const db = new Database(":memory:");
     const approval = new ApprovalServer();
@@ -178,9 +228,10 @@ describe("doctor", () => {
       const without = await tools(createServer(base));
       expect((await without.listTools()).tools.map((t) => t.name)).not.toContain("server_status");
       await without.close();
-      const client = await tools(createServer({ ...base, status: async () => "PASS  Node: Node 24.11.0" }));
+      const client = await tools(createServer({ ...base, status: async () => "FAIL  Salesforce CLI: sf failed for sarah.whitfield@acme.example.com" }));
       const r = (await client.callTool({ name: "server_status", arguments: {} })) as { content: { text: string }[] };
-      expect(r.content[0]!.text).toBe("PASS  Node: Node 24.11.0");
+      // Masked like any input before the model sees it.
+      expect(r.content[0]!.text).toMatch(/^FAIL {2}Salesforce CLI: sf failed for \[EMAIL_1\]$/);
       await client.close();
     } finally {
       await approval.close();

@@ -53,6 +53,8 @@ export interface DoctorDeps {
   nodeVersion: string;
   home: string;
   keyStore: () => KeyStore;
+  /** Whether the package's model runtime (WebAssembly) is there. */
+  runtimePresent: () => boolean;
   /** The program this OS keeps the key with, and whether it is installed. */
   keyTool: () => { name: string; present: boolean };
   loadModel: () => Promise<DetectionModel>;
@@ -64,7 +66,7 @@ export interface DoctorDeps {
 }
 
 export async function defaultDoctorDeps(): Promise<DoctorDeps> {
-  const { loadDetectionModel, SECURITY, secretToolPath, systemKeyStore, windowsPowerShell } = await import("@sf-agent-po/core");
+  const { loadDetectionModel, SECURITY, secretToolPath, systemKeyStore, VENDORED_RUNTIME, windowsPowerShell } = await import("@sf-agent-po/core");
   const { defaultSfRunner, run } = await import("@sf-agent-po/connectors");
   return {
     env: process.env,
@@ -72,6 +74,7 @@ export async function defaultDoctorDeps(): Promise<DoctorDeps> {
     nodeVersion: process.versions.node,
     home: homedir(),
     keyStore: () => systemKeyStore(),
+    runtimePresent: () => existsSync(VENDORED_RUNTIME),
     // The paths the key store itself uses, not PATH, which it never searches.
     keyTool: () =>
       process.platform === "darwin"
@@ -95,9 +98,20 @@ export function tidyPath(p: string, home: string): string {
   return rel.startsWith("..") || path.isAbsolute(rel) ? p : path.join("~", rel);
 }
 
-/** Every text a check shows, with the home folder as ~ even inside an error message. */
-function tidyText(text: string, home: string): string {
-  return home && home.length > 1 ? text.split(home).join("~") : text;
+/**
+ * Every text a check shows, with the home folder as ~ even inside an error message (in any
+ * separator, JSON-escaped, and in any case on Windows), and no email address or password in
+ * an address: a CLI's error can quote a username.
+ */
+export function tidyText(text: string, home: string, platform: NodeJS.Platform = process.platform): string {
+  let out = text;
+  if (home && home.length > 1) {
+    const parts = home.split(/[\\/]+/).filter(Boolean).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const lead = /^[\\/]/.test(home) ? "[\\\\/]+" : "";
+    const pattern = new RegExp(`${lead}${parts.join("(?:[\\\\/]+)")}(?=$|[\\\\/"'\\s:;,)\\]])`, platform === "win32" ? "gi" : "g");
+    out = out.replace(pattern, "~");
+  }
+  return out.replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, "//").replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<email>");
 }
 
 /** The reasons Node gives for a failed request, from the error and its causes. */
@@ -128,6 +142,10 @@ export async function runDoctor(opts: DoctorOptions, deps: DoctorDeps): Promise<
   const file = databaseFile(opts.workspace);
   let database = opts.database;
   let opened = false;
+  /** Whether the workspace's tables are this version's: an older workspace is read as far as it goes. */
+  let current = true;
+  /** Whether the database could be read at all. */
+  let readable = false;
   await step("Workspace", async () => {
     if (!database && !existsSync(file)) {
       return {
@@ -142,20 +160,29 @@ export async function runDoctor(opts: DoctorOptions, deps: DoctorDeps): Promise<
       database = new Database(file, MIGRATIONS, { readOnly: true });
       opened = true;
     }
-    return workspaceCheck(database, opts.workspace, deps.home);
+    const checked = await workspaceCheck(database, opts, deps.home);
+    current = checked.current;
+    readable = checked.readable ?? false;
+    return checked.result;
   });
   try {
-    await step("Masking key", async () => keyCheck(database, opts, deps));
+    await step("Masking key", async () =>
+      (database || existsSync(file)) && !readable
+        ? { level: "warn", detail: "Not checked: the workspace database could not be opened.", fix: "Fix the workspace first (see above), then run doctor again." }
+        : keyCheck(database, opts, deps),
+    );
   } finally {
     if (opened) database?.close();
   }
   await step("Name model", async () => modelCheck(opts, deps));
-  await step("Salesforce CLI", async () => sfCheck(deps));
+  /** Each logged-in org's alias by org id, to name the org a snapshot was read from. */
+  const orgs = new Map<string, string>();
+  await step("Salesforce CLI", async () => sfCheck(deps, orgs));
   await step("Jira and Confluence", async () => atlassianCheck(opts.atlassianCalls, deps));
   for (const tool of TOOLS) await step(tool.cmd, async () => toolCheck(tool, deps));
   await step("AI tool files", async () => hostFilesCheck(opts.project, deps.home));
-  await step("Metadata index", async () => indexCheck(opts, file, deps));
-  return results.map((r) => ({ ...r, detail: tidyText(r.detail, deps.home), ...(r.fix ? { fix: tidyText(r.fix, deps.home) } : {}) }));
+  await step("Metadata index", async () => (current ? indexCheck(opts, file, deps, orgs) : []));
+  return results.map((r) => ({ ...r, detail: tidyText(r.detail, deps.home, deps.platform), ...(r.fix ? { fix: tidyText(r.fix, deps.home, deps.platform) } : {}) }));
 }
 
 function nodeCheck(version: string): Omit<CheckResult, "check"> {
@@ -164,27 +191,49 @@ function nodeCheck(version: string): Omit<CheckResult, "check"> {
   return { level: "fail", detail: `Node ${version}; sf-agent-po needs Node 24 or later.`, fix: "Install Node 24 LTS from nodejs.org, or with your version manager (nvm install 24)." };
 }
 
-async function workspaceCheck(database: Database, workspace: string, home: string): Promise<Omit<CheckResult, "check">> {
+async function workspaceCheck(database: Database, opts: DoctorOptions, home: string): Promise<{ result: Omit<CheckResult, "check">; current: boolean; readable?: boolean }> {
+  const shown = tidyPath(opts.workspace, home);
   const { DatabaseSync } = await import("node:sqlite");
   const probe = new DatabaseSync(":memory:");
   try {
     probe.exec("CREATE VIRTUAL TABLE t USING fts5(x)");
   } catch (err) {
-    return { level: "fail", detail: `This Node's SQLite has no full-text search (FTS5): ${(err as Error).message}`, fix: "Use the official Node 24 build from nodejs.org." };
+    return { result: { level: "fail", detail: `This Node's SQLite has no full-text search (FTS5): ${(err as Error).message}`, fix: "Use the official Node 24 build from nodejs.org." }, current: false };
   } finally {
     probe.close();
   }
-  const check = database.db.prepare("PRAGMA quick_check").all() as { quick_check: string }[];
-  const problems = check.map((r) => r.quick_check).filter((r) => r !== "ok");
-  if (problems.length) {
+  const { MIGRATIONS } = await import("@sf-agent-po/core");
+  let schema: number;
+  try {
+    schema = (database.db.prepare("SELECT max(version) AS v FROM schema_migration").get() as { v: number | null }).v ?? 0;
+  } catch (err) {
     return {
-      level: "fail",
-      detail: `The database in ${tidyPath(workspace, home)} is damaged: ${problems.slice(0, 3).join("; ")}`,
-      fix: "Restore the workspace folder from a backup, or move it away and index and add the inputs again.",
+      result: { level: "fail", detail: `The database in ${shown} cannot be read: ${(err as Error).message}`, fix: "Restore the workspace folder from a backup, or move it away and index and add the inputs again." },
+      current: false,
     };
   }
+  const known = Math.max(...MIGRATIONS.map((m) => m.version));
+  if (schema > known) {
+    return { result: { level: "fail", detail: `${shown} was written by a newer sf-agent-po (schema ${schema}; this one knows ${known}).`, fix: "Run the newest version: npx -y sf-agent-po@next doctor" }, current: false, readable: true };
+  }
+  // The server's own database is not checked page by page: it would hold up every tool call.
+  if (!opts.database) {
+    const check = database.db.prepare("PRAGMA quick_check").all() as { quick_check: string }[];
+    const problems = check.map((r) => r.quick_check).filter((r) => r !== "ok");
+    if (problems.length) {
+      return {
+        result: { level: "fail", detail: `The database in ${shown} is damaged: ${problems.slice(0, 3).join("; ")}`, fix: "Restore the workspace folder from a backup, or move it away and index and add the inputs again." },
+        current: false,
+        readable: true,
+      };
+    }
+  }
   const contexts = (database.db.prepare("SELECT COUNT(*) AS n FROM context").get() as { n: number }).n;
-  return { level: "pass", detail: `${tidyPath(workspace, home)}: database ok, full-text search ok, ${contexts} context(s)` };
+  const checked = opts.database ? "" : "database ok, ";
+  if (schema < known) {
+    return { result: { level: "warn", detail: `${shown}: ${checked}${contexts} context(s), written by an older sf-agent-po.`, fix: "Nothing to do: the server upgrades it when it next starts." }, current: false, readable: true };
+  }
+  return { result: { level: "pass", detail: `${shown}: ${checked}full-text search ok, ${contexts} context(s)` }, current: true, readable: true };
 }
 
 async function keyCheck(database: Database | undefined, opts: DoctorOptions, deps: DoctorDeps): Promise<Omit<CheckResult, "check">> {
@@ -220,8 +269,8 @@ const PROXY_FIX =
 const MODEL_FIX = `${PROXY_FIX} Without access, the server's error names each model file to download by hand, and where to save it.`;
 
 async function modelCheck(opts: DoctorOptions, deps: DoctorDeps): Promise<Omit<CheckResult, "check">> {
-  const { DEFAULT_MODEL, defaultModelDir, VENDORED_RUNTIME } = await import("@sf-agent-po/core");
-  if (!existsSync(VENDORED_RUNTIME)) return { level: "fail", detail: "The model runtime is missing from the package.", fix: "Reinstall: npx -y sf-agent-po@next doctor" };
+  const { DEFAULT_MODEL, defaultModelDir } = await import("@sf-agent-po/core");
+  if (!deps.runtimePresent()) return { level: "fail", detail: "The model runtime is missing from the package.", fix: "Reinstall: npx -y sf-agent-po@next doctor" };
   const dir = path.join(defaultModelDir(deps.env, deps.platform), DEFAULT_MODEL.id, DEFAULT_MODEL.revision);
   const files = Object.values(DEFAULT_MODEL.files);
   const missing = files.filter((f) => {
@@ -254,12 +303,13 @@ async function modelCheck(opts: DoctorOptions, deps: DoctorDeps): Promise<Omit<C
 }
 
 /** The orgs in `sf org list`, by username, and whether each is connected. */
-function orgsOf(result: unknown): { total: number; connected: number } {
+function orgsOf(result: unknown, aliases: Map<string, string>): { total: number; connected: number } {
   const seen = new Map<string, boolean>();
   for (const list of Object.values((result ?? {}) as Record<string, unknown>)) {
     if (!Array.isArray(list)) continue;
-    for (const org of list as { username?: string; connectedStatus?: string; isExpired?: boolean; status?: string }[]) {
+    for (const org of list as { username?: string; alias?: string; orgId?: string; connectedStatus?: string; isExpired?: boolean; status?: string }[]) {
       if (!org?.username) continue;
+      if (org.orgId && org.alias && !aliases.has(org.orgId)) aliases.set(org.orgId, org.alias);
       const ok = org.connectedStatus ? org.connectedStatus === "Connected" : org.status === "Active" && !org.isExpired;
       seen.set(org.username, (seen.get(org.username) ?? false) || ok);
     }
@@ -267,18 +317,21 @@ function orgsOf(result: unknown): { total: number; connected: number } {
   return { total: seen.size, connected: [...seen.values()].filter(Boolean).length };
 }
 
-async function sfCheck(deps: DoctorDeps): Promise<Omit<CheckResult, "check">> {
+/** What a missing command looks like: ENOENT through run, or cmd.exe's message on Windows, where sf starts through a shell. */
+const MISSING = /was not found|is not recognized as an internal or external command/;
+
+async function sfCheck(deps: DoctorDeps, orgs: Map<string, string>): Promise<Omit<CheckResult, "check">> {
   let result: unknown;
   try {
     result = await deps.sf(["org", "list"]);
   } catch (err) {
     const message = (err as Error).message;
-    if (/was not found/.test(message)) {
+    if (MISSING.test(message)) {
       return { level: "warn", detail: "The sf CLI is not installed: indexing an org needs it.", fix: "npm install -g @salesforce/cli, then sf org login web --alias <alias>" };
     }
     return { level: "fail", detail: message, fix: "Run sf org list to see the error, and update the CLI with npm install -g @salesforce/cli." };
   }
-  const { total, connected } = orgsOf(result);
+  const { total, connected } = orgsOf(result, orgs);
   if (!total) return { level: "warn", detail: "sf is installed but logged in to no org.", fix: "sf org login web --alias <alias>" };
   if (connected < total) {
     return { level: "warn", detail: `sf is logged in to ${total} org(s); ${total - connected} cannot be reached or need a new login.`, fix: "Run sf org list to see which, then sf org login web --alias <alias> for each one you index." };
@@ -307,7 +360,9 @@ async function atlassianCheck(calls: boolean, deps: DoctorDeps): Promise<Omit<Ch
   const config = atlassianConfigFromEnv(deps.env)!;
   if (!/^https:\/\//.test(config.siteUrl)) return [{ level: "fail", detail: "ATLASSIAN_SITE_URL does not start with https://.", fix: "Set it to your site's address, for example https://your-company.atlassian.net" }];
   if (!calls) return [{ level: "pass", detail: "The three settings are set (not called from the server: run doctor to test them)." }];
-  const client = new AtlassianClient(config, deps.fetch);
+  // A proxy that drops the traffic would otherwise hold doctor for minutes.
+  const timed: typeof fetch = (url, init) => deps.fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  const client = new AtlassianClient(config, timed);
   const out: Omit<CheckResult, "check">[] = [];
   for (const [product, call] of [
     ["Jira", () => client.ping("jira")],
@@ -351,7 +406,7 @@ async function toolCheck(tool: Tool, deps: DoctorDeps): Promise<Omit<CheckResult
     const { stdout } = await deps.run(tool.cmd, ["--version"]);
     return { level: "pass", detail: stdout.split(/\r?\n/).find((l) => l.trim())?.trim() ?? "installed" };
   } catch (err) {
-    if (/was not found/.test((err as Error).message)) return { level: "warn", detail: `Not installed: ${tool.why}.`, fix: tool.install };
+    if (MISSING.test((err as Error).message)) return { level: "warn", detail: `Not installed: ${tool.why}.`, fix: tool.install };
     return { level: "warn", detail: `Installed, but ${tool.cmd} --version failed: ${(err as Error).message}`, fix: tool.install };
   }
 }
@@ -370,7 +425,8 @@ export async function hostFilesState(project: string): Promise<{ host: Host; exp
       const content = await readFile(path.join(project, file.path), "utf8").catch(() => undefined);
       if (content === undefined) continue;
       present++;
-      if (content !== file.content) outdated++;
+      // A checkout with CRLF line ends (core.autocrlf on Windows) holds the same file.
+      if (content.replace(/\r\n/g, "\n") !== file.content) outdated++;
     }
     out.push({ host, expected, present, outdated });
   }
@@ -397,7 +453,7 @@ async function hostFilesCheck(project: string, home: string): Promise<Omit<Check
 /** An index older than this gets a warning: Salesforce changes keep coming. */
 export const STALE_INDEX_DAYS = 7;
 
-async function indexCheck(opts: DoctorOptions, file: string, deps: DoctorDeps): Promise<Omit<CheckResult, "check">[]> {
+async function indexCheck(opts: DoctorOptions, file: string, deps: DoctorDeps, orgs: Map<string, string>): Promise<Omit<CheckResult, "check">[]> {
   if (!opts.database && !existsSync(file)) return [];
   const { Database, MetadataIndex, MIGRATIONS } = await import("@sf-agent-po/core");
   const database = opts.database ?? new Database(file, MIGRATIONS, { readOnly: true });
@@ -407,11 +463,14 @@ async function indexCheck(opts: DoctorOptions, file: string, deps: DoctorDeps): 
     if (!latest.length) return [{ level: "warn", detail: "Nothing is indexed: the agents cannot check the org's metadata.", fix: "npx sf-agent-po@next index --org <alias> (or --project <folder>)" }];
     return latest.map((s) => {
       const days = Math.floor((deps.now().getTime() - Date.parse(s.finishedAt ?? s.startedAt)) / 86_400_000);
-      const name = s.kind === "repo" ? tidyPath(s.source, deps.home) : s.source;
+      // Sources hold no path: a project is "repo:<folder name>#<hash>", an org "org:<org id>".
+      const alias = s.kind === "org" ? orgs.get(s.source.replace(/^org:/, "")) : undefined;
+      const name = alias ? `${s.source} (${alias})` : s.source;
       const age = days < 1 ? "today" : `${days} day(s) ago`;
+      const again = s.kind === "org" ? `npx sf-agent-po@next index --org ${alias ?? "<alias of this org>"}` : "npx sf-agent-po@next index --project <its folder>";
       return days > STALE_INDEX_DAYS
-        ? { level: "warn" as const, detail: `${name} (${s.kind}) was indexed ${age}.`, fix: `Index it again: npx sf-agent-po@next index --${s.kind === "org" ? "org" : "project"} ${s.kind === "org" ? s.source.replace(/^org:/, "") : "<folder>"}` }
-        : { level: "pass" as const, detail: `${name} (${s.kind}) was indexed ${age}.` };
+        ? { level: "warn" as const, detail: `${name} was indexed ${age}.`, fix: `Index it again: ${again}` }
+        : { level: "pass" as const, detail: `${name} was indexed ${age}.` };
     });
   } finally {
     if (!opts.database) database.close();
@@ -421,7 +480,8 @@ async function indexCheck(opts: DoctorOptions, file: string, deps: DoctorDeps): 
 /** The checks as text: one line per check, the fix under it. */
 export function formatChecks(results: CheckResult[]): string {
   const label = { pass: "PASS", warn: "WARN", fail: "FAIL" } as const;
-  const lines = results.map((r) => `${label[r.level]}  ${r.check}: ${r.detail}${r.fix ? `\n      Fix: ${r.fix}` : ""}`);
+  const indent = (t: string) => t.replace(/\r?\n/g, "\n      ");
+  const lines = results.map((r) => `${label[r.level]}  ${r.check}: ${indent(r.detail)}${r.fix ? `\n      Fix: ${indent(r.fix)}` : ""}`);
   const count = (l: Level) => results.filter((r) => r.level === l).length;
   lines.push("", `${count("pass")} passed, ${count("warn")} warning(s), ${count("fail")} failed.`);
   return lines.join("\n");

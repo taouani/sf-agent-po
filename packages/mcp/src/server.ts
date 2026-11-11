@@ -197,7 +197,13 @@ export function createServer(opts: ServerOptions): McpServer {
           "Checks what this server needs (Node, workspace, masking key, name model, sf CLI and orgs, Jira and Confluence settings, git, gh, glab, AI tool files, index age) and says how to fix each problem. Use it when a tool fails for a reason outside the inputs, or when the user asks what is set up.",
         inputSchema: {},
       },
-      guard(async () => text(await status())),
+      // Error messages from the CLIs and the keychain reach the checks: masked like any input.
+      guard(async () => {
+        const out = await status();
+        const fallback = opts.errorMasker ?? masker;
+        const masked = await ((opts.modelReady?.() ?? true) ? masker : fallback).mask("default", out).catch(() => fallback.mask("default", out));
+        return text(masked.text);
+      }),
     );
   }
 
