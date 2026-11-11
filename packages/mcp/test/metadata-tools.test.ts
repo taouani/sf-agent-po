@@ -255,6 +255,29 @@ describe("metadata tools", () => {
     expect(impact.text).not.toContain("Salesforce refuses the delete");
   });
 
+  it("show the fields a mapping in custom metadata names, with record names masked", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    const w = (rel: string, c: string) => {
+      mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      writeFileSync(path.join(root, rel), c);
+    };
+    w("objects/Map__mdt.object", `<?xml version="1.0"?><CustomObject><label>Map</label></CustomObject>`);
+    w("customMetadata/Map.Karim_Benali.md", `<?xml version="1.0"?><CustomMetadata><label>Karim</label><values><field>Field__c</field><value>Policy__c.Premium__c</value></values></CustomMetadata>`);
+    w("classes/Mapper.cls", "public class Mapper { void m() { List<Map__mdt> all = Map__mdt.getAll().values(); } }");
+    await indexProject(index, root);
+    const field = await call("metadata_component", { context: "acme", type: "CustomField", name: "Policy__c.Premium__c" });
+    expect(field.text).toContain("is named in the records of: CustomObject Map__mdt");
+    const type = await call("metadata_component", { context: "acme", type: "CustomObject", name: "Map__mdt" });
+    expect(type.text).toContain("its records name: CustomField Policy__c.Premium__c");
+    expect(type.text).toContain("is read by: ApexClass Mapper");
+    expect(type.text).not.toContain("Karim");
+    const impact = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomField", name: "Policy__c.Premium__c" }] });
+    expect(impact.text).toContain("CustomObject Map__mdt \"Map\" (its records name it: code that reads them may use it)");
+    expect(impact.text).toContain("1 custom metadata type(s) name it in their records");
+    expect(impact.text).not.toContain("Karim");
+  });
+
   it("say why there is no code to show", async () => {
     const { call, index, db } = await connect();
     const root = project();

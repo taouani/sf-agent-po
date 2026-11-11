@@ -1080,3 +1080,49 @@ describe("queries built in strings", () => {
     }
   });
 });
+
+describe("custom metadata mapping records", () => {
+  const tmps: string[] = [];
+  afterEach(() => {
+    for (const d of tmps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const record = (values: Record<string, string | null>) =>
+    `<?xml version="1.0" encoding="UTF-8"?><CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><label>Jeanne Dupont's mapping</label><protected>false</protected>` +
+    Object.entries(values).map(([f, v]) => `<values><field>${f}</field>${v === null ? `<value xsi:nil="true"/>` : `<value xsi:type="xsd:string">${v}</value>`}</values>`).join("") +
+    `</CustomMetadata>`;
+
+  it("link the fields and objects their values name to their type, which code reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sfpo-mdt-"));
+    tmps.push(root);
+    const w = (rel: string, c: string) => {
+      mkdirSync(join(root, rel, ".."), { recursive: true });
+      writeFileSync(join(root, rel), c);
+    };
+    const field = (name: string) => `<CustomField><fullName>${name}</fullName><type>Text</type></CustomField>`;
+    w("objects/Account/fields/Industry.field-meta.xml", field("Industry"));
+    w("objects/Account/fields/Segment__c.field-meta.xml", field("Segment__c"));
+    w("objects/Contact/fields/Segment__c.field-meta.xml", field("Segment__c"));
+    w("objects/Lead/fields/Rating.field-meta.xml", field("Rating"));
+    w("objects/Policy__c/fields/Premium__c.field-meta.xml", field("Premium__c"));
+    w("objects/CIM_Client_Field__mdt/CIM_Client_Field__mdt.object-meta.xml", `<CustomObject><label>Client field</label></CustomObject>`);
+    // A value naming the object, then one naming its field alone; a full name; a custom field one object has.
+    w("customMetadata/CIM_Client_Field.Industry.md-meta.xml", record({ Object__c: "Account", Field__c: "Industry", Target__c: "Client_Sector", Active__c: "true" }));
+    w("customMetadata/CIM_Client_Field.Rating.md-meta.xml", record({ Source__c: "Lead.Rating", Note__c: "Call jane.doe@example.com", Empty__c: null }));
+    w("customMetadata/CIM_Client_Field.Premium.md-meta.xml", record({ Field__c: "Premium__c", Other__c: "Segment__c", Missing__c: "Nope.Nothing__c" }));
+    w("classes/ClientSync.cls", "public class ClientSync { void run() { for (CIM_Client_Field__mdt m : CIM_Client_Field__mdt.getAll().values()) { Object v = rec.get(m.Field__c); } } }");
+    const index = fresh();
+    const snap = await index.build({ source: "s", kind: "repo" }, () => scanProject(root));
+    const { components, edges } = await scanProject(root);
+    const out = edges.filter((e) => e.from.name === "CIM_Client_Field__mdt" && e.kind === "may_read").map((e) => `${e.to.type}:${e.to.name}`).sort();
+    expect(out).toEqual(["CustomField:Account.Industry", "CustomField:Lead.Rating", "CustomField:Policy__c.Premium__c", "CustomObject:Account"]);
+    // A record keeps no value and no label.
+    const records = components.filter((c) => c.type === "CustomMetadata");
+    expect(records.map((c) => c.name).sort()).toEqual(["CIM_Client_Field.Industry", "CIM_Client_Field.Premium", "CIM_Client_Field.Rating"]);
+    expect(JSON.stringify(records.map(({ refs: _, ...c }) => c))).not.toMatch(/Dupont|jane|Client_Sector|Account/);
+    expect(records.every((c) => c.parent === "CIM_Client_Field__mdt")).toBe(true);
+    // A change to Account.Industry reaches the class through the type.
+    const industry = index.component(snap.id, "CustomField", "Account.Industry")!;
+    const deps = index.dependents([industry.id]).map((d) => `${d.depth} ${d.kind} ${d.component.type}:${d.component.name}`);
+    expect(deps).toEqual(expect.arrayContaining(["1 may_read CustomObject:CIM_Client_Field__mdt", "2 reads ApexClass:ClientSync"]));
+  });
+});

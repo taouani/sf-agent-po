@@ -1,7 +1,7 @@
 // Objects and their children: fields, record types and validation rules, from either the
 // source format (one file per child) or the metadata format (children inside the .object).
 
-import type { ComponentType, EdgeKind, ParsedComponent, ParsedEdge } from "./model.js";
+import type { ComponentType, EdgeKind, ParsedComponent, ParsedEdge, Ref } from "./model.js";
 import { bool, list, num, obj, str } from "./xml.js";
 
 /** Suffixes of custom names: objects, metadata types, events, person account fields... */
@@ -39,6 +39,38 @@ export function readObject(name: string, root: Record<string, unknown>, file: st
   for (const v of list(root.validationRules)) out.push(readValidationRule(name, obj(v), file));
   for (const f of list(root.fieldSets)) out.push(readFieldSet(name, obj(f), file));
   return out;
+}
+
+/** A value of a custom metadata record that can name an object or field: "Account", "Account.Industry", "Segment__c". */
+const NAME_VALUE = /^[A-Za-z][A-Za-z0-9_]{0,79}(?:\.[A-Za-z][A-Za-z0-9_]{0,79})?$/;
+
+/**
+ * A custom metadata record (CIM_Client_Field.Account_Name): the objects and fields its values
+ * name, as links that may be there (may_read), which the linker gives to its type
+ * (CIM_Client_Field__mdt), since code reads the type, not the record. Only names of what the
+ * project has are linked: a value that names nothing is dropped, and no value is kept, nor the
+ * label, since records hold data.
+ */
+export function readCustomMetadataRecord(name: string, root: Record<string, unknown>, file: string): ParsedComponent {
+  const dot = name.indexOf(".");
+  const type = dot > 0 ? `${name.slice(0, dot)}__mdt` : undefined;
+  const values = list(root.values)
+    .map((v) => str(obj(v).value)?.trim())
+    .filter((v): v is string => !!v && NAME_VALUE.test(v));
+  // The values that may name an object: where a field named alone in the same record may be.
+  const objects = [...new Set(values.filter((v) => !v.includes(".")))];
+  const refs: Ref[] = [];
+  for (const v of new Set(values)) {
+    const at = v.indexOf(".");
+    if (at > 0) refs.push({ kind: "may_read", field: v.slice(at + 1), among: [v.slice(0, at)] });
+    else {
+      refs.push({ kind: "may_read", object: v, known: true });
+      // A field named alone: on an object the record names, or a custom field one object alone has.
+      if (objects.length > 1) refs.push({ kind: "may_read", field: v, among: objects.filter((o) => o !== v) });
+      if (/__c$/i.test(v)) refs.push({ kind: "may_read", field: v });
+    }
+  }
+  return { type: "CustomMetadata", name, ...(type ? { parent: type } : {}), file, attrs: {}, refs, text: "" };
 }
 
 /** A field set: the fields it lists, shown wherever a page, component or code uses it. */
@@ -282,6 +314,8 @@ export function linkObjects(components: readonly ParsedComponent[]): {
   for (const c of components) {
     const from = { type: c.type, name: c.name };
     if (c.parent) edges.push({ from, to: need(c.parentType ?? "CustomObject", c.parent), kind: "part_of" });
+    // What a custom metadata record names is linked from its type, which is what code reads.
+    const refsFrom = c.type === "CustomMetadata" && c.parent ? { type: "CustomObject" as ComponentType, name: need("CustomObject", c.parent).name } : from;
     if (c.type === "CustomField") {
       for (const target of (c.attrs.referenceTo as string[] | undefined) ?? []) edges.push({ from, to: need("CustomObject", target), kind: "references" });
       // Roll-ups name their fields in full ("Claim__c.Amount__c"); a dependent picklist names
@@ -290,6 +324,7 @@ export function linkObjects(components: readonly ParsedComponent[]): {
       if (typeof c.attrs.controllingField === "string" && c.parent) readsField(from, `${c.parent}.${c.attrs.controllingField}`);
     }
     for (const ref of c.refs ?? []) {
+      const from = refsFrom;
       if ("field" in ref) byName.push({ from, field: ref.field, kind: ref.kind, ...(ref.among ? { among: ref.among } : {}) });
       else if ("type" in ref) {
         const types = typeof ref.type === "string" ? [ref.type] : ref.type;

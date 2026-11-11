@@ -173,7 +173,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Limitations today
 
-- **The index cannot follow dynamic code.** Queries built from strings, classes named at run time and describe calls are flagged as weak links, not followed; the agent reads the code of such a class with `metadata_code` (next.9) to say what it does. A query built in strings is read as far as its strings and string constants show it, as weaker "may read" links (next.9). Formula chains, report usage and outside integrations are not traced yet (phase 5).
+- **The index cannot follow dynamic code.** Queries built from strings, classes named at run time and describe calls are flagged as weak links, not followed; the agent reads the code of such a class with `metadata_code` (next.9) to say what it does. A query built in strings is read as far as its strings and string constants show it, as weaker "may read" links, and so are the objects and fields custom metadata records name, linked to their type (next.9). Formula chains, report usage and outside integrations are not traced yet (phase 5).
 - **Untyped Apex field uses are linked by name.** A use such as `getAccount().Foo__c` is linked only when one object has a field of that name, or, in an email template, the recipient types (Contact, Lead, User) list it.
 - **Old indexes miss the #58 links.** An index built before next.6 has no Visualforce, email template, field set or untyped Apex links: re-index after updating.
 - **Masking is slow on large inputs.** One detector call per string (a repeated short string's answer is kept, #76), on a WebAssembly runtime about three times slower than native, with about 900 MB peak memory. Since #60, tool calls that mask at the same time wait for each other.

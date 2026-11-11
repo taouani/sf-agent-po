@@ -260,7 +260,9 @@ The code lives in npm workspaces under `packages/`:
   depends on each, one or two links away, with the weak links: Apex the index cannot follow
   (queries built from strings, classes named at run time, describes, files too large to read),
   links that may be there (a query built in strings, read as far as its strings, string
-  constants and variables show it, gives "may read" links to its object and fields),
+  constants and variables show it, gives "may read" links to its object and fields; so do the
+  records of a custom metadata type that name objects and fields, a mapping table the code that
+  reads the type follows),
   inactive flows, dependents outside the confirmed scope, and the automation that saves records a
   new rule or required field can stop. Reports and report types that use a component are counted
   apart and the first ten named, and what lies two links away (dashboards, reports on those report

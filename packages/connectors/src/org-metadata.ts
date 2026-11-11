@@ -12,8 +12,10 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
  * none of their text. Reports and dashboards are retrieved for the fields and reports they
  * use; the index keeps no filter value. Integrations (credentials, remote sites, connected apps,
  * event channels) are retrieved for where the org connects; the index keeps hosts, never a
- * secret or a username. Left out: types whose content is records or people's
- * text (documents, custom metadata records) and large binaries (static resources).
+ * secret or a username. Custom metadata records are retrieved for the objects and fields their
+ * values name (mapping tables code reads); the index keeps only those links, never a value or a
+ * label, and masks the records' names. Left out: documents (people's text) and large binaries
+ * (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink",
@@ -22,6 +24,7 @@ export const DEFAULT_ORG_TYPES = [
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
   "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "PlatformEventChannel", "PlatformEventChannelMember",
+  "CustomMetadata",
 ] as const;
 
 /** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */

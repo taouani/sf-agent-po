@@ -46,7 +46,7 @@ const WORDS: Partial<Record<EdgeKind, string>> = {
   calls: "calls or is called by",
   references: "references",
   shows: "shows",
-  may_read: "may read, in a query built in strings",
+  may_read: "may read (a query built in strings, or mapping records)",
 };
 const words = (kinds: readonly EdgeKind[]) => kinds.map((k) => WORDS[k] ?? k).join(", ");
 
