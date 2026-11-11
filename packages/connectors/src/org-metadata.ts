@@ -10,7 +10,9 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
  * What is retrieved by default: what the index reads in detail, and what flows, Apex and
  * layouts point at. Email templates are retrieved for their merge fields; the index keeps
  * none of their text. Reports and dashboards are retrieved for the fields and reports they
- * use; the index keeps no filter value. Left out: types whose content is records or people's
+ * use; the index keeps no filter value. Integrations (credentials, remote sites, connected apps,
+ * event channels) are retrieved for where the org connects; the index keeps hosts, never a
+ * secret or a username. Left out: types whose content is records or people's
  * text (documents, custom metadata records) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
@@ -19,6 +21,7 @@ export const DEFAULT_ORG_TYPES = [
   "PermissionSetGroup", "Profile", "Layout", "LightningComponentBundle", "AuraDefinitionBundle", "QuickAction",
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
   "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
+  "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "PlatformEventChannel", "PlatformEventChannelMember",
 ] as const;
 
 /** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */

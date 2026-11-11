@@ -8,6 +8,8 @@ export const COMPONENT_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow", "ApexClass", "ApexTrigger",
   "PermissionSet", "Profile", "PermissionSetGroup", "Layout", "FieldSet", "ApexPage", "ApexComponent", "EmailTemplate",
   "Report", "Dashboard", "ReportType",
+  "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "ExternalServiceRegistration",
+  "PlatformEventChannel", "PlatformEventChannelMember", "Workflow", "WorkflowOutboundMessage",
 ] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
@@ -15,16 +17,20 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
 /**
  * How one component depends on another:
  * - part_of: a field, record type or rule belongs to its object;
+ * - references: a named credential uses an external credential, which uses an auth provider; an
+ *   external service calls through a named credential;
  * - references: a lookup or master-detail field points at an object, a flow variable is of
  *   an Apex-defined type, or a person account field (Account.Foo__pc) stands for its contact
  *   field (Contact.Foo__c);
  * - reads: a formula, rule, flow, code, page or email template uses a field (or queries an object);
  *   a report shows, groups or filters on a field and is built on a report type; a dashboard
  *   shows a report; a report type is built on objects and offers their fields;
- * - writes: a flow sets a field (or creates, updates or deletes records of an object);
+ * - writes: a flow sets a field (or creates, updates or deletes records of an object); Apex
+ *   publishes a platform event (EventBus.publish of a new Foo__e);
  * - triggers_on: a flow, process or Apex trigger runs for records of an object: when they change
  *   (record-triggered) or on a schedule. Draft and obsolete flows have the edge too, since
  *   they would run once activated: their `status` attr says whether they do now;
+ * - calls: Apex calls out through a named credential (callout:Name);
  * - calls: a flow runs an Apex action, a subflow, an email alert, a quick action, an external
  *   service or a custom screen component; Apex uses another class or starts a flow; a
  *   Visualforce page or component uses its controller, extensions and components;

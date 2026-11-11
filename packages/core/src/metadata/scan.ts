@@ -11,6 +11,7 @@ import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
 import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
 import { readDashboard, readReport, readReportType } from "./reports.js";
+import { readConnectedApp, readExternalCredential, readExternalService, readNamedCredential, readPlatformEventChannel, readPlatformEventChannelMember, readRemoteSiteSetting, readWorkflow } from "./integrations.js";
 import { classifyFile } from "./registry.js";
 import { obj, parseMetadataXml } from "./xml.js";
 
@@ -31,7 +32,8 @@ export const MAX_SKIPPED_LISTED = 200;
 type Kind =
   | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
   | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup"
-  | "report" | "dashboard" | "reportType";
+  | "report" | "dashboard" | "reportType"
+  | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -48,8 +50,20 @@ const TOP_LEVEL = new Map<string, [string, Kind, boolean]>([
   ["layouts", [".layout", "layout", true]],
 ]);
 
-/** Report-like types: read from their one XML file, named by the registry. */
-const REPORT_KINDS: Readonly<Record<string, Kind>> = { Report: "report", Dashboard: "dashboard", ReportType: "reportType" };
+/** Types read from their one XML file, named by the registry. */
+const BY_TYPE: Readonly<Record<string, Kind>> = {
+  Report: "report",
+  Dashboard: "dashboard",
+  ReportType: "reportType",
+  NamedCredential: "namedCredential",
+  ExternalCredential: "externalCredential",
+  RemoteSiteSetting: "remoteSite",
+  ConnectedApp: "connectedApp",
+  ExternalServiceRegistration: "externalService",
+  PlatformEventChannel: "eventChannel",
+  PlatformEventChannelMember: "eventChannelMember",
+  Workflow: "workflow",
+};
 
 /** Types read in detail: every other one is indexed by name and file. */
 const DETAILED = new Set<string>(COMPONENT_TYPES);
@@ -64,9 +78,9 @@ export function classify(rel: string): { kind: Kind; object: string; child?: str
   // pages/Foo.page, components/Foo.component, email/Folder/Foo.email: read from the markup;
   // their -meta.xml files are the same component.
   if (match && Object.hasOwn(MARKUP_SUFFIX, match.type)) return rel.endsWith(MARKUP_SUFFIX[match.type]!) ? { kind: "markup", object: match.name, type: match.type } : undefined;
-  // reports/Sales/Q1/Pipeline.report(-meta.xml), dashboards/..., reportTypes/Foo.reportType:
-  // in folders people name, so the registry gives the full name.
-  if (match && Object.hasOwn(REPORT_KINDS, match.type)) return { kind: REPORT_KINDS[match.type]!, object: match.name };
+  // reports/Sales/Q1/Pipeline.report(-meta.xml), namedCredentials/Foo.namedCredential...:
+  // read from their one XML file, named by the registry (in folders people name, for reports).
+  if (match && Object.hasOwn(BY_TYPE, match.type)) return { kind: BY_TYPE[match.type]!, object: match.name };
   const parts = rel.split("/");
   const base = parts.at(-1)!;
   const dir = parts.at(-2);
@@ -325,6 +339,22 @@ function readComponents(what: NonNullable<ReturnType<typeof classify>>, file: st
       return [readDashboard(what.object, obj(doc.Dashboard), file)];
     case "reportType":
       return [readReportType(what.object, obj(doc.ReportType), file)];
+    case "namedCredential":
+      return [readNamedCredential(what.object, obj(doc.NamedCredential), file)];
+    case "externalCredential":
+      return [readExternalCredential(what.object, obj(doc.ExternalCredential), file)];
+    case "remoteSite":
+      return [readRemoteSiteSetting(what.object, obj(doc.RemoteSiteSetting), file)];
+    case "connectedApp":
+      return [readConnectedApp(what.object, obj(doc.ConnectedApp), file)];
+    case "externalService":
+      return [readExternalService(what.object, obj(doc.ExternalServiceRegistration), file)];
+    case "eventChannel":
+      return [readPlatformEventChannel(what.object, obj(doc.PlatformEventChannel), file)];
+    case "eventChannelMember":
+      return [readPlatformEventChannelMember(what.object, obj(doc.PlatformEventChannelMember), file)];
+    case "workflow":
+      return readWorkflow(what.object, obj(doc.Workflow), file);
   }
   return [];
 }

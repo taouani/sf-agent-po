@@ -223,6 +223,26 @@ describe("flows", () => {
     expect(components.find((c) => c.type === "Dashboard")?.attrs).toEqual({ reportCount: 1, dashboardType: "SpecifiedUser", filterFields: ["Policy__c$Status__c"] });
   });
 
+  it("reads integrations: hosts only, and never a secret, a key, a username or an email", async () => {
+    const { components, edges } = await scanProject(join(fixtures, "source"));
+    const out = (name: string) => edges.filter((e) => e.from.name === name).map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
+    expect(out("ERP")).toEqual(["references ExternalCredential:ERP_Auth"]);
+    expect(out("ERP_Auth")).toEqual(["references AuthProvider:Okta"]);
+    expect(out("Weather")).toEqual(["references NamedCredential:ERP"]);
+    expect(out("Sync_Policy")).toEqual(["part_of PlatformEventChannel:Sync__chn", "reads CustomObject:Policy__ChangeEvent"]);
+    expect(out("Policy__c.Notify_ERP")).toEqual(["part_of CustomObject:Policy__c", "reads CustomField:Policy__c.Id", "reads CustomField:Policy__c.Status__c"]);
+    // Apex: a callout through a named credential, a literal endpoint's host (not a commented one), a published event.
+    expect(out("ErpClient")).toEqual(expect.arrayContaining(["calls NamedCredential:ERP", "writes CustomObject:Policy_Sync__e"]));
+    const byName = (n: string) => components.find((c) => c.name === n)!;
+    expect(byName("ErpClient").attrs.calloutHosts).toEqual(["api.partner.example"]);
+    expect(byName("ERP").attrs).toMatchObject({ host: "erp.example.com", type: "SecuredEndpoint" });
+    expect(byName("Legacy").attrs).toEqual({ host: "legacy.example.com", active: true, protocolSecurityDisabled: false });
+    expect(byName("Mobile").attrs).toMatchObject({ scopes: ["Api", "RefreshToken"], callbackHosts: ["app.example.com"] });
+    expect(byName("Policy__c.Notify_ERP").attrs).toEqual({ host: "erp.example.com", fields: ["Id", "Status__c"], includeSessionId: false });
+    const kept = JSON.stringify(components.filter((c) => c.file && !c.file.includes("/objects/")));
+    for (const secret of ["SECRET", "jane.doe@example.com", "for/acme", "/hook", "/orders"]) expect(kept).not.toContain(secret);
+  });
+
   it("names the field a report column reads", () => {
     expect(reportColumnRef("Policy__c$Premium__c")).toEqual({ kind: "reads", object: "Policy__c", path: "Premium__c" });
     expect(reportColumnRef("Policy__c.Claims__r$Amount__c")).toEqual({ kind: "reads", field: "Amount__c" });
@@ -242,20 +262,30 @@ describe("flows", () => {
     const { components } = await scanProject(join(fixtures, "source"));
     const others = components.filter((c) => !["CustomObject", "CustomField", "RecordType", "ValidationRule", "Flow"].includes(c.type) && !c.missing);
     expect(others.map((c) => `${c.type}:${c.name}`).sort()).toEqual([
+      "ApexClass:ErpClient",
       "ApexClass:RenewalNotifier",
       "ApexClass:RenewalService",
       "ApexTrigger:PolicyTrigger",
+      "ConnectedApp:Mobile",
       "Dashboard:Sales/Weekly",
       "DashboardFolder:Sales",
+      "ExternalCredential:ERP_Auth",
+      "ExternalServiceRegistration:Weather",
       "Layout:Policy__c-Policy Layout",
       "LightningComponentBundle:policyCard",
       "ListView:Policy__c.All",
+      "NamedCredential:ERP",
       "PermissionSet:Policy_Manager",
       "PermissionSetGroup:Renewals",
+      "PlatformEventChannel:Sync__chn",
+      "PlatformEventChannelMember:Sync_Policy",
+      "RemoteSiteSetting:Legacy",
       "Report:Sales/Claims_Joined",
       "Report:Sales/Pipeline",
       "ReportFolder:Sales",
       "ReportType:Policies_with_Claims",
+      "Workflow:Policy__c",
+      "WorkflowOutboundMessage:Policy__c.Notify_ERP",
     ]);
     expect(others.find((c) => c.type === "ListView")).toMatchObject({ parent: "Policy__c", parentType: "CustomObject" });
     // The bundle's own file, not its test fixture.
@@ -593,6 +623,7 @@ describe("MetadataIndex", () => {
       "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
+      "Policy__c.Notify_ERP",
       // Standard fields only referenced come after what the project holds.
       "Policy__c.CreatedDate",
       "Policy__c.Id",

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExternalServiceRegistration xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Weather</label>
+    <namedCredentialReference>ERP</namedCredentialReference>
+    <operations><active>true</active><name>getForecast</name></operations>
+    <schema>{"openapi":"3.0.0","servers":[{"url":"https://SCHEMA_SECRET.example.com"}]}</schema>
+    <schemaType>OpenApi3</schemaType>
+    <status>Complete</status>
+</ExternalServiceRegistration>

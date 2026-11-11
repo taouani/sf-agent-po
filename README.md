@@ -274,7 +274,15 @@ The new code lives in npm workspaces under `packages/`:
   too, with their dates and their folders' from three queries (`sf data query`), or one
   listing per folder when a query fails; past 5,000 reports only the most recently changed
   are retrieved, and the rest are reported. Reports in private folders are not listed by
-  Salesforce, so they are not indexed. Every other
+  Salesforce, so they are not indexed. Integrations are read for where the org connects:
+  named credentials (their host, and the external credential they use), external credentials
+  (protocol, auth provider), remote site settings (host), connected apps (OAuth scopes and
+  callback hosts), external services (the named credential they call through, their
+  operations), outbound messages in workflows (host and the fields they send) and platform
+  event channels and members. Apex adds `calls` to a named credential for each `callout:Name`,
+  the host of each literal `setEndpoint` URL (`calloutHosts`), and `writes` to each platform
+  event it publishes (`EventBus.publish` of a `new Foo__e`). Only hosts are kept of URLs, and
+  never a consumer key, certificate, parameter value, username or email. Every other
   type in Salesforce's metadata type registry (copied from source-deploy-retrieve 13.12.0,
   Apache-2.0, by `scripts/metadata-registry.mjs`; the library itself is not a dependency) is
   indexed by name and file, including bundles, static resources, sites, documents, folders
