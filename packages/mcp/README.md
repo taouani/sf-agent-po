@@ -92,4 +92,8 @@ example `["/Applications/Firefox.app/Contents/MacOS/firefox", "--new-window"]`. 
 address is added last. Whoever opens the page decides, so treat this setting like the server
 command itself: the server names the program on its error output when it starts.
 
+The [user guide](https://github.com/taouani/sf-agent-po/blob/main/docs/user-guide.md) walks
+through a first run and day-to-day use, and [troubleshooting](https://github.com/taouani/sf-agent-po/blob/main/docs/troubleshooting.md)
+explains each `doctor` result.
+
 Source, documentation and issues: https://github.com/taouani/sf-agent-po

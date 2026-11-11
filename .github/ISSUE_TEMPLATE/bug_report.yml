@@ -1,0 +1,46 @@
+name: Something does not work
+description: A tool, command, workflow or approval page that fails or does the wrong thing.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Please do not paste inputs, tokens, or the output of `key export`: issues are public.
+        The [troubleshooting guide](https://github.com/taouani/sf-agent-po/blob/main/docs/troubleshooting.md) may already have the fix.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of doctor
+      description: Run `npx -y sf-agent-po@next doctor` in the folder your AI tool opens, and paste all of it. It shows no token, username or masked value.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: AI tool
+      options:
+        - Claude Code
+        - Cursor
+        - GitHub Copilot in VS Code
+        - Another MCP host
+        - None (a command in a terminal)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version npx runs, from `npm view sf-agent-po@next version`, or the one your tool's MCP settings name.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked or ran, what you expected, and what you got instead. Paste error messages; replace any real name, email or value with a placeholder.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: Steps, if you know them. The sample scenarios in examples/ make a good shared starting point.

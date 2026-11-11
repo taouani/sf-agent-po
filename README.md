@@ -8,7 +8,7 @@ An MCP server that gives Claude Code, Cursor and GitHub Copilot a Salesforce **S
 - **publishing** to Confluence and Jira that runs only after you approve, on a page the server opens in your browser, which shows exactly what will be written with the real values put back;
 - **feedback**: story verdicts, design ratings and a Jira diff, measured against the goal of 90% of stories accepted without major edits.
 
-This is version 1, in pre-release on npm as `sf-agent-po@next`. How to install and use it is in the [package README](packages/mcp/README.md).
+This is version 1, in pre-release on npm as `sf-agent-po@next`. How to install and use it is in the [user guide](docs/user-guide.md) and, in short, the [package README](packages/mcp/README.md); [troubleshooting](docs/troubleshooting.md) starts from the output of `doctor`, and [CONTRIBUTING.md](CONTRIBUTING.md) is for changing the code or the agents' domain knowledge.
 
 The 0.x server (the root `dist/index.js` with JSON contexts) was removed in phase 5. Its last version is the tag [`v0-final`](https://github.com/taouani/sf-agent-po/tree/v0-final). Its contexts (`.sf-agent/contexts/*.json`) can be copied into a v1 workspace with `importLegacyWorkspace` in `packages/core`; no command runs it yet.
 
@@ -219,7 +219,7 @@ The code lives in npm workspaces under `packages/`:
   browser. `industry_guidance` gives the industry templates. `npx sf-agent-po@next init` writes the
   agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. For
   Cursor (2.4 or later) the workflows are skills, `.cursor/skills/<name>/SKILL.md`, run only
-  when typed (`/sa-hld`); versions up to next.7 wrote `.cursor/commands/*.md`, and `init` and
+  when typed (`/sa-hld`); versions up to next.6 wrote `.cursor/commands/*.md`, and `init` and
   `doctor` name those files to delete, so Cursor does not offer each workflow twice.
   `npx sf-agent-po@next index --project <folder>`, `--repo <repository>` or `--org <alias>` fills the workspace's
   metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
