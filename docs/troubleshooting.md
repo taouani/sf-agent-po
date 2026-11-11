@@ -35,7 +35,7 @@ The key encrypts the real values behind the pseudonyms. Without it nothing can b
 | What `doctor` says | What to do |
 | --- | --- |
 | `No key yet, and secret-tool is not installed` (Linux) | Install `libsecret-tools` (or `libsecret` on Fedora) so the key goes to your keyring, not a key file. |
-| `The workspace's key ... is not in your keychain` | Import it from your backup: `npx -y sf-agent-po@next key import`. If there is no backup, the masked values cannot be recovered; move the workspace away and start again. |
+| `The workspace's key ... is not in ...` (your keychain, or a key file) | Import it from your backup: `npx -y sf-agent-po@next key import`. If there is no backup, the masked values cannot be recovered; move the workspace away and start again. |
 | A keychain that is locked or does not answer | Unlock it (on Linux over SSH, start a session with a keyring) and run `doctor` again. |
 | `Keep a backup` on a passing line | Run `npx -y sf-agent-po@next key export` once and keep the line in your password manager. |
 
@@ -48,7 +48,7 @@ The model that finds names (about 140 MB) is downloaded from huggingface.co on f
 | `not downloaded yet; huggingface.co is reachable` | Nothing to do: it downloads when the first input is added. |
 | `not downloaded yet, and huggingface.co cannot be reached` | Behind a company proxy, set `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1`, plus `NODE_OPTIONS=--use-system-ca` if the proxy inspects HTTPS, in your shell and in the server's environment. Without access, the server's error names each file to download by hand and where to save it. |
 | `The model loads but found no name in a test sentence` | Delete the model folder `doctor` names, so it downloads again. |
-| `The model runtime is missing from the package` | The package download was incomplete: delete npx's cache folder (`_npx` in npm's cache, `~/.npm/_npx` on macOS and Linux) and run `doctor` again. |
+| `The model runtime is missing from the package` | The package download was incomplete. If running `doctor` again with `npx -y` does not fix it, delete npx's cache folder (`_npx` in npm's cache, `~/.npm/_npx` on macOS and Linux) and run `doctor` again. |
 
 ## Salesforce CLI
 
@@ -92,7 +92,7 @@ Needed only to index a remote repository: `git` for any clone, `gh` for private 
 | What `doctor` says | What to do |
 | --- | --- |
 | `Nothing is indexed` | `npx -y sf-agent-po@next index --org <alias>` (or `--project <folder>`, `--repo <repository>`). |
-| `... was indexed N day(s) ago` | Index it again with the command shown: a run reads only what changed. |
+| `... was indexed N day(s) ago` | Index it again with the command shown (`--repo <repository>` for a remote repository): a run reads only what changed. |
 
 ## Problems doctor cannot see
 

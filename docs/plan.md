@@ -168,7 +168,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 ### Remaining
 
 1. **Close phase 4.** G3 is accepted; what is left is the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks) and your review of the French word list.
-2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide (today's `docs/user-guide.md` describes 0.x) and a contributor guide; trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
+2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide and a contributor guide (done in #79); trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
 3. **Phase 6, release candidate.** Bug fixes, the final evaluation across models, release notes, 1.0 on npm.
 
 ### Limitations today

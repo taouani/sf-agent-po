@@ -27,7 +27,7 @@ Six ideas explain the rest of this guide:
 - **Requirement context.** A named set of inputs for one feature or epic, for example `renewal`: meeting notes, emails, PI planning, documents, images, Jira issues and Confluence pages. Every tool takes the context name; with none, it uses `default`.
 - **Masking.** Personal data and secrets in every input are replaced by pseudonyms such as `[PERSON_1]` or `[EMAIL_2]` before anything is stored or sent to the model. The real values come back only when you approve a publish, and secrets never do.
 - **Metadata index.** Your org or Salesforce project, read once and kept in the workspace, so the agents can search it, check names against it, and list what a change affects.
-- **Guided workflows.** The agents do not write a design or a backlog in one go. The server hands them one step at a time (the requirements, the scope, each section or each epic's stories), checks each answer, and sends it back with what to fix until it passes.
+- **Guided workflows.** The agents do not write a design or a backlog in one go. The server hands them one step at a time (the requirements, the scope, each section or each epic's stories), checks each answer, and sends it back with what to fix. After three tries a step is saved with its remaining findings, and the run goes on.
 - **Approval pages.** Whenever you need to confirm something (the masked inputs, the requirements, the scope, a publish, your feedback), the server opens a page in your browser. The model never sees the page or its link.
 - **Feedback.** After a backlog is published, you record whether each story was accepted, and the server compares the Jira issues with what it published. That gives the project's success measure: 90% of stories accepted without major edits.
 
@@ -111,6 +111,8 @@ npx -y sf-agent-po@next init --host claude-code   # or cursor, copilot, all
 | Cursor | `.cursor/rules/` (two agent-requested rules) and `.cursor/skills/` | The same four, in Agent chat; name the context in your message, or the agent asks |
 | VS Code Copilot | `.github/agents/` (two custom agents) and `.github/prompts/` | Pick the agent, or run `/sa-hld context=renewal` |
 
+VS Code also loads Claude Code's agent files, so when `init` writes `.claude/agents/` in the same project (`--host all`, the default), it leaves out `.github/agents/` and Copilot lists each agent once.
+
 Existing files are kept unless you add `--force`; `--dry-run` lists what would be written. Commit the files so your team gets the same agents, and start a new session in your tool so it loads them. Without the files, the four workflows are still there as MCP prompts (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`).
 
 ## Check the set-up
@@ -141,7 +143,7 @@ Ask questions in plain words: "summarise the uat org", "search the metadata for 
 
 ## A first run on the insurance sample
 
-The repository's [`examples/insurance-renewal`](../examples/insurance-renewal) has realistic inputs (a kickoff, PI planning, the business owner's and the security team's emails) and an existing metadata project. With a clone of the repository:
+The repository's [`examples/insurance-renewal`](../examples/insurance-renewal) has realistic inputs (a kickoff, PI planning, the business owner's and the security team's emails) and an existing metadata project. Clone the repository, run `init` in the clone and open the clone in your tool, so that the paths below and the workspace (`.sf-agent` in the clone) are the ones the server uses:
 
 1. Index the sample's metadata: `npx -y sf-agent-po@next index --project examples/insurance-renewal/metadata`.
 2. In your tool: "Add the files in examples/insurance-renewal/inputs to a context called renewal." A page opens for each input, showing it masked: the email addresses are pseudonyms. Confirm each one. While input review is on (the default in pre-releases), nothing is added until you confirm.
@@ -179,7 +181,7 @@ Input review can be turned off for a context ("turn input review off for renewal
 
 Things worth knowing:
 
-- **Either order.** The SA's high-level design feeds the PO's backlog, and the PO's stories feed the SA's detailed design. Requirements confirmed once are reused by the next workflow, which only asks you to keep or change them.
+- **Either order.** The SA's high-level design feeds the PO's backlog, and the PO's stories feed the SA's detailed design. Requirements confirmed once are reused by the next workflow: when the inputs have not changed, the agent keeps them and no page opens.
 - **Resume.** A workflow stays open until it finishes. Start it again (or ask "where is the renewal workflow?") to continue where it stopped, even in another tool on the same workspace.
 - **Industry.** Name it ("industry insurance") and the steps carry that industry's guidance. Templates: financial services, insurance, health, manufacturing, automotive, energy and utilities, public sector, nonprofit, education, retail and consumer goods, communications, luxury.
 - **French.** Say "write in French": the context keeps French for every later run, and the checks use French word lists.
@@ -187,7 +189,7 @@ Things worth knowing:
 
 ## Approval pages
 
-Each page opens in your default browser and shows what you are confirming, with the real values where that is the point (a publish) and masked values elsewhere. The tool call waits until you answer. The pages are:
+Each page opens in your default browser and shows what you are confirming, with real values on the requirements, publish and feedback pages, and masked values on the input and image pages, which show what the model will see. The tool call waits until you answer. The pages are:
 
 - **Input review**: each masked input, before it is stored.
 - **Image**: each redacted image.
@@ -202,7 +204,7 @@ To use another browser, set `SF_AGENT_PO_BROWSER` in the server's environment to
 
 Ask "publish the design to Confluence in space ARCH" or "publish the backlog to Jira project PORT". The page opens with exactly what will be written; nothing is written until you approve it there.
 
-- **Confluence.** A design becomes a page, with its traceability matrix. Its diagrams are attached as draw.io files and shown with the draw.io app; on a site without it, ask for Mermaid diagrams instead. Publishing again updates the same page.
+- **Confluence.** A design becomes a page; a design written by a workflow also gets its traceability matrix as a page under it. A high-level design's diagrams are attached as draw.io files and shown with the draw.io app (on a site without it, ask for Mermaid diagrams instead); a detailed design's diagrams stay Mermaid. Publishing again updates the same page.
 - **Jira.** Epics, stories under them and "Blocks" links for dependencies. Publishing again creates only new items and updates only those whose content changed; labels, status, assignee and comments added in Jira are kept. Stories marked won't have stay out of Jira. The sub-tasks of a detailed design can go with it.
 - **Quality first.** A backlog with errors from the quality check is not published until they are fixed.
 
@@ -210,7 +212,7 @@ Ask "publish the design to Confluence in space ARCH" or "publish the backlog to 
 
 Once the team has worked on the published stories:
 
-1. "Compare the renewal backlog with Jira" reads each story back and classes it as unchanged, a minor edit or a major edit (more than 30% of the text changed, by default).
+1. "Compare the renewal backlog with Jira" reads each story back and classes it as unchanged, a minor edit, a major edit (more than 30% of the words changed by default, or an acceptance criterion added or removed) or deleted.
 2. "Open the feedback review for the renewal backlog, as PO" (or SA, or dev) opens a page where you give each story a verdict (accepted, minor edit, major edit, rejected) and rate each design section. Your verdict counts before the Jira diff's guess.
 3. "Summarise the feedback" gives the share of stories accepted without major edits against the 90% target, by context, model and workflow.
 
@@ -229,7 +231,7 @@ npx -y sf-agent-po@next key export   # prints the key as one line, for your pass
 npx -y sf-agent-po@next key import   # on another computer: paste it when asked
 ```
 
-Export prints only to a terminal, so an AI agent running commands cannot read the key. Import checks that the key belongs to the workspace.
+Export prints only to a terminal, so an AI agent running commands cannot read the key; `--to-pipe` sends it to a password manager's CLI instead. Import checks that the key belongs to the workspace.
 
 ## Reference
 
@@ -244,7 +246,7 @@ Export prints only to a terminal, so an AI agent running commands cannot read th
 | `key export`, `key import` | Back up and restore the masking key |
 | `report` | The feedback report, optionally as CSV |
 
-Each takes `--help`. `index`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` takes `--dir <project folder>`.
+`doctor`, `key`, `report` and `index --repo` come with 1.0.0-next.8; run `npm view sf-agent-po@next version` to see which version `@next` is. Each command takes `--help` (for example `npx -y sf-agent-po@next doctor --help`). `index`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` and `doctor` take `--dir <project folder>`. `doctor --no-calls` skips the calls to Jira and Confluence, and `report --context <name>` limits the report to one context.
 
 ### Tools
 
@@ -272,6 +274,7 @@ You rarely call tools by name; this list helps when you want to be precise.
 | `ATLASSIAN_SITE_URL`, `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` | Jira and Confluence access |
 | `SF_AGENT_WORKSPACE` | The workspace folder (default `.sf-agent` where the server starts) |
 | `SF_AGENT_PO_BROWSER` | The browser for approval pages, as a JSON array |
+| `SF_AGENT_PO_MODEL_DIR` | Where the name model is kept, as an absolute path (default: your user cache folder) |
 | `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1`, `NODE_OPTIONS=--use-system-ca` | Behind a company proxy |
 
 ### What is stored where
@@ -283,4 +286,4 @@ You rarely call tools by name; this list helps when you want to be precise.
 | The masking key | Your OS keychain, or a key file readable only by you |
 | The name model | Your user cache folder (or `SF_AGENT_PO_MODEL_DIR`) |
 
-Inputs, designs and backlogs are stored masked; the real values they stand for are in the vault, encrypted with the key. The metadata index keeps the org's metadata as it was retrieved, and masks it when a tool returns it. The agents send what they read, masked, to your tool's model, as with anything you share in a chat. Keep the workspace out of git (the `.sf-agent` folder) and back up the key.
+Inputs, designs and backlogs are stored masked; the real values they stand for are in the vault, encrypted with the key. The metadata index keeps the org's metadata as it was retrieved, and masks it when a tool returns it. The agents send what they read, masked, to your tool's model, as with anything you share in a chat. The server writes a `.gitignore` into `.sf-agent` so git leaves the workspace out; back up the key.

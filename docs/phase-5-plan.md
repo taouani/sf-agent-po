@@ -86,7 +86,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 
 - **Claude Code.** You run the host kit there; I fix what it finds.
 - **Cursor.** Cursor is moving custom commands to skills, so `init` writes Cursor skills, keeping commands for older versions. Built in #77 without the commands: Cursor 2.4 and later would offer both, so the minimum is Cursor 2.4. I check Cursor's current file format first (assumption: `.cursor/skills/<name>/SKILL.md`).
-- **Copilot.** Copilot's files are checked again on next.7.
+- **Copilot.** Copilot's files are checked again on next.8.
 - **Cursor's version string.** It stays as Cursor reports it; `doctor` shows it as reported.
 
 **Faster masking.** Short strings, such as metadata text, table cells and Jira fields, are batched into one model call of up to 32 strings padded to the same length. Long texts keep their chunks. The target is twice as fast on a 50-page PDF and on a large `metadata_impact` answer, measured with the real model in the CI model job. Detections must stay identical: the spike's 48 sentences and the masking tests are the check.
@@ -122,7 +122,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 **Trusted publishing.**
 
 - **The workflow.** The release workflow publishes through GitHub's OIDC: `id-token: write` (already there), and npm 11.5.1 or later (Node 24 ships an older npm on some runners, so the job installs it). npm tries trusted publishing first, so the `NPM_TOKEN` secret works as a fallback until you delete it. Provenance becomes automatic; the provenance input stays for when Sigstore is down. The retry logic stays.
-- **Your steps on npmjs.com.** When the next release (next.7) is ready:
+- **Your steps on npmjs.com.** When the next release (next.8) is ready:
   1. Open the `sf-agent-po` package, then **Settings**, then **Trusted publishing**. Choose **GitHub Actions** and fill in "Organization or user" `taouani`, "Repository" `sf-agent-po`, "Workflow filename" `release-next.yml` and "Environment name" `npm-next`. If "Allowed actions" offers `npm dist-tag`, tick it, so the workflow can move `latest`.
   2. Delete the `NPM_TOKEN` secret from the `npm-next` environment, then run Release next within two days, since npm drops an unused setup. A release that works without the secret proves trusted publishing works.
   3. Set **Publishing access** to "Require two-factor authentication and disallow tokens", then delete the npm token itself.
@@ -166,7 +166,7 @@ Fifteen PRs, in this order: the npm token deadline first, then the index (your r
 | 14 | Hosts | Cursor skills, Claude Code fixes from your host check | your host check |
 | 15 | Remove 0.x | Tag `v0-final`, delete 0.x, v1 user guide, contributor and troubleshooting guides, issue templates | D4 |
 
-**Releases.** next.7 after PR 9, for your G2 re-run. next.8 after PR 15. Each is bumped in its PR so the release check passes.
+**Releases.** next.7 was bumped after PR 9 but never published; next.8 after PR 15 carries it all. Each is bumped in its PR so the release check passes.
 
 **Evaluation.** The OpenRouter credit is $0.49, so phase 5 makes no paid model runs. The judge's rubric does not change in this phase, so the 8 Nov scores still hold. D6 is how phase 6's final evaluation gets paid for. Your answer (A, C or LiteLLM) keeps it open until phase 6. To make all three possible, a 16th PR, small and free to test, lets the eval call any OpenAI-compatible endpoint: a LiteLLM proxy, your own keys behind it, or a local model.
 
@@ -175,8 +175,8 @@ Fifteen PRs, in this order: the npm token deadline first, then the index (your r
 - [x] Answers to D1 to D7 in section 9.
 - [ ] After PR 1: the three npmjs.com steps in section 6, then a release within two days.
 - [ ] The Claude Code host check, before PR 14.
-- [ ] Your UAT re-index this week, with the time it took; after next.7, the same run with reports.
-- [ ] One real backlog published through next.7 or later, so your team's edits feed the Jira diff, and your verdicts on the review page (gate item 3).
+- [ ] Your UAT re-index this week, with the time it took; after next.8, the same run with reports.
+- [ ] One real backlog published through next.8 or later, so your team's edits feed the Jira diff, and your verdicts on the review page (gate item 3).
 
 ## 9. Risks and decisions
 

@@ -41,7 +41,7 @@ npm test
 | --- | --- |
 | The real name model (`masking-model.test.ts`) | `SF_AGENT_PO_MODEL_TEST=1`, and access to huggingface.co |
 | The approval page in Chromium (`browser.test.ts`) | `SF_AGENT_PO_BROWSER_TEST=1`, after `npx playwright-core install chromium-headless-shell` |
-| The Linux keyring (`keychain.test.ts`) | `SF_AGENT_PO_SECRET_SERVICE=1`, with an unlocked Secret Service |
+| This computer's key store (`keychain.test.ts`) | `SF_AGENT_PO_KEYCHAIN_TEST=1`; on Linux also `SF_AGENT_PO_SECRET_SERVICE=1`, with an unlocked Secret Service. It writes a real key and removes it after |
 | The installable package | `node scripts/pack-next.mjs --smoke --smoke-server` |
 
 Tests must not leave keys behind: the key folder in your config folder (`~/.config/sf-agent-po/keys` on Linux) should be as empty after `npm test` as before. GitHub's push protection rejects literals that look like tokens, so build fake tokens at run time in tests.
@@ -60,7 +60,7 @@ Migrations (`packages/core/src/store/migrations.ts`) are append-only. Never edit
 
 Masking is what lets the agents work on real inputs. Every change that touches inputs or outputs must keep these rules:
 
-1. **Everything stored is masked.** An input becomes a document only through the `Masker` (`maskDocument`, or the intake in `packages/mcp/src/inputs.ts`): title, content and every metadata string. A new reader returns text and metadata; it never writes to the store or returns text to a tool itself.
+1. **Every input is stored masked.** An input becomes a document only through the `Masker` (`maskDocument`, or the intake in `packages/mcp/src/inputs.ts`): title, content and every metadata string. A new reader returns text and metadata; it never writes to the store or returns text to a tool itself. The metadata index is the exception: it keeps the org's metadata as retrieved (as do the `orgs/` and `repos/` folders), and is masked whenever a tool returns it.
 2. **Everything returned to the model is masked.** Tool results carry pseudonyms (`[PERSON_1]`), never real values. Text read from Jira or Confluence for a comparison (the feedback Jira diff) is used and dropped: it is not stored or returned.
 3. **Real values only on approval pages and in the final write.** The publish page shows what will be written, with real values, and the publish itself unmasks. Secrets stay masked even there. An approval page's link never reaches the host or the model.
 4. **Images are confirmed.** An image is redacted and the user confirms it before the model sees it, whatever the input review setting.
