@@ -23,8 +23,6 @@ export interface MetadataKit {
 
 /** Types whose names are chosen by users for their content (a report on a client): masked like text. */
 export const NAMED_LIKE_TEXT = new Set<string>([
-  // A custom metadata record's name can name a client ("Client_Dupont").
-  "CustomMetadata",
   "Report",
   "Dashboard",
   "Document",
@@ -539,11 +537,14 @@ const VERB: Record<string, [string, string]> = {
 
 /** A may_read from a custom metadata type: its records name the field or object. */
 const NAMED_IN_RECORDS: [string, string] = ["its records name", "is named in the records of"];
+const MAY_READ: [string, string] = ["may read", "may be read by"];
 
 async function relatedLine(pieces: Pieces, r: Related, self?: string): Promise<string> {
   // The source of the link: the component shown for a link out, the other one for a link in.
-  const source = r.direction === "out" ? self : r.component.type;
-  const verbs = r.kinds.map((k) => (k === "may_read" && source === "CustomObject" ? NAMED_IN_RECORDS : VERB[k])?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
+  // Two links away, the source of the last link is the one between: its kind is said plainly.
+  const source = r.direction === "out" ? (r.depth > 1 ? undefined : self) : r.component.type;
+  const verb = (k: string) => (k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k]);
+  const verbs = r.kinds.map((k) => verb(k)?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
   const via = r.depth > 1 ? ` (${r.depth} links away)` : "";
   return `${verbs}${via}: ${(await line(pieces, r.component)).slice(2)}`;
 }

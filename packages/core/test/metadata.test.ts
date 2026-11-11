@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apexCode, classify, detectWithRules, HIDDEN_SECRET, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, detectWithRules, isNameValue, readCustomMetadataRecord, HIDDEN_SECRET, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -1083,15 +1083,16 @@ describe("queries built in strings", () => {
 
 describe("custom metadata mapping records", () => {
   const tmps: string[] = [];
+  const dbs: Database[] = [];
   afterEach(() => {
     for (const d of tmps.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const d of dbs.splice(0)) d.close();
   });
   const record = (values: Record<string, string | null>) =>
     `<?xml version="1.0" encoding="UTF-8"?><CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><label>Jeanne Dupont's mapping</label><protected>false</protected>` +
     Object.entries(values).map(([f, v]) => `<values><field>${f}</field>${v === null ? `<value xsi:nil="true"/>` : `<value xsi:type="xsd:string">${v}</value>`}</values>`).join("") +
     `</CustomMetadata>`;
-
-  it("link the fields and objects their values name to their type, which code reads", async () => {
+  const project = () => {
     const root = mkdtempSync(join(tmpdir(), "sfpo-mdt-"));
     tmps.push(root);
     const w = (rel: string, c: string) => {
@@ -1099,30 +1100,62 @@ describe("custom metadata mapping records", () => {
       writeFileSync(join(root, rel), c);
     };
     const field = (name: string) => `<CustomField><fullName>${name}</fullName><type>Text</type></CustomField>`;
-    w("objects/Account/fields/Industry.field-meta.xml", field("Industry"));
-    w("objects/Account/fields/Segment__c.field-meta.xml", field("Segment__c"));
-    w("objects/Contact/fields/Segment__c.field-meta.xml", field("Segment__c"));
-    w("objects/Lead/fields/Rating.field-meta.xml", field("Rating"));
-    w("objects/Policy__c/fields/Premium__c.field-meta.xml", field("Premium__c"));
+    for (const [o, f] of [["Account", "Industry"], ["Account", "Segment__c"], ["Account", "Type"], ["Contact", "Segment__c"], ["Contact", "Email"], ["Lead", "Email"], ["Lead", "Rating"], ["Lead", "Industry"], ["Event", "Type"], ["Policy__c", "Premium__c"]])
+      w(`objects/${o}/fields/${f}.field-meta.xml`, field(f!));
     w("objects/CIM_Client_Field__mdt/CIM_Client_Field__mdt.object-meta.xml", `<CustomObject><label>Client field</label></CustomObject>`);
-    // A value naming the object, then one naming its field alone; a full name; a custom field one object has.
+    w("objects/ns__Cfg__mdt/ns__Cfg__mdt.object-meta.xml", `<CustomObject><label>Config</label></CustomObject>`);
+    // A value naming the object, then its field alone; a full name; a custom field one object has.
     w("customMetadata/CIM_Client_Field.Industry.md-meta.xml", record({ Object__c: "Account", Field__c: "Industry", Target__c: "Client_Sector", Active__c: "true" }));
     w("customMetadata/CIM_Client_Field.Rating.md-meta.xml", record({ Source__c: "Lead.Rating", Note__c: "Call jane.doe@example.com", Empty__c: null }));
     w("customMetadata/CIM_Client_Field.Premium.md-meta.xml", record({ Field__c: "Premium__c", Other__c: "Segment__c", Missing__c: "Nope.Nothing__c" }));
+    // A conversion table: the same field name on two objects, in one record and across records.
+    w("customMetadata/CIM_Client_Field.Convert.md-meta.xml", record({ Source_Field__c: "Lead.Email", Target_Field__c: "Contact.Email" }));
+    w("customMetadata/CIM_Client_Field.Ind2.md-meta.xml", record({ Source_Field__c: "Lead.Industry" }));
+    // Metadata format and a namespace; common words in fields that do not name objects are not links.
+    w("customMetadata/ns__Cfg.ns__Main.md", record({ Kind__c: "Type", Trigger__c: "Event", Key__c: "AKIAIOSFODNN7EXAMPLE", Owner__c: "Dupont" }));
     w("classes/ClientSync.cls", "public class ClientSync { void run() { for (CIM_Client_Field__mdt m : CIM_Client_Field__mdt.getAll().values()) { Object v = rec.get(m.Field__c); } } }");
-    const index = fresh();
-    const snap = await index.build({ source: "s", kind: "repo" }, () => scanProject(root));
+    return root;
+  };
+
+  it("link the fields and objects their values name to their type, which code reads", async () => {
+    const root = project();
     const { components, edges } = await scanProject(root);
-    const out = edges.filter((e) => e.from.name === "CIM_Client_Field__mdt" && e.kind === "may_read").map((e) => `${e.to.type}:${e.to.name}`).sort();
-    expect(out).toEqual(["CustomField:Account.Industry", "CustomField:Lead.Rating", "CustomField:Policy__c.Premium__c", "CustomObject:Account"]);
-    // A record keeps no value and no label.
-    const records = components.filter((c) => c.type === "CustomMetadata");
-    expect(records.map((c) => c.name).sort()).toEqual(["CIM_Client_Field.Industry", "CIM_Client_Field.Premium", "CIM_Client_Field.Rating"]);
-    expect(JSON.stringify(records.map(({ refs: _, ...c }) => c))).not.toMatch(/Dupont|jane|Client_Sector|Account/);
-    expect(records.every((c) => c.parent === "CIM_Client_Field__mdt")).toBe(true);
-    // A change to Account.Industry reaches the class through the type.
+    const out = (type: string) => edges.filter((e) => e.from.name === type && e.kind === "may_read").map((e) => `${e.to.type}:${e.to.name}`).sort();
+    expect(out("CIM_Client_Field__mdt")).toEqual([
+      "CustomField:Account.Industry",
+      "CustomField:Contact.Email",
+      "CustomField:Lead.Email",
+      "CustomField:Lead.Industry",
+      "CustomField:Lead.Rating",
+      "CustomField:Policy__c.Premium__c",
+      "CustomObject:Account",
+    ]);
+    expect(out("ns__Cfg__mdt")).toEqual([]);
+    // No record is kept: only how many a type has.
+    expect(components.filter((c) => c.type === "CustomMetadata")).toEqual([]);
+    expect(components.find((c) => c.name === "CIM_Client_Field__mdt")!.attrs.records).toBe(5);
+    expect(JSON.stringify(components)).not.toMatch(/Dupont|jane|Client_Sector|AKIA|Convert/);
+  });
+
+  it("keep no record and no value in the index or its parse cache, and reach the code through the type", async () => {
+    const root = project();
+    const db = new Database(":memory:");
+    dbs.push(db);
+    const index = new MetadataIndex(db);
+    const run = () => index.build({ source: "repo:mdt", kind: "repo" }, (_lease, cache) => scanProject(root, { cache }));
+    await run();
+    const snap = await run();
+    const stored = JSON.stringify([db.db.prepare("SELECT * FROM metadata_file").all(), db.db.prepare("SELECT name, label, attrs, text FROM component").all()]);
+    expect(stored).not.toMatch(/Dupont|jane|Client_Sector|AKIA|CIM_Client_Field\.Industry/);
+    // The second run, from the cache, still has the links.
     const industry = index.component(snap.id, "CustomField", "Account.Industry")!;
     const deps = index.dependents([industry.id]).map((d) => `${d.depth} ${d.kind} ${d.component.type}:${d.component.name}`);
     expect(deps).toEqual(expect.arrayContaining(["1 may_read CustomObject:CIM_Client_Field__mdt", "2 reads ApexClass:ClientSync"]));
+  });
+
+  it("know a name from a key, a token or a person", () => {
+    for (const v of ["Account", "Account.Industry", "Segment__c", "ns__Field__c", "AccountId", "Lead.Email"]) expect(isNameValue(v)).toBe(true);
+    for (const v of ["AKIAIOSFODNN7EXAMPLE", "k_9f8e7d", "true", "jane.doe@example.com", "abc123", "Two words", "x".repeat(90)]) expect(isNameValue(v)).toBe(false);
+    expect(readCustomMetadataRecord({ values: [{ field: "Owner__c", value: "Dupont" }, { field: "Kind__c", value: "Event" }] })).toEqual([]);
   });
 });

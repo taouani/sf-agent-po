@@ -272,6 +272,9 @@ describe("metadata tools", () => {
     expect(type.text).toContain("its records name: CustomField Policy__c.Premium__c");
     expect(type.text).toContain("is read by: ApexClass Mapper");
     expect(type.text).not.toContain("Karim");
+    // Two links away, the link from the type is said plainly.
+    const mapper = await call("metadata_component", { context: "acme", type: "ApexClass", name: "Mapper", depth: 2 });
+    expect(mapper.text).toContain("may read (2 links away): CustomField Policy__c.Premium__c");
     const impact = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomField", name: "Policy__c.Premium__c" }] });
     expect(impact.text).toContain("CustomObject Map__mdt \"Map\" (its records name it: code that reads them may use it)");
     expect(impact.text).toContain("1 custom metadata type(s) name it in their records");

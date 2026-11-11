@@ -258,7 +258,9 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           const weak = rest.filter((d) => d.depth === 1 && d.kinds.every((k) => k === "may_read"));
           const mappings = weak.filter((d) => d.component.type === "CustomObject").length;
           const code = weak.length - mappings;
-          if (rest.length > weak.length) flags.push(`Deleting it breaks or changes ${rest.length - weak.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
+          // Salesforce refuses the delete only for what references it directly and for sure.
+          const blocking = rest.filter((d) => d.depth === 1 && !weak.includes(d)).length;
+          if (blocking) flags.push(`Deleting it breaks or changes ${rest.length - weak.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
           if (code) flags.push(`${code} class(es) may read it in a query built in strings: Salesforce does not stop the delete, and the query fails when it runs. Check their code with metadata_code.`);
           if (mappings) flags.push(`${mappings} custom metadata type(s) name it in their records: the code that reads them may fail once it is gone. Update or remove those records.`);
         }
