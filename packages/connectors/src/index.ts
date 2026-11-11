@@ -23,9 +23,14 @@ export { decodeText, htmlToText, loadLocalDocuments, MAX_FILE_BYTES, parseDocume
 export * from "./readers/index.js";
 export {
   METADATA_PROVIDERS,
+  parseRepoSpec,
   redactLocation,
+  REPO_PROVIDERS,
+  REPO_SPEC_HELP,
+  repoSource,
   resolveMetadataSource,
   type MetadataProvider,
+  type RepoProvider,
   type MetadataSourceSpec,
 } from "./metadata-source.js";
 export { type PublishedPage } from "./atlassian.js";
@@ -42,4 +47,4 @@ export {
   type OrgRetrieval,
   type RetrieveOptions,
 } from "./org-metadata.js";
-export { BackgroundIndexer, indexOrg, indexProject, indexTarget, projectSource, summarizeWarnings, type IndexJob, type IndexOptions, type IndexTarget } from "./indexing.js";
+export { BackgroundIndexer, indexOrg, indexProject, indexRemote, indexTarget, projectSource, summarizeWarnings, type IndexJob, type IndexOptions, type IndexTarget } from "./indexing.js";

@@ -183,6 +183,8 @@ const COLUMNS = "c.id, c.type, c.name, c.parent, c.parent_type, c.label, c.file,
 export interface BuildLease {
   /** Says the run is alive; call it between long steps (each part of an org retrieval). */
   renew(): void;
+  /** Records the revision read, when it is only known once the run has fetched it (a remote repository). */
+  setRevision(revision: string): void;
 }
 
 /** The metadata index in the workspace database: snapshots, components, edges, search. */
@@ -221,6 +223,9 @@ export class MetadataIndex {
     const lease: BuildLease = {
       renew: () => {
         if (this.building.has(id)) this.database.write(() => this.db.prepare("UPDATE metadata_snapshot SET heartbeat_at = ? WHERE id = ? AND status = 'building'").run(new Date().toISOString(), id));
+      },
+      setRevision: (revision) => {
+        if (this.building.has(id)) this.database.write(() => this.db.prepare("UPDATE metadata_snapshot SET revision = ? WHERE id = ? AND status = 'building'").run(revision, id));
       },
     };
     try {

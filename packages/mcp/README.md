@@ -31,11 +31,14 @@ npx -y sf-agent-po@next init --host claude-code   # or cursor, copilot, all
 ```
 
 To fill the workspace's metadata index from an org (retrieved with your `sf` CLI, which
-must be logged in to it; the org is only read) or from a Salesforce project folder:
+must be logged in to it; the org is only read), from a Salesforce project folder, or from
+a repository, cloned with your own `gh`, `glab` or `git` into the workspace (prefer your
+credential manager to a token in the URL, which git keeps in the clone):
 
 ```bash
 npx -y sf-agent-po@next index --org <alias or username>
 npx -y sf-agent-po@next index --project <folder>
+npx -y sf-agent-po@next index --repo github:owner/repo#main   # or gitlab:, azure-devops:<url>, git:<url>
 ```
 
 A run reads only what changed since the last one: an org's components whose date changed

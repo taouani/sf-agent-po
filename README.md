@@ -308,7 +308,7 @@ The new code lives in npm workspaces under `packages/`:
   keep pseudonyms as written and that each publish waits for the user's approval in the
   browser. `industry_guidance` gives the industry templates. `npx sf-agent-po@next init` writes the
   agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules.
-  `npx sf-agent-po@next index --project <folder>` or `--org <alias>` fills the workspace's
+  `npx sf-agent-po@next index --project <folder>`, `--repo <repository>` or `--org <alias>` fills the workspace's
   metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
   only; the types the index uses, in parts of at most 9,000 files, with profiles merged back),
   under `<workspace>/orgs/<org id>-<suffix>/metadata`, the last complete one named by
@@ -322,7 +322,12 @@ The new code lives in npm workspaces under `packages/`:
   asked for again next time. Everything is retrieved again with `--full`, a week after the last
   full run, when the types indexed changed, or when the last retrieval or a profile's last copy
   is missing (a new profile). What a standard object holds itself (its settings, overrides,
-  search layouts) has no date, so it waits for the weekly full run. A project is named by its folder and a hash of its path,
+  search layouts) has no date, so it waits for the weekly full run. A repository
+  (`github:owner/repo`, `gitlab:group/repo`, `azure-devops:<clone URL>` or `git:<clone URL>`,
+  with `#<branch>`) is cloned with the user's own `gh`, `glab` or `git` into
+  `<workspace>/repos`, and fetched again on the next run (a force push too), so the parse cache
+  finds the files that did not change; it is named by its name, branch and a hash of where it
+  is, without credentials. A project is named by its folder and a hash of its path,
   an org by its id. `BackgroundIndexer` runs the same without blocking, for the server, whose
   metadata tools let the agents index and read the org: `metadata_index` (in the background),
   `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,
