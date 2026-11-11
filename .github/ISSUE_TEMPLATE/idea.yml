@@ -1,0 +1,22 @@
+name: An idea or a change
+description: Something the agents, tools or guides should do differently, or domain knowledge to add.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need
+      description: The work you were doing and where sf-agent-po fell short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: Your idea. For industry templates, agent practices or check word lists, you can also change the Markdown in packages/core/content directly in a pull request (see CONTRIBUTING.md).
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of doctor (optional)
+      description: If it is about your set-up, the output of `npx -y sf-agent-po@next doctor`.
+      render: text

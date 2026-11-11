@@ -479,7 +479,7 @@ async function indexCheck(opts: DoctorOptions, file: string, deps: DoctorDeps, o
       const alias = s.kind === "org" ? orgs.get(s.source.replace(/^org:/, "")) : undefined;
       const name = alias ? `${s.source} (${alias})` : s.source;
       const age = days < 1 ? "today" : `${days} day(s) ago`;
-      const again = s.kind === "org" ? `npx sf-agent-po@next index --org ${alias ?? "<alias of this org>"}` : "npx sf-agent-po@next index --project <its folder>";
+      const again = s.kind === "org" ? `npx sf-agent-po@next index --org ${alias ?? "<alias of this org>"}` : "npx sf-agent-po@next index --project <its folder> (or --repo <repository> for a remote one)";
       return days > STALE_INDEX_DAYS
         ? { level: "warn" as const, detail: `${name} was indexed ${age}.`, fix: `Index it again: ${again}` }
         : { level: "pass" as const, detail: `${name} was indexed ${age}.` };
