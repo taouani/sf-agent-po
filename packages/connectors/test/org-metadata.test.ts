@@ -22,7 +22,12 @@ const manifest = (types: Record<string, string[]>) =>
 function fakeSf(
   org: Record<string, string[]>,
   calls: { args: string[]; cwd?: string }[] = [],
-  behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean; dates?: Record<string, string>; asked?: { type: string; members: string[] }[][] } = {},
+  behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean; dates?: Record<string, string>; asked?: { type: string; members: string[] }[][];
+    /** What each permission set grants, whatever was retrieved with it (as since API 40). */
+    permissionSets?: Record<string, string[]>;
+    /** Members the org lists but does not return, as `type:member`. */
+    skip?: Set<string>;
+  } = {},
 ): SfRunner {
   return async (args, opts = {}) => {
     calls.push({ args, cwd: opts.cwd });
@@ -64,6 +69,10 @@ function fakeSf(
       const objects = new Map<string, string[]>();
       for (const e of wanted) {
         for (const m of e.members) {
+          if (behaviour.skip?.has(`${e.type}:${m}`)) continue;
+          if (e.type === "PermissionSet") {
+            write(`permissionsets/${m}.permissionset`, `<?xml version="1.0"?><PermissionSet>${(behaviour.permissionSets?.[m] ?? []).map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<label>${m}</label></PermissionSet>`);
+          }
           if (e.type === "CustomObject") objects.set(m, objects.get(m) ?? []);
           if (e.type === "CustomField") {
             const [o, f] = m.split(".");
@@ -255,6 +264,50 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // A retrieval by an earlier version (no layout) is redone in full too.
     writeFileSync(file, JSON.stringify({ folder: (JSON.parse(readFileSync(file, "utf8")) as { folder: string }).folder, retrievedAt: pointer.fullAt }));
     expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+  });
+
+  it("replaces permission sets, retrieves again what the org did not return, and runs in full without the last tree", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["A", "B"], Profile: ["Admin"], PermissionSet: ["PS"] };
+    const dates: Record<string, string> = {};
+    const permissionSets: Record<string, string[]> = { PS: ["A", "B"] };
+    const skip = new Set<string>();
+    const asked: { type: string; members: string[] }[][] = [];
+    const sf = fakeSf(org, [], { dates, asked, permissionSets, skip, messages: [] });
+    const run = () => retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const tree = (r: { dir: string }) => path.join(r.dir, "metadata");
+    await run();
+
+    // Access taken away from a permission set goes, though the class did not change; a new
+    // permission set needs no full run.
+    permissionSets.PS = ["A"];
+    org.PermissionSet = ["PS", "PS2"];
+    const second = await run();
+    expect(second.incremental).toBeDefined();
+    expect(readFileSync(path.join(tree(second), "permissionsets", "PS.permissionset"), "utf8")).not.toContain("<apexClass>B</apexClass>");
+    expect(existsSync(path.join(tree(second), "permissionsets", "PS2.permissionset"))).toBe(true);
+
+    // B changed but did not come back: the next run asks for it again, though its date is the same.
+    dates["ApexClass:B"] = "2026-11-09T10:00:00.000Z";
+    skip.add("ApexClass:B");
+    const third = await run();
+    expect(existsSync(path.join(tree(third), "classes", "B.cls"))).toBe(false);
+    skip.clear();
+    asked.length = 0;
+    const fourth = await run();
+    expect(asked[0]?.find((e) => e.type === "ApexClass")?.members).toEqual(["B"]);
+    expect(existsSync(path.join(tree(fourth), "classes", "B.cls"))).toBe(true);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".next"))).toEqual([]);
+
+    // A profile the last tree has no copy of, or no last tree at all: everything is retrieved.
+    rmSync(path.join(tree(fourth), "profiles", "Admin.profile"));
+    const fifth = await run();
+    expect(fifth.incremental).toBeUndefined();
+    expect(readFileSync(path.join(tree(fifth), "profiles", "Admin.profile"), "utf8").match(/<classAccesses>/g)).toHaveLength(2);
+    rmSync(tree(fifth), { recursive: true });
+    const sixth = await run();
+    expect(sixth.incremental).toBeUndefined();
+    expect(readdirSync(path.join(tree(sixth), "classes")).sort()).toEqual(["A.cls", "A.cls-meta.xml", "B.cls", "B.cls-meta.xml"]);
   });
 
   it("merges access: what was retrieved wins, the rest of the last copy stays, changed components lose theirs", () => {

@@ -315,11 +315,14 @@ The new code lives in npm workspaces under `packages/`:
   `<org id>.json` with each component's last-modified date (`sf org list metadata`). The next
   run retrieves only what changed since (an object with all its children and layouts), into a
   copy of the last retrieval, and removes what was deleted. Profiles and permission sets are
-  retrieved every time, since Salesforce does not date a change of access, and merged into
-  their last copy: access to components retrieved again comes from this run, the rest stays.
-  Labels, workflows and email templates are retrieved every time too. Everything is retrieved
-  again with `--full`, a week after the last full run, or when a profile or permission set is
-  new. A project is named by its folder and a hash of its path,
+  retrieved every time, since Salesforce does not date a change of access. A permission set
+  comes back whole and replaces its last copy; a profile is merged into its last copy: access
+  to components retrieved again comes from this run, the rest stays. Labels, workflows and
+  email templates are retrieved every time too, and a component the org did not return is
+  asked for again next time. Everything is retrieved again with `--full`, a week after the last
+  full run, when the types indexed changed, or when the last retrieval or a profile's last copy
+  is missing (a new profile). What a standard object holds itself (its settings, overrides,
+  search layouts) has no date, so it waits for the weekly full run. A project is named by its folder and a hash of its path,
   an org by its id. `BackgroundIndexer` runs the same without blocking, for the server, whose
   metadata tools let the agents index and read the org: `metadata_index` (in the background),
   `metadata_sources`, `metadata_summary` (types, and the busiest objects with their fields,
