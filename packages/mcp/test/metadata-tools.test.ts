@@ -240,6 +240,21 @@ describe("metadata tools", () => {
     expect(r.text).toMatch(/lines 1-\d+ of 104, .* More from line \d+\./);
   });
 
+  it("show what a query built in strings may read", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    writeFileSync(path.join(root, "objects/Lead.object"), `<?xml version="1.0"?><CustomObject><fields><fullName>Rating</fullName><type>Picklist</type></fields></CustomObject>`);
+    writeFileSync(path.join(root, "classes/Finder.cls"), "public class Finder { static final String OBJ = 'Lead'; List<SObject> f() { return Database.query('SELECT Rating FROM ' + OBJ); } }");
+    await indexProject(index, root);
+    const field = await call("metadata_component", { context: "acme", type: "CustomField", name: "Lead.Rating" });
+    expect(field.text).toContain("may be read by (a query built in strings): ApexClass Finder");
+    const impact = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomField", name: "Lead.Rating" }] });
+    expect(impact.text).toContain("ApexClass Finder (may read it: a query built in strings)");
+    // A query built in strings does not stop the delete: the class fails when it runs.
+    expect(impact.text).toContain("1 class(es) may read it in a query built in strings: Salesforce does not stop the delete");
+    expect(impact.text).not.toContain("Salesforce refuses the delete");
+  });
+
   it("say why there is no code to show", async () => {
     const { call, index, db } = await connect();
     const root = project();

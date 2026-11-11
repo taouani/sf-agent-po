@@ -837,8 +837,15 @@ describe("scanProject on awkward projects", () => {
       edges.filter((e) => e.from.type === type && e.from.name === name && e.kind !== "part_of").map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
 
     expect(from("FieldSet", "Account.Card")).toEqual(["reads CustomField:Account.OwnerId", "shows CustomField:Account.LifetimeSpent__pc", "shows CustomField:User.Email"]);
-    // Policy__c after FROM and Policy__c.SObjectType are the object, not Claim__c's lookup; Status__c is on two objects.
-    expect(from("ApexClass", "Untyped")).toEqual(["reads CustomField:Account.LifetimeSpent__pc", "reads CustomObject:Policy__c", "reads FieldSet:Account.Card"]);
+    // Policy__c after FROM and Policy__c.SObjectType are the object, not Claim__c's lookup; Status__c,
+    // on two objects, is Policy__c's in the query built in a string, which is a weaker link. The
+    // managed Invoice__c is not in the project: a query built in strings makes no placeholder.
+    expect(from("ApexClass", "Untyped")).toEqual([
+      "may_read CustomField:Policy__c.Status__c",
+      "reads CustomField:Account.LifetimeSpent__pc",
+      "reads CustomObject:Policy__c",
+      "reads FieldSet:Account.Card",
+    ]);
     // Words in strings, child relationships and $User properties are not fields.
     expect(from("ApexPage", "ClientCard")).toEqual([
       "calls ApexClass:Untyped",
@@ -984,5 +991,92 @@ describe("Apex code in the index", () => {
     expect(index.body(mapper.id)).toBeUndefined();
     expect(index.body(index.component(second.id, "ApexClass", "Mapper")!.id)).toBe(src);
     expect(db.db.prepare("SELECT count(*) AS n FROM component_body").get()).toEqual({ n: 1 });
+  });
+});
+
+describe("queries built in strings", () => {
+  const object = (name: string): ParsedComponent => ({ type: "CustomObject", name, file: "o", attrs: {}, text: "" });
+  const field = (o: string, name: string): ParsedComponent => ({ type: "CustomField", name: `${o}.${name}`, parent: o, file: "f", attrs: {}, text: "" });
+  /** The project: Account, Contact, Lead and Policy__c with a few fields. */
+  const project = [
+    object("Account"), field("Account", "Id"), field("Account", "Name"), field("Account", "Industry"), field("Account", "Segment__c"), field("Account", "Status__c"),
+    object("Contact"), field("Contact", "Id"), field("Contact", "AccountId"), field("Contact", "Region__c"),
+    object("Lead"), field("Lead", "Id"),
+    object("Policy__c"), field("Policy__c", "Premium__c"),
+  ];
+  const link = (src: string) =>
+    linkObjects([readApex("ApexClass", "Q", src, "classes/Q.cls"), ...project])
+      .edges.filter((e) => e.from.name === "Q" && e.to.type !== "ApexClass")
+      .map((e) => `${e.kind} ${e.to.name}`)
+      .sort();
+
+  it("reads them as weaker links, with constants and variables put back", () => {
+    const src = [
+      "public class Q {",
+      "  private static final String OBJECT_NAME = 'Account';",
+      "  @TestVisible static final String FIELDS = 'Id, Name, Segment__c';",
+      "  public List<SObject> run(String status, List<String> extra) {",
+      "    String q = 'SELECT ' + FIELDS + ', ' + String.join(extra, ',') + ' FROM ' + OBJECT_NAME;",
+      "    q += ' WHERE Status__c = :status AND Name = \\'' + OBJECT_NAME + '\\'';",
+      "    List<SObject> a = Database.query(q);",
+      "    return Database.query('SELECT Id FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Industry = \\'x\\')');",
+      "  }",
+      "}",
+    ].join("\n");
+    const c = readApex("ApexClass", "Q", src, "classes/Q.cls");
+    expect(c.attrs).toMatchObject({ builtQueries: 2, dynamic: ["query built from a string"] });
+    // Only what the project has: no placeholder for a guess (the value 'Account' put in quotes is
+    // not a field). A custom field one object alone has is linked by its name, as before.
+    expect(link(src)).toEqual([
+      "may_read Account",
+      "may_read Account.Id",
+      "may_read Account.Industry",
+      "may_read Account.Name",
+      "may_read Contact",
+      "may_read Contact.AccountId",
+      "may_read Contact.Id",
+      "reads Account.Segment__c",
+      "reads Account.Status__c",
+    ]);
+  });
+
+  it("keeps a certain read over a weaker one, and never hides one", () => {
+    expect(link("public class Q { void m() { Account a = [SELECT Name FROM Account LIMIT 1]; String q = 'SELECT Name, Industry FROM Account'; } }")).toEqual([
+      "may_read Account.Industry",
+      "reads Account",
+      "reads Account.Name",
+    ]);
+    // A field the code reads by name stays a certain read beside a built query that names it.
+    expect(link("Decimal p = helper().Premium__c; String q = 'SELECT Id FROM Policy__c WHERE Premium__c > 0';")).toEqual([
+      "may_read Policy__c",
+      "reads Policy__c.Premium__c",
+    ]);
+    // An object the query cannot be sure of (Lead or Contact) does not take the field from the one that has it.
+    expect(link("String q = 'SELECT Id, Region__c FROM ' + (b ? 'Lead' : 'Contact');")).toEqual(["reads Contact.Region__c"]);
+  });
+
+  it("reads nothing from messages, values in inline queries or strings that are not queries", () => {
+    for (const src of [
+      "throw new MyException('Please select a contact from Account page');",
+      "List<Account> a = [SELECT Id FROM Account WHERE Name = 'select Id from User'];",
+      "String t = 'Hello'; String u = 'from Account select';",
+    ])
+      expect(readApex("ApexClass", "Q", src, "x").attrs.builtQueries).toBeUndefined();
+  });
+
+  it("reads a query rebuilt after a reassignment, and stays linear on long code", () => {
+    expect(link("String q = 'SELECT Id FROM Lead'; q = 'SELECT Id FROM Contact';")).toEqual(["may_read Contact", "may_read Contact.Id", "may_read Lead", "may_read Lead.Id"]);
+    const cases = [
+      "q += 'SELECT a FROM b ' + x;\n".repeat(30_000),
+      "String c" + "x".repeat(10) + " = 'v';\n".repeat(30_000) + "q = " + "c + ".repeat(50_000) + "'';",
+      // A value repeated past any string's length, and many "select" with no FROM.
+      `String a = '${"x".repeat(19_000)}'; String q = ${"a+".repeat(40_000)}'';`,
+      `String a = '${"select ".repeat(2_700)}';\n` + "b = a;\n".repeat(20_000),
+    ];
+    for (const src of cases) {
+      const start = performance.now();
+      readApex("ApexClass", "Q", src, "x");
+      expect(performance.now() - start).toBeLessThan(3_000);
+    }
   });
 });

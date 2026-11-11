@@ -295,12 +295,17 @@ export function linkObjects(components: readonly ParsedComponent[]): {
         const types = typeof ref.type === "string" ? [ref.type] : ref.type;
         const type = types.find((t) => byKey.has(componentKey(t, ref.name))) ?? (ref.known ? undefined : types[0]);
         if (type) edges.push({ from, to: need(type, ref.name), kind: ref.kind });
-      } else if (ref.known && !objectNamed(ref.object)) continue;
+      } else if ((ref.known || ref.kind === "may_read") && !objectNamed(ref.object)) continue;
       else if (!ref.path) edges.push({ from, to: need("CustomObject", ref.object), kind: ref.kind });
       else {
         const fields = formulaFields(ref.path, objectNamed(ref.object) ?? ref.object, fieldsOf, objectNamed);
         // A path through relationships reads each lookup; the field at its end is what the
         // reference is about (written, granted, shown); a write writes a record of its object.
+        // A link that may be there names only what the project has: no placeholder for a guess.
+        if (ref.kind === "may_read") {
+          for (const field of fields) if (byKey.has(componentKey("CustomField", field))) readsField(from, field, "may_read");
+          continue;
+        }
         fields.forEach((field, i) => readsField(from, field, i === fields.length - 1 ? ref.kind : "reads"));
         const last = fields.at(-1);
         if (ref.kind === "writes" && last && last.lastIndexOf(".") > 0) edges.push({ from, to: need("CustomObject", last.slice(0, last.lastIndexOf("."))), kind: "writes" });
@@ -316,7 +321,7 @@ export function linkObjects(components: readonly ParsedComponent[]): {
     // already reaches: a field the code or page names in full is not guessed again.
     const owners = new Map<string, string[]>();
     for (const m of fields.values()) for (const [field, f] of m) owners.set(field, [...(owners.get(field) ?? []), f.parent!]);
-    const reached = new Set(edges.filter((e) => e.to.type === "CustomField").map((e) => `${componentKey(e.from.type, e.from.name)}>${e.to.name.slice(e.to.name.lastIndexOf(".") + 1).toLowerCase()}`));
+    const reached = new Set(edges.filter((e) => e.to.type === "CustomField" && e.kind !== "may_read").map((e) => `${componentKey(e.from.type, e.from.name)}>${e.to.name.slice(e.to.name.lastIndexOf(".") + 1).toLowerCase()}`));
     for (const { from, field, kind, among } of byName) {
       const lower = field.toLowerCase();
       if (reached.has(`${componentKey(from.type, from.name)}>${lower}`)) continue;
@@ -339,6 +344,8 @@ export function linkObjects(components: readonly ParsedComponent[]): {
   }
   // The same dependency found twice (a lookup on the way and the field itself) is one edge.
   const unique = new Map(edges.map((e) => [`${componentKey(e.from.type, e.from.name)}>${e.kind}>${componentKey(e.to.type, e.to.name)}`, e]));
+  // A link that may be there is dropped where the same link is certain.
+  for (const [key, e] of unique) if (e.kind === "may_read" && unique.has(key.replace(">may_read>", ">reads>"))) unique.delete(key);
   return { edges: [...unique.values()], missing: [...missing.values()] };
 }
 

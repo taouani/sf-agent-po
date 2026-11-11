@@ -43,6 +43,7 @@ const VERB_IN: Record<string, string> = {
   includes: "includes it",
   shows: "shows it",
   part_of: "belongs to it",
+  may_read: "may read it: a query built in strings",
 };
 
 /** The object a component belongs to: itself for an object, its parent for a field or rule, or the object of "Object.Name". */
@@ -252,7 +253,12 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           const outside = rest.filter((d) => !scope.has(d.component.id)).length;
           if (outside) flags.push(`${outside} dependent(s) are outside the scope the user confirmed: check them with the user, or widen the scope.`);
         }
-        if (ch.change === "delete" && rest.length) flags.push(`Deleting it breaks or changes ${rest.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
+        if (ch.change === "delete") {
+          // A query built in strings does not stop the delete: the class fails when it runs.
+          const weak = rest.filter((d) => d.depth === 1 && d.kinds.every((k) => k === "may_read")).length;
+          if (rest.length > weak) flags.push(`Deleting it breaks or changes ${rest.length - weak} component(s) above; Salesforce refuses the delete while some still reference it.`);
+          if (weak) flags.push(`${weak} class(es) may read it in a query built in strings: Salesforce does not stop the delete, and the query fails when it runs. Check their code with metadata_code.`);
+        }
         const facts = object ? objectFacts(object) : undefined;
         if (facts && (ch.change === "add" || ch.change === "modify") && ["ValidationRule", "CustomField", "CustomObject"].includes(ch.type)) {
           const writers = facts.writers.filter((w) => w.id !== c?.id);
@@ -286,7 +292,7 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
       }
       await recordChecked(kit, context, changes);
       sections.push(
-        "The index does not see dynamic Apex, SOQL built from strings, long formula chains, list views on fields, reports in private folders, endpoints built at run time, or what outside systems do with what they receive (middleware, ETL, API clients of connected apps). Read the code of a class it flags with metadata_code; say so where a conclusion still depends on what cannot be seen.",
+        "The index does not fully see dynamic Apex (a query built in strings is read as far as its strings show it, as \"may read\"), long formula chains, list views on fields, reports in private folders, endpoints built at run time, or what outside systems do with what they receive (middleware, ETL, API clients of connected apps). Read the code of a class it flags with metadata_code; say so where a conclusion still depends on what cannot be seen.",
       );
       return text(sections.join("\n\n"));
     }),

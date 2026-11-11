@@ -532,6 +532,7 @@ const VERB: Record<string, [string, string]> = {
   grants: ["grants access to", "is granted by"],
   includes: ["includes", "is included in"],
   shows: ["shows", "is shown by"],
+  may_read: ["may read (a query built in strings)", "may be read by (a query built in strings)"],
 };
 
 async function relatedLine(pieces: Pieces, r: Related): Promise<string> {

@@ -95,6 +95,7 @@ Ask the model to analyse the impact of a change (`metadata_impact`). Each case b
 | Outside the scope | A change on an object you did not confirm | Its dependents flagged as outside the confirmed scope. |
 | Unknown name | A field that is not indexed | Close matches. |
 | Weak links (real org) | A field used by dynamic SOQL, or an object with an inactive flow | The Apex the index cannot follow, and the inactive flow that would break once activated. |
+| Queries built in strings (real org) | A field a class reads only in a query it builds in strings | The class, linked as "may read (a query built in strings)". Ask for its code (`metadata_code`) to check. |
 | Reports (real org, next.8) | A field shown or filtered on in reports | The number of reports and dashboards, and the first ten named. |
 | Integrations (real org, next.8) | A field sent by an outbound message, or an object with change data capture on | A weak link naming the outbound message and its host, or the change data capture channel. |
 
