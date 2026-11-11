@@ -11,7 +11,7 @@ import { readFlow } from "./flows.js";
 import { readApex } from "./apex.js";
 import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
 import { readDashboard, readReport, readReportType } from "./reports.js";
-import { readConnectedApp, readExternalCredential, readExternalService, readNamedCredential, readPlatformEventChannel, readPlatformEventChannelMember, readRemoteSiteSetting, readWorkflow } from "./integrations.js";
+import { readConnectedApp, readExternalCredential, readExternalService, readNamedCredential, readPlatformEventChannel, readOutboundMessage, readPlatformEventChannelMember, readRemoteSiteSetting, readWorkflow } from "./integrations.js";
 import { classifyFile } from "./registry.js";
 import { obj, parseMetadataXml } from "./xml.js";
 
@@ -33,7 +33,7 @@ type Kind =
   | "object" | "field" | "recordType" | "validationRule" | "mdapiObject" | "flow"
   | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup"
   | "report" | "dashboard" | "reportType"
-  | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow";
+  | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow" | "outboundMessage";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -63,6 +63,8 @@ const BY_TYPE: Readonly<Record<string, Kind>> = {
   PlatformEventChannel: "eventChannel",
   PlatformEventChannelMember: "eventChannelMember",
   Workflow: "workflow",
+  // workflows/Account/workflowOutboundMessages/Notify_ERP.workflowOutboundMessage-meta.xml
+  WorkflowOutboundMessage: "outboundMessage",
 };
 
 /** Types read in detail: every other one is indexed by name and file. */
@@ -286,6 +288,15 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       if (what.kind === "field" || what.kind === "recordType" || what.kind === "validationRule" || what.kind === "fieldSet") standIn(what.object, file.split("/").slice(0, -2).join("/"));
     } catch (err) {
       skip(file, reason(err));
+      // A file of a type read from its one XML file that is too large or broken to read is
+      // still in the project, by name (an external service with a huge schema), as it was
+      // before the type was read in detail: what points at it does not find it missing.
+      const match = classifyFile(file);
+      const key = match && componentKey(match.type, match.name);
+      if (match && key && Object.hasOwn(BY_TYPE, match.type) && !seen.has(key) && homes.get(key) === undefined) {
+        homes.set(key, match.home);
+        add({ type: match.type, name: match.name, file, attrs: {}, text: "", ...(match.parent ? { parent: match.parent, parentType: match.parentType } : {}) }, file);
+      }
     }
   }
 
@@ -355,6 +366,10 @@ function readComponents(what: NonNullable<ReturnType<typeof classify>>, file: st
       return [readPlatformEventChannelMember(what.object, obj(doc.PlatformEventChannelMember), file)];
     case "workflow":
       return readWorkflow(what.object, obj(doc.Workflow), file);
+    case "outboundMessage": {
+      const dot = what.object.indexOf(".");
+      return dot > 0 ? [readOutboundMessage(what.object.slice(0, dot), what.object.slice(dot + 1), obj(doc.WorkflowOutboundMessage), file)] : [];
+    }
   }
   return [];
 }

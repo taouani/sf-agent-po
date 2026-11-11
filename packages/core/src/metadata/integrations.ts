@@ -1,24 +1,39 @@
 // Integrations: where an org connects out and what comes in. Named and external credentials,
 // remote site settings, connected apps, external services, outbound messages and platform
 // event channels. Only hosts are kept of URLs (a path or query can carry a token or a
-// client's name), and never a secret, a consumer key, a certificate, a username or an email.
+// client's name), in descriptions too, and never a secret, a consumer key, a certificate, a
+// username, an email or an IP address. A host can still name a client (acme.example.com): it
+// is what an architect needs to see where the org connects.
 
 import type { ParsedComponent, Ref } from "./model.js";
 import { bool, list, obj, str } from "./xml.js";
 
-const joinText = (...parts: (string | undefined)[]) => parts.filter((p): p is string => !!p && p.trim() !== "").join("\n");
 const NAME = /^[A-Za-z]\w*$/;
+/** Shown in place of a host that is an IP address, which the masking rules treat as personal. */
+export const IP_HOST = "(an IP address)";
 
-/** The host of a URL ("api.example.com"), or undefined when it is not one; merge fields ({!$Credential...}) are not hosts. */
+/**
+ * The host of a URL ("api.example.com"), or undefined when it is not one; merge fields
+ * ({!$Credential...}) are not hosts, and an IP address is shown as IP_HOST.
+ */
 export function hostOf(url: string | undefined): string | undefined {
   if (!url || url.includes("{!")) return undefined;
   try {
     const u = new URL(url.trim());
-    return /^https?:$/.test(u.protocol) && u.hostname ? u.hostname.toLowerCase() : undefined;
+    if (!/^https?:$/.test(u.protocol) || !u.hostname) return undefined;
+    const host = u.hostname.toLowerCase();
+    return host.startsWith("[") || /^[\d.]+$/.test(host) ? IP_HOST : host;
   } catch {
     return undefined;
   }
 }
+
+/** People's text with every URL cut to its host: a path or query can carry a token. */
+export function hostsOnly(text: string): string {
+  return text.replace(/\b[a-z][\w+.-]*:\/\/[^\s<>"')\]]+/gi, (url) => hostOf(url) ?? "(a link)");
+}
+
+const joinText = (...parts: (string | undefined)[]) => hostsOnly(parts.filter((p): p is string => !!p && p.trim() !== "").join("\n"));
 
 const withAttrs = (attrs: Record<string, unknown>) => Object.fromEntries(Object.entries(attrs).filter(([, v]) => v !== undefined && !(Array.isArray(v) && !v.length)));
 
@@ -29,6 +44,9 @@ const withAttrs = (attrs: Record<string, unknown>) => Object.fromEntries(Object.
 export function readNamedCredential(name: string, root: Record<string, unknown>, file: string): ParsedComponent {
   const refs: Ref[] = [];
   let url = str(root.endpoint);
+  // A legacy named credential names its OAuth provider itself.
+  const provider = str(root.authProvider);
+  if (provider && NAME.test(provider)) refs.push({ kind: "references", type: "AuthProvider", name: provider, known: true });
   for (const p of list(root.namedCredentialParameters).map(obj)) {
     const type = str(p.parameterType);
     if (type === "Url") url ??= str(p.parameterValue);
@@ -40,22 +58,28 @@ export function readNamedCredential(name: string, root: Record<string, unknown>,
     type: str(root.namedCredentialType),
     protocol: str(root.protocol),
     principalType: str(root.principalType),
+    authProvider: provider && NAME.test(provider) ? provider : undefined,
     calloutStatus: str(root.calloutStatus),
   });
   return { type: "NamedCredential", name, label: str(root.label), file, attrs, refs, text: "" };
 }
 
-/** An external credential: how it authenticates, and the auth provider it uses (`references`). No parameter value but a provider's name is kept. */
+/**
+ * An external credential: how it authenticates, and the auth provider it uses (`references`,
+ * when the project has it: an org's auth providers are not retrieved, as they hold a secret).
+ * No parameter value but a provider's name is kept.
+ */
 export function readExternalCredential(name: string, root: Record<string, unknown>, file: string): ParsedComponent {
   const refs: Ref[] = [];
   const principals: string[] = [];
   for (const p of list(root.externalCredentialParameters).map(obj)) {
     const type = str(p.parameterType);
     const provider = str(p.authProvider);
-    if (type === "AuthProvider" && provider && NAME.test(provider)) refs.push({ kind: "references", type: "AuthProvider", name: provider });
+    if (type === "AuthProvider" && provider && NAME.test(provider)) refs.push({ kind: "references", type: "AuthProvider", name: provider, known: true });
     if (type === "NamedPrincipal" || type === "PerUserPrincipal") principals.push(type);
   }
-  const attrs = withAttrs({ protocol: str(root.authenticationProtocol), principals: [...new Set(principals)].sort() });
+  const providers = refs.map((r) => ("name" in r ? r.name : "")).filter(Boolean);
+  const attrs = withAttrs({ protocol: str(root.authenticationProtocol), authProvider: providers.length ? [...new Set(providers)].sort().join(", ") : undefined, principals: [...new Set(principals)].sort() });
   return { type: "ExternalCredential", name, label: str(root.label), file, attrs, refs, text: joinText(str(root.description)) };
 }
 
@@ -110,37 +134,48 @@ export function readPlatformEventChannel(name: string, root: Record<string, unkn
   return { type: "PlatformEventChannel", name, label: str(root.label), file, attrs: withAttrs({ channelType: str(root.channelType) }), refs: [], text: "" };
 }
 
-/** A platform event channel member: part of its channel, it reads (publishes) its event or change event. */
+/**
+ * A platform event channel member: part of its channel, it reads (publishes) its event or
+ * change event. Salesforce's own channel for change events (ChangeEvents) is not linked.
+ */
 export function readPlatformEventChannelMember(name: string, root: Record<string, unknown>, file: string): ParsedComponent {
   const refs: Ref[] = [];
   const channel = str(root.eventChannel);
-  if (channel && NAME.test(channel)) refs.push({ kind: "part_of", type: "PlatformEventChannel", name: channel });
+  if (channel && NAME.test(channel) && channel !== "ChangeEvents") refs.push({ kind: "part_of", type: "PlatformEventChannel", name: channel });
   const entity = str(root.selectedEntity);
   if (entity && NAME.test(entity)) refs.push({ kind: "reads", object: entity });
   return { type: "PlatformEventChannelMember", name, file, attrs: withAttrs({ channel, entity }), refs, text: "" };
 }
 
 /**
- * A workflow file ("Account"): the workflow itself, by name, and each outbound message in it
- * ("Account.Notify_ERP"), with its endpoint's host and the fields it sends. The integration
- * user it runs as (a username) is not kept.
+ * An outbound message ("Account.Notify_ERP"), part of its object's workflow: its endpoint's
+ * host and the fields it sends. The integration user it runs as (a username) is not kept.
+ */
+export function readOutboundMessage(object: string, short: string, m: Record<string, unknown>, file: string): ParsedComponent {
+  const fields = list(m.fields).map(str).filter((f): f is string => !!f && NAME.test(f));
+  return {
+    type: "WorkflowOutboundMessage",
+    name: `${object}.${short}`,
+    parent: object,
+    parentType: "Workflow",
+    label: str(m.name),
+    file,
+    attrs: withAttrs({ host: hostOf(str(m.endpointUrl)), fields: [...new Set(fields)].sort(), includeSessionId: bool(m.includeSessionId) }),
+    refs: fields.map((f) => ({ kind: "reads" as const, object, path: f })),
+    text: joinText(str(m.description)),
+  };
+}
+
+/**
+ * A workflow file ("Account"): the workflow itself, by name, and each outbound message written
+ * in it. Messages in their own files (workflows/Account/workflowOutboundMessages/) are read
+ * by readOutboundMessage alone.
  */
 export function readWorkflow(object: string, root: Record<string, unknown>, file: string): ParsedComponent[] {
   const out: ParsedComponent[] = [{ type: "Workflow", name: object, file, attrs: {}, text: "" }];
   for (const m of list(root.outboundMessages).map(obj)) {
     const short = str(m.fullName);
-    if (!short || !NAME.test(short)) continue;
-    const fields = list(m.fields).map(str).filter((f): f is string => !!f && NAME.test(f));
-    out.push({
-      type: "WorkflowOutboundMessage",
-      name: `${object}.${short}`,
-      parent: object,
-      label: str(m.name),
-      file,
-      attrs: withAttrs({ host: hostOf(str(m.endpointUrl)), fields: [...new Set(fields)].sort(), includeSessionId: bool(m.includeSessionId) }),
-      refs: fields.map((f) => ({ kind: "reads" as const, object, path: f })),
-      text: joinText(str(m.description)),
-    });
+    if (short && NAME.test(short)) out.push(readOutboundMessage(object, short, m, file));
   }
   return out;
 }

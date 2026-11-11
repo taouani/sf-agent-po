@@ -227,15 +227,17 @@ describe("flows", () => {
     const { components, edges } = await scanProject(join(fixtures, "source"));
     const out = (name: string) => edges.filter((e) => e.from.name === name).map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
     expect(out("ERP")).toEqual(["references ExternalCredential:ERP_Auth"]);
-    expect(out("ERP_Auth")).toEqual(["references AuthProvider:Okta"]);
+    // An auth provider is linked only when the project has it: an org's are not retrieved.
+    expect(out("ERP_Auth")).toEqual([]);
     expect(out("Weather")).toEqual(["references NamedCredential:ERP"]);
     expect(out("Sync_Policy")).toEqual(["part_of PlatformEventChannel:Sync__chn", "reads CustomObject:Policy__ChangeEvent"]);
-    expect(out("Policy__c.Notify_ERP")).toEqual(["part_of CustomObject:Policy__c", "reads CustomField:Policy__c.Id", "reads CustomField:Policy__c.Status__c"]);
+    expect(out("Policy__c.Notify_ERP")).toEqual(["part_of Workflow:Policy__c", "reads CustomField:Policy__c.Id", "reads CustomField:Policy__c.Status__c"]);
     // Apex: a callout through a named credential, a literal endpoint's host (not a commented one), a published event.
     expect(out("ErpClient")).toEqual(expect.arrayContaining(["calls NamedCredential:ERP", "writes CustomObject:Policy_Sync__e"]));
     const byName = (n: string) => components.find((c) => c.name === n)!;
     expect(byName("ErpClient").attrs.calloutHosts).toEqual(["api.partner.example"]);
     expect(byName("ERP").attrs).toMatchObject({ host: "erp.example.com", type: "SecuredEndpoint" });
+    expect(byName("ERP_Auth").attrs).toMatchObject({ authProvider: "Okta" });
     expect(byName("Legacy").attrs).toEqual({ host: "legacy.example.com", active: true, protocolSecurityDisabled: false });
     expect(byName("Mobile").attrs).toMatchObject({ scopes: ["Api", "RefreshToken"], callbackHosts: ["app.example.com"] });
     expect(byName("Policy__c.Notify_ERP").attrs).toEqual({ host: "erp.example.com", fields: ["Id", "Status__c"], includeSessionId: false });
@@ -623,7 +625,6 @@ describe("MetadataIndex", () => {
       "Policy__c.All",
       "Policy__c.Motor",
       "Policy__c.Premium_Required",
-      "Policy__c.Notify_ERP",
       // Standard fields only referenced come after what the project holds.
       "Policy__c.CreatedDate",
       "Policy__c.Id",
@@ -679,6 +680,44 @@ describe("scanProject on awkward projects", () => {
     await expect(scanProject(tmp)).rejects.toThrow(/^force-app cannot be read: ENOENT/);
     write("sfdx-project.json", "{ not json");
     await expect(scanProject(tmp)).rejects.toThrow("sfdx-project.json is not valid JSON");
+  });
+
+  it("reads integrations in every layout: split outbound messages, change events, unreadable files", async () => {
+    write("workflows/Account/workflowOutboundMessages/Notify.workflowOutboundMessage-meta.xml",
+      "<WorkflowOutboundMessage><endpointUrl>https://erp.example.com/hook?key=abc</endpointUrl><fields>Name</fields><integrationUser>jane.doe@example.com</integrationUser><name>Notify</name></WorkflowOutboundMessage>");
+    write("workflows/Account.workflow-meta.xml", "<Workflow/>");
+    write("platformEventChannelMembers/Account_CDC.platformEventChannelMember-meta.xml",
+      "<PlatformEventChannelMember><eventChannel>ChangeEvents</eventChannel><selectedEntity>AccountChangeEvent</selectedEntity></PlatformEventChannelMember>");
+    // A file the reader refuses is still the project's, by name: the flow that calls it does not find it missing.
+    write("externalServiceRegistrations/Big.externalServiceRegistration-meta.xml", '<!DOCTYPE x><ExternalServiceRegistration/>');
+    write("remoteSiteSettings/Ip.remoteSite-meta.xml",
+      "<RemoteSiteSetting><url>https://10.0.0.5:8443/</url><description>See https://wiki.example.com/page?token=abc123 for details</description><isActive>true</isActive></RemoteSiteSetting>");
+    write("namedCredentials/Old.namedCredential-meta.xml",
+      "<NamedCredential><endpoint>https://old.example.com/api</endpoint><authProvider>Okta</authProvider><username>jane.doe@example.com</username><principalType>NamedUser</principalType></NamedCredential>");
+    write("classes/Client.cls", [
+      "public class Client {",
+      "  void a(HttpRequest r) { r.setEndpoint('https://api.example.com/it\\'s'); }",
+      "  void b(HttpRequest r) { r.setEndpoint('CALLOUT:Billing/v1'); }",
+      "  void c(HttpRequest r, String h) { r.setEndpoint('https://' + h + '/x'); }",
+      "}",
+    ].join("\n"));
+    const { components, edges, skipped } = await scanProject(tmp);
+    const out = (name: string) => edges.filter((e) => e.from.name === name).map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
+    const byName = (n: string) => components.find((c) => c.name === n)!;
+    expect(byName("Account.Notify")).toMatchObject({ type: "WorkflowOutboundMessage", parent: "Account", parentType: "Workflow", attrs: { host: "erp.example.com", fields: ["Name"] } });
+    expect(out("Account.Notify")).toEqual(["part_of Workflow:Account", "reads CustomField:Account.Name"]);
+    expect(out("Account_CDC")).toEqual(["reads CustomObject:AccountChangeEvent"]);
+    expect(byName("Big")).toMatchObject({ type: "ExternalServiceRegistration", file: "externalServiceRegistrations/Big.externalServiceRegistration-meta.xml" });
+    expect(byName("Big").missing).toBeUndefined();
+    expect(skipped.map((s) => s.file)).toEqual(["externalServiceRegistrations/Big.externalServiceRegistration-meta.xml"]);
+    expect(byName("Ip").attrs.host).toBe("(an IP address)");
+    expect(byName("Ip").text).toBe("See wiki.example.com for details");
+    expect(byName("Old").attrs).toMatchObject({ host: "old.example.com", authProvider: "Okta" });
+    // An escaped quote ends no literal; a URL put together at run time has no host to keep.
+    expect(byName("Client").attrs.calloutHosts).toEqual(["api.example.com"]);
+    expect(out("Client")).toContain("calls NamedCredential:Billing");
+    const kept = JSON.stringify(components);
+    for (const secret of ["jane.doe", "10.0.0.5", "token=", "key=abc", "/hook", "/page"]) expect(kept).not.toContain(secret);
   });
 
   it("reports a component defined twice, and keeps a bot's versions apart from an object's children", async () => {

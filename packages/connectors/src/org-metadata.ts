@@ -53,6 +53,29 @@ const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", 
 /** Files of these types go when their type is retrieved again: an email folder with its templates. */
 const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate", ReportFolder: "Report", DashboardFolder: "Dashboard" };
 
+/**
+ * Elements taken out of a retrieved file before it is kept: secrets, keys, certificates,
+ * usernames and emails. The index reads none of them, and the retrieval stays on disk.
+ */
+export const SECRET_ELEMENTS: Readonly<Record<string, readonly string[]>> = {
+  ConnectedApp: ["consumerKey", "consumerSecret", "certificate", "encryptionCertificate", "oauthClientCredentialUser", "contactEmail", "contactPhone"],
+  NamedCredential: ["username", "password", "certificate", "oauthToken", "oauthRefreshToken", "awsAccessKey", "awsAccessSecret"],
+  ExternalCredential: ["parameterValue"],
+  Workflow: ["integrationUser", "recipient", "ccEmails", "senderAddress", "assignedTo"],
+  WorkflowOutboundMessage: ["integrationUser"],
+  WorkflowAlert: ["recipient", "ccEmails", "senderAddress"],
+  WorkflowTask: ["assignedTo"],
+  Dashboard: ["runningUser"],
+};
+
+/** A retrieved file of this type without its SECRET_ELEMENTS. */
+export function withoutSecrets(type: string, xml: string): string {
+  const names = SECRET_ELEMENTS[type];
+  if (!names?.length) return xml;
+  const tags = names.join("|");
+  return xml.replace(new RegExp(`[ \\t]*<(${tags})(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</\\1\\s*>)[ \\t]*\\r?\\n?`, "g"), "");
+}
+
 /** A retrieval older than this is redone in full: dates can miss a change (access on a profile). */
 export const FULL_RETRIEVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 /** The layout of a retrieval folder: 2 keeps every file in metadata/, whatever the parts. */
@@ -414,7 +437,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
           }
         }
         await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, text);
+        await writeFile(target, kind && Object.hasOwn(SECRET_ELEMENTS, kind) ? withoutSecrets(kind, text.toString("utf8")) : text);
       }
       await remove(path.join(work, part));
     }

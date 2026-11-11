@@ -384,21 +384,22 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
 
   // Callouts: through a named credential ('callout:Name/path'), or to a literal URL, of which
   // only the host is kept. String literals are blanked in `blanked`, so their text is read from
-  // the source at the same place.
-  const literals: { at: number; text: string }[] = [];
-  for (const m of blanked.matchAll(/'( *)'/g)) literals.push({ at: m.index!, text: source.slice(m.index! + 1, m.index! + 1 + m[1]!.length) });
+  // the source at the same place, by where its opening quote is, with its escapes undone.
+  const literals = new Map<number, string>();
+  for (const m of blanked.matchAll(/'( *)'/g)) literals.set(m.index!, source.slice(m.index! + 1, m.index! + 1 + m[1]!.length).replace(/\\(.)/g, "$1"));
   const hosts = new Set<string>();
-  for (const { text } of literals) {
-    const named = /^callout:([A-Za-z]\w*)/.exec(text);
+  for (const text of literals.values()) {
+    const named = /^callout:([A-Za-z]\w*)/i.exec(text);
     if (named) add({ kind: "calls", type: "NamedCredential", name: named[1]! });
   }
   for (const m of blanked.matchAll(/\.\s*setEndpoint\s*\(\s*'/gi)) {
-    const literal = literals.find((l) => l.at === m.index! + m[0].length - 1);
-    const host = literal && !literal.text.startsWith("callout:") ? hostOf(literal.text) : undefined;
+    const literal = literals.get(m.index! + m[0].length - 1);
+    const host = literal !== undefined && !/^callout:/i.test(literal) ? hostOf(literal) : undefined;
     if (host) hosts.add(host);
   }
   if (hosts.size) attrs.calloutHosts = [...hosts].sort();
-  // Platform events it publishes: EventBus.publish of a new Foo__e.
+  // Platform events it publishes: EventBus.publish of a new Foo__e. Events are most often built
+  // into a list and published later, so every Foo__e the class creates counts once it publishes.
   if (/\bEventBus ?\. ?publish ?\(/i.test(code)) {
     for (const m of code.matchAll(/\bnew ([A-Za-z]\w*__e) ?\(/gi)) objectRef("writes", m[1]!);
   }
