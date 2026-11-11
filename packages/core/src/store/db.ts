@@ -15,13 +15,19 @@ export class Database {
   readonly db: DatabaseSync;
   private depth = 0;
 
-  constructor(readonly file: string, migrations: readonly Migration[] = MIGRATIONS) {
-    if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
-    this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS });
+  /**
+   * `readOnly` opens an existing file without migrating it or switching it to WAL, for
+   * commands that only read (key backup, doctor): run from a newer version than the
+   * server's, they must not upgrade the schema under it.
+   */
+  constructor(readonly file: string, migrations: readonly Migration[] = MIGRATIONS, { readOnly = false }: { readOnly?: boolean } = {}) {
+    if (file !== ":memory:" && !readOnly) mkdirSync(dirname(file), { recursive: true });
+    this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS, readOnly });
     try {
       // The busy timeout must be set before anything that needs a lock, or a
       // second process fails at once with "database is locked".
       this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      if (readOnly) return;
       if (file !== ":memory:") this.enableWal();
       this.db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
       migrate(this, migrations);

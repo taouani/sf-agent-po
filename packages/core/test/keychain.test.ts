@@ -69,6 +69,23 @@ describe("the OS keychains", () => {
     expect(calls[1]!.args.join(" ")).not.toContain(key.toString("hex"));
   });
 
+  it("never shows the key when a keychain tool repeats its input in an error", () => {
+    const key = newVaultKey();
+    const hex = key.toString("hex");
+    const echo = () => ({ status: 1, stdout: "", stderr: `security> add-generic-password -w ${hex}: User interaction is not allowed.` });
+    expect(() => macosKeychain(echo).set(id, key)).toThrow(/User interaction is not allowed/);
+    try {
+      macosKeychain(echo).set(id, key);
+    } catch (err) {
+      expect((err as Error).message).not.toContain(hex);
+    }
+    try {
+      secretService(() => ({ status: 1, stdout: "", stderr: `no daemon for ${hex.toUpperCase()}` }), "/usr/bin/secret-tool").set(id, key);
+    } catch (err) {
+      expect((err as Error).message).not.toContain(hex.toUpperCase());
+    }
+  });
+
   it("macOS: tells a missing entry from a keychain that cannot be used", () => {
     expect(macosKeychain(() => ({ status: 44, stdout: "", stderr: "could not be found" })).get(id)).toBeUndefined();
     expect(() => macosKeychain(() => ({ status: 51, stdout: "", stderr: "User interaction is not allowed." })).get(id)).toThrow(KeychainUnavailable);

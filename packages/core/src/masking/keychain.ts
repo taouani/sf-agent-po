@@ -69,9 +69,17 @@ export class KeychainTimeout extends Error {
 }
 
 /** The error for a command that failed: a timeout, or a keychain that cannot be used. */
-function failure(store: string, r: CommandResult): Error {
+function failure(store: string, r: CommandResult, key?: Buffer): Error {
   if ((r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return new KeychainTimeout(store);
-  return new KeychainUnavailable(store, r.error ? r.error.message : r.stderr.trim() || `exit status ${r.status}`);
+  const detail = r.error ? r.error.message : r.stderr.trim() || `exit status ${r.status}`;
+  // A tool that repeats its input in an error (security -i reads the key from it) must not show the key.
+  return new KeychainUnavailable(store, key ? withoutKey(detail, key) : detail);
+}
+
+function withoutKey(text: string, key: Buffer): string {
+  let out = text;
+  for (const form of [key.toString("hex"), key.toString("hex").toUpperCase(), key.toString("base64"), key.toString("base64url")]) out = out.split(form).join("…");
+  return out;
 }
 
 /**
@@ -114,7 +122,7 @@ export function macosKeychain(run: RunCommand = runCommand): KeyStore {
     },
     set(id, key) {
       const r = run(SECURITY, ["-i"], `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${checkId(id)} -l sf-agent-po-vault-key -w ${key.toString("hex")}\n`);
-      if (r.error || r.status !== 0) throw failure(name, r);
+      if (r.error || r.status !== 0) throw failure(name, r, key);
       return { where: name };
     },
   };
@@ -138,7 +146,7 @@ export function secretService(run: RunCommand = runCommand, tool: string | null 
     },
     set(id, key) {
       const r = run(command(), ["store", "--label", "sf-agent-po vault key", "service", KEYCHAIN_SERVICE, "account", checkId(id)], key.toString("hex"));
-      if (r.error || r.status !== 0) throw failure(name, r);
+      if (r.error || r.status !== 0) throw failure(name, r, key);
       return { where: name };
     },
   };
@@ -208,9 +216,9 @@ const DPAPI = (op: "Protect" | "Unprotect") =>
  */
 export function windowsDpapi(dir = defaultKeysDir(), run: RunCommand = runCommand, powershell = windowsPowerShell()): KeyStore {
   const name = "Windows DPAPI";
-  const ps = (op: "Protect" | "Unprotect", input: string) => {
+  const ps = (op: "Protect" | "Unprotect", input: string, key?: Buffer) => {
     const r = run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", DPAPI(op)], input);
-    if (r.error || r.status !== 0) throw failure(name, r);
+    if (r.error || r.status !== 0) throw failure(name, r, key);
     return r.stdout.trim();
   };
   return {
@@ -223,7 +231,7 @@ export function windowsDpapi(dir = defaultKeysDir(), run: RunCommand = runComman
     },
     set(id, key) {
       const file = join(keysDir(dir), `${checkId(id)}.dpapi`);
-      writePrivate(file, ps("Protect", key.toString("base64")));
+      writePrivate(file, ps("Protect", key.toString("base64"), key));
       return { where: `${name} (${file})` };
     },
   };

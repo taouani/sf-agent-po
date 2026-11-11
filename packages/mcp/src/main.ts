@@ -6,12 +6,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseInitArgs, runInit, USAGE } from "./hosts/init.js";
 import { INDEX_USAGE } from "./index-command.js";
+import { keyExportHint, keyImportHint, KEY_USAGE } from "./key-command.js";
 
 async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const { atlassianConfigFromEnv, AtlassianClient, BackgroundIndexer } = await import("@sf-agent-po/connectors");
-  const { ContextRepository, Database, Masker, MetadataIndex, openVault, RequirementRepository, WorkflowRepository } = await import("@sf-agent-po/core");
+  const { ContextRepository, Database, Masker, MetadataIndex, openVault, RequirementRepository, VaultKeyMissingError, WorkflowRepository } = await import("@sf-agent-po/core");
   const { ApprovalServer } = await import("./approval/server.js");
   const { createServer } = await import("./server.js");
   const { databaseFile, ensureWorkspace, lazyDetector, lazyRecognizer } = await import("./startup.js");
@@ -24,10 +25,12 @@ async function main(): Promise<void> {
     opened = openVault(database);
   } catch (err) {
     console.error(`sf-agent-po cannot start: ${(err as Error).message}`);
+    if (err instanceof VaultKeyMissingError) console.error(keyImportHint(workspace));
     process.exit(1);
   }
   const { vault, created } = opened;
   if (created?.warning) console.error(created.warning);
+  if (created) console.error(keyExportHint(workspace));
   const contexts = new ContextRepository(database);
   const detector = lazyDetector();
   const masker = new Masker({ vault, model: detector });
@@ -113,11 +116,25 @@ async function index(argv: string[]): Promise<void> {
   }
 }
 
+/** `key` backs up the workspace's vault key, or puts a backup back. */
+async function key(argv: string[]): Promise<void> {
+  try {
+    const { parseKeyArgs, readStdinLine, runKey } = await import("./key-command.js");
+    const opts = parseKeyArgs(argv);
+    if ("help" in opts) return console.log(opts.help);
+    process.exitCode = await runKey(opts, { out: (t) => console.log(t), outIsTerminal: Boolean(process.stdout.isTTY), err: (t) => console.error(t), readLine: readStdinLine });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
 const command = process.argv[2];
 if (command === "init") await init(process.argv.slice(3));
 else if (command === "index") await index(process.argv.slice(3));
+else if (command === "key") await key(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}`);
+  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}`);
   process.exitCode = 1;
 } else await main();
