@@ -5,24 +5,28 @@ import path from "node:path";
 import type { IndexTarget } from "@sf-agent-po/connectors";
 import type { SnapshotInfo } from "@sf-agent-po/core";
 
-export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder>) [--workspace <folder>] [--force]
+export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder>) [--workspace <folder>] [--full] [--force]
 
 Reads a Salesforce project folder (source or metadata format), or retrieves an org's
 metadata with your Salesforce CLI (sf, logged in with sf org login), into the
 metadata index of the workspace (SF_AGENT_WORKSPACE, else .sf-agent here). An org is
-only read, never changed. --force starts even if another run of the same source
-seems to be going.`;
+only read, never changed. Files that did not change since the last run are not parsed
+again; --full parses every file, as a run does anyway when the last one is more than
+7 days old or sf-agent-po's readers changed. --force starts even if another run of the
+same source seems to be going.`;
 
 export interface IndexArgs {
   target: IndexTarget;
   workspace: string;
   force: boolean;
+  full: boolean;
 }
 
 export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): IndexArgs | { help: string } {
   let target: IndexTarget | undefined;
   let workspace = path.resolve(env.SF_AGENT_WORKSPACE ?? path.join(cwd, ".sf-agent"));
   let force = false;
+  let full = false;
   const value = (i: number, flag: string) => {
     const v = argv[i];
     if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value.\n\n${INDEX_USAGE}`);
@@ -32,6 +36,7 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return { help: INDEX_USAGE };
     if (arg === "--force") force = true;
+    else if (arg === "--full") full = true;
     else if (arg === "--workspace") workspace = path.resolve(cwd, value(++i, arg));
     else if (arg === "--org" || arg === "--project") {
       if (target) throw new Error(`Give one of --org or --project.\n\n${INDEX_USAGE}`);
@@ -40,7 +45,7 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     } else throw new Error(`Unknown option "${arg}".\n\n${INDEX_USAGE}`);
   }
   if (!target) throw new Error(`Give --org or --project.\n\n${INDEX_USAGE}`);
-  return { target, workspace, force };
+  return { target, workspace, force, full };
 }
 
 /** The lines the command prints once a run is done. */
@@ -55,6 +60,7 @@ export function describeSnapshot(s: SnapshotInfo): string[] {
   const unread = skipped - retrieve.length;
   return [
     `Indexed ${total} components, ${s.stats.edges ?? 0} links, ${s.stats.referenced ?? 0} referenced from outside the project.`,
+    ...(s.stats.files ? [s.stats.full ? `Parsed all ${s.stats.files.read} files (a full run).` : `Parsed ${s.stats.files.read} changed files; ${s.stats.files.reused} unchanged ones came from the last run.`] : []),
     ...counts.slice(0, 12).map(([type, n]) => `  ${type}: ${n}`),
     ...(counts.length > 12 ? [`  and ${counts.length - 12} more types`] : []),
     ...(retrieve.length

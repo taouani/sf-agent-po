@@ -1,9 +1,10 @@
 // Reads a Salesforce project folder, in source format (sfdx) or metadata format (mdapi),
 // into components and edges for the index.
 
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { COMPONENT_TYPES, type ParsedComponent, type ParsedMetadata } from "./model.js";
+import { COMPONENT_TYPES, type ParseCache, type ParsedComponent, type ParsedMetadata } from "./model.js";
 import { componentKey, isCustomName, linkObjects, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
 import { MARKUP_SUFFIX, readMarkup } from "./markup.js";
 import { readFlow } from "./flows.js";
@@ -161,7 +162,7 @@ async function packageDirs(root: string): Promise<string[]> {
  * project folder or one of its package folders cannot be read at all, this throws: an
  * empty result would otherwise replace a good index.
  */
-export async function scanProject(root: string, options: { exclude?: readonly string[] } = {}): Promise<ParsedMetadata> {
+export async function scanProject(root: string, options: { exclude?: readonly string[]; cache?: ParseCache } = {}): Promise<ParsedMetadata> {
   // Folders not to read, such as the workspace when it sits in the project.
   const excludedDirs = new Set((options.exclude ?? []).map((d) => path.resolve(d)));
   const excluded = (rel: string) => excludedDirs.size > 0 && excludedDirs.has(path.resolve(root, rel));
@@ -170,6 +171,8 @@ export async function scanProject(root: string, options: { exclude?: readonly st
   let skippedCount = 0;
   // Error messages carry absolute paths (and so the user's name): keep them relative.
   const reason = (err: unknown) => ((err as Error)?.message ?? String(err)).split(root).join(".");
+  let read = 0;
+  let reused = 0;
   const skip = (file: string, why: string) => {
     skippedCount++;
     if (skipped.length < MAX_SKIPPED_LISTED) skipped.push({ file, reason: why });
@@ -234,69 +237,24 @@ export async function scanProject(root: string, options: { exclude?: readonly st
       const size = (await stat(path.join(root, file))).size;
       if (size > MAX_FILE_BYTES) throw new Error(`larger than ${MAX_FILE_BYTES / 1024 / 1024} MB`);
       const content = await readFile(path.join(root, file), "utf8");
-      if (what.kind === "markup") {
-        // A template's subject and plain text, in its -meta.xml, hold merge fields too.
-        let extra = "";
-        if (what.type === "EmailTemplate" && files.has(`${file}-meta.xml`)) {
-          const meta = await readFile(path.join(root, `${file}-meta.xml`), "utf8").catch(() => "");
-          if (meta.length <= MAX_FILE_BYTES) {
-            try {
-              const t = obj(parseMetadataXml(meta).EmailTemplate);
-              extra = [t.subject, t.textOnly].filter((v): v is string => typeof v === "string").join("\n");
-            } catch {
-              // An unreadable -meta.xml leaves the body's merge fields.
-            }
-          }
-        }
-        add(readMarkup(what.type!, what.object, content, file, extra), file);
-        knownHome(file);
-        continue;
+      // A template's subject and plain text, in its -meta.xml, hold merge fields too.
+      let meta = "";
+      if (what.kind === "markup" && what.type === "EmailTemplate" && files.has(`${file}-meta.xml`)) {
+        meta = await readFile(path.join(root, `${file}-meta.xml`), "utf8").catch(() => "");
+        if (meta.length > MAX_FILE_BYTES) meta = "";
       }
-      if (what.kind === "apexClass" || what.kind === "apexTrigger") {
-        add(readApex(what.kind === "apexClass" ? "ApexClass" : "ApexTrigger", what.object, content, file), file);
-        knownHome(file);
-        continue;
+      // An unchanged file is not parsed again: its components come from the last run.
+      const hash = options.cache && createHash("sha256").update(content).update("\0").update(meta).digest("hex");
+      let parsed = hash ? options.cache!.get(file, hash) : undefined;
+      if (parsed) reused++;
+      else {
+        parsed = readComponents(what, file, content, meta);
+        read++;
       }
-      const doc = parseMetadataXml(content);
-      const named = (el: Record<string, unknown>) => ({ ...el, fullName: el.fullName ?? what.child });
-      switch (what.kind) {
-        case "mdapiObject":
-        case "object": {
-          const [object, ...children] = readObject(what.object, obj(doc.CustomObject), file);
-          add(object!, file);
-          for (const c of children) {
-            if (c.name.endsWith(".")) skip(file, `a ${c.type} without a name`);
-            else add(c, file);
-          }
-          break;
-        }
-        case "field":
-          add(readField(what.object, named(obj(doc.CustomField)), file), file);
-          break;
-        case "recordType":
-          add(readRecordType(what.object, named(obj(doc.RecordType)), file), file);
-          break;
-        case "validationRule":
-          add(readValidationRule(what.object, named(obj(doc.ValidationRule)), file), file);
-          break;
-        case "fieldSet":
-          add(readFieldSet(what.object, named(obj(doc.FieldSet)), file), file);
-          break;
-        case "flow":
-          add(readFlow(what.object, obj(doc.Flow), file), file);
-          break;
-        case "permissionSet":
-          add(readPermissions("PermissionSet", what.object, obj(doc.PermissionSet), file), file);
-          break;
-        case "profile":
-          add(readPermissions("Profile", what.object, obj(doc.Profile), file), file);
-          break;
-        case "permissionSetGroup":
-          add(readPermissionSetGroup(what.object, obj(doc.PermissionSetGroup), file), file);
-          break;
-        case "layout":
-          add(readLayout(what.object, obj(doc.Layout), file), file);
-          break;
+      if (hash) options.cache!.put(file, hash, parsed);
+      for (const c of parsed) {
+        if (c.name.endsWith(".")) skip(file, `a ${c.type} without a name`);
+        else add(c, file);
       }
       knownHome(file);
       // A source-format object folder may hold only fields (a standard object the project
@@ -309,5 +267,48 @@ export async function scanProject(root: string, options: { exclude?: readonly st
 
   const { edges, missing } = linkObjects(components);
   for (const m of missing) components.push({ type: m.type, name: m.name, ...(m.parent ? { parent: m.parent } : {}), missing: true, attrs: {}, text: "" });
-  return { components, edges, skipped, ...(skippedCount > skipped.length ? { skippedCount } : {}) };
+  return { components, edges, skipped, ...(skippedCount > skipped.length ? { skippedCount } : {}), ...(options.cache ? { files: { read, reused } } : {}) };
+}
+
+/** The components one file read in detail holds, in the order they are added. */
+function readComponents(what: NonNullable<ReturnType<typeof classify>>, file: string, content: string, meta: string): ParsedComponent[] {
+  if (what.kind === "markup") {
+    let extra = "";
+    if (meta) {
+      try {
+        const t = obj(parseMetadataXml(meta).EmailTemplate);
+        extra = [t.subject, t.textOnly].filter((v): v is string => typeof v === "string").join("\n");
+      } catch {
+        // An unreadable -meta.xml leaves the body's merge fields.
+      }
+    }
+    return [readMarkup(what.type!, what.object, content, file, extra)];
+  }
+  if (what.kind === "apexClass" || what.kind === "apexTrigger") return [readApex(what.kind === "apexClass" ? "ApexClass" : "ApexTrigger", what.object, content, file)];
+  const doc = parseMetadataXml(content);
+  const named = (el: Record<string, unknown>) => ({ ...el, fullName: el.fullName ?? what.child });
+  switch (what.kind) {
+    case "mdapiObject":
+    case "object":
+      return readObject(what.object, obj(doc.CustomObject), file);
+    case "field":
+      return [readField(what.object, named(obj(doc.CustomField)), file)];
+    case "recordType":
+      return [readRecordType(what.object, named(obj(doc.RecordType)), file)];
+    case "validationRule":
+      return [readValidationRule(what.object, named(obj(doc.ValidationRule)), file)];
+    case "fieldSet":
+      return [readFieldSet(what.object, named(obj(doc.FieldSet)), file)];
+    case "flow":
+      return [readFlow(what.object, obj(doc.Flow), file)];
+    case "permissionSet":
+      return [readPermissions("PermissionSet", what.object, obj(doc.PermissionSet), file)];
+    case "profile":
+      return [readPermissions("Profile", what.object, obj(doc.Profile), file)];
+    case "permissionSetGroup":
+      return [readPermissionSetGroup(what.object, obj(doc.PermissionSetGroup), file)];
+    case "layout":
+      return [readLayout(what.object, obj(doc.Layout), file)];
+  }
+  return [];
 }

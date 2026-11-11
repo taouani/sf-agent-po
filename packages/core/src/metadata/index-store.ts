@@ -1,12 +1,19 @@
 import type { Database } from "../store/db.js";
-import type { ComponentType, EdgeKind, ParsedMetadata } from "./model.js";
+import type { ComponentType, EdgeKind, ParseCache, ParsedComponent, ParsedMetadata } from "./model.js";
 import { componentKey } from "./objects.js";
+import { readerVersion } from "./reader-version.js";
 
 /**
  * How long a run that has not finished keeps others from indexing the same source. A run
  * that died (the host closed) holds it no longer than this, and is then cleared away.
  */
 export const BUILD_LEASE_MS = 60 * 60 * 1000;
+
+/**
+ * A source last indexed longer ago than this is read in full, every file parsed again: a
+ * weekly full run catches what the cache or a changed-date listing could miss.
+ */
+export const FULL_RUN_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface SnapshotSource {
   /** What was indexed: a folder path, a repository URL, or an org alias. */
@@ -33,6 +40,10 @@ export interface SnapshotStats {
   skipped?: { file: string; reason: string }[];
   /** How many were skipped in all, when there were more than `skipped` lists. */
   skippedCount?: number;
+  /** Whether every file was parsed, with no use of the parse cache. */
+  full?: boolean;
+  /** The files read in detail, and how many came unchanged from the parse cache. */
+  files?: { read: number; reused: number };
   error?: string;
 }
 
@@ -190,7 +201,11 @@ export class MetadataIndex {
    * way (started, or renewed its lease, less than an hour ago), this refuses, unless `force`
    * is set.
    */
-  async build(source: SnapshotSource, read: (lease: BuildLease) => Promise<ParsedMetadata>, options: { force?: boolean } = {}): Promise<SnapshotInfo> {
+  async build(
+    source: SnapshotSource,
+    read: (lease: BuildLease, cache: ParseCache) => Promise<ParsedMetadata>,
+    options: { force?: boolean; full?: boolean } = {},
+  ): Promise<SnapshotInfo> {
     const id = this.database.write(() => {
       const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
       const running = this.db
@@ -209,9 +224,11 @@ export class MetadataIndex {
       },
     };
     try {
-      const parsed = await read(lease);
+      const cache = this.parseCache(source.source, options.full);
+      const parsed = await read(lease, cache);
       return this.database.write(() => {
-        this.store(id, source.source, parsed);
+        this.store(id, source.source, parsed, cache.full);
+        cache.save();
         return this.snapshotById(id)!;
       });
     } catch (err) {
@@ -223,6 +240,42 @@ export class MetadataIndex {
   }
 
   private readonly building = new Set<number>();
+
+  /**
+   * The parse cache of a source for one run. A run reuses nothing (it is full) when asked,
+   * when the source's last run is older than FULL_RUN_AFTER_MS, or when the readers changed
+   * since (their rows do not match). `save` replaces the source's rows with what this run
+   * read, in the transaction that stores the snapshot, so a failed run keeps the old ones.
+   */
+  private parseCache(source: string, forceFull = false): ParseCache & { full: boolean; save(): void } {
+    const reader = readerVersion();
+    const last = this.latest(source);
+    const old = !last || Date.now() - Date.parse(last.finishedAt ?? last.startedAt) > FULL_RUN_AFTER_MS;
+    const rows = new Map<string, { hash: string; components: string }>();
+    if (!forceFull && !old) {
+      for (const r of this.db.prepare("SELECT file, hash, components FROM metadata_file WHERE source = ? AND reader = ?").iterate(source, reader) as Iterable<{ file: string; hash: string; components: string }>) {
+        rows.set(r.file, { hash: r.hash, components: r.components });
+      }
+    }
+    const next = new Map<string, { hash: string; components: string }>();
+    return {
+      full: rows.size === 0,
+      get: (file, hash) => {
+        const r = rows.get(file);
+        if (!r || r.hash !== hash) return undefined;
+        next.set(file, r);
+        return JSON.parse(r.components) as ParsedComponent[];
+      },
+      put: (file, hash, components) => {
+        if (next.get(file)?.hash !== hash) next.set(file, { hash, components: JSON.stringify(components) });
+      },
+      save: () => {
+        this.db.prepare("DELETE FROM metadata_file WHERE source = ?").run(source);
+        const insert = this.db.prepare("INSERT INTO metadata_file (source, file, hash, reader, components) VALUES (?, ?, ?, ?, ?)");
+        for (const [file, r] of next) insert.run(source, file, r.hash, reader, r.components);
+      },
+    };
+  }
 
   private fail(id: number, error: string): void {
     this.database.write(() => {
@@ -241,7 +294,7 @@ export class MetadataIndex {
     this.building.clear();
   }
 
-  private store(id: number, source: string, parsed: ParsedMetadata): void {
+  private store(id: number, source: string, parsed: ParsedMetadata, full: boolean): void {
     const insert = this.db.prepare(
       "INSERT INTO component (snapshot, type, name, parent, parent_type, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     );
@@ -262,7 +315,15 @@ export class MetadataIndex {
       if (src === undefined || dst === undefined || src === dst) continue;
       edges += Number(edge.run(src, dst, e.kind).changes);
     }
-    const stats: SnapshotStats = { counts, referenced, edges, skipped: parsed.skipped, ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}) };
+    const stats: SnapshotStats = {
+      counts,
+      referenced,
+      edges,
+      skipped: parsed.skipped,
+      ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}),
+      full: full || !parsed.files?.reused,
+      ...(parsed.files ? { files: parsed.files } : {}),
+    };
     this.db.prepare("UPDATE metadata_snapshot SET status = 'ready', finished_at = ?, stats = ? WHERE id = ?").run(new Date().toISOString(), JSON.stringify(stats), id);
     // The run that finishes last holds the newest reading of the source, whichever started
     // first, so it replaces every other; a run still building elsewhere is left alone unless

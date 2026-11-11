@@ -60,7 +60,7 @@ The goal's success measure is the share of stories that the PO, SA and dev team 
 2. **Story verdicts (people).** `feedback_review` opens a review page on localhost, like the approval page. It lists the published stories of a backlog with the Jira diff's guess, and you set accepted, minor edit, major edit or rejected, and who decided (PO, SA or dev team). How verdicts are captured is D1.
 3. **Design ratings (people).** The same page rates each design section from 1 to 5, with an optional comment, which is masked when it is saved.
 
-**Data model (migration 11).** A `feedback` table holds context, artifact, item (story key or design section), kind (`jira_diff`, `verdict` or `rating`), value, role, a masked comment, the model label and the time. MCP does not tell a server which model a host uses, so the model label is a context setting (`model`). The review page asks for it once if it is empty.
+**Data model (migration 12).** A `feedback` table holds context, artifact, item (story key or design section), kind (`jira_diff`, `verdict` or `rating`), value, role, a masked comment, the model label and the time. MCP does not tell a server which model a host uses, so the model label is a context setting (`model`). The review page asks for it once if it is empty.
 
 **Report.** `feedback_summary` (tool) and `npx sf-agent-po@next report` (command) give the share of stories accepted without major edits, per context, model label and workflow, against the 90% target, plus the average design rating per section. `report --csv` writes the same numbers to a local file. Nothing leaves your machine.
 
@@ -95,7 +95,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 
 **Incremental re-index (RM1).**
 
-- **Parse cache (migration 12).** A `metadata_file` table keeps each file's hash and the components read from it. A run reads only the files whose hash changed and copies the rest. Links are recomputed over the whole set, which takes seconds.
+- **Parse cache (migration 11, the first to land).** A `metadata_file` table keeps each file's hash and the components read from it. A run reads only the files whose hash changed and copies the rest. Links are recomputed over the whole set, which takes seconds.
 - **Orgs.** The run first lists each type with `sf org list metadata` and compares each member's last-modified date with the previous run. It then retrieves only the changed members into a copy of the last retrieval, and removes the deleted ones. Profiles and permission sets are always retrieved in full, because Salesforce does not change their date when only access changes (known quirk).
 - **`--full`.** Forces a complete run. A run older than 7 days, or after an upgrade that changes a reader, is full by default.
 - **Target.** Under 5 minutes on your UAT org with a few dozen changes.
@@ -153,13 +153,13 @@ Fifteen PRs, in this order: the npm token deadline first, then the index (your r
 | 1 | Trusted publishing | Release workflow on OIDC; `latest` handling per D5 | D5 |
 | 2 | Key backup | `key export` and `key import` |  |
 | 3 | `doctor` | Command and `server_status` tool |  |
-| 4 | Parse cache | Migration 12, incremental project re-index, `--full` |  |
+| 4 | Parse cache | Migration 11, incremental project re-index, `--full` |  |
 | 5 | Incremental org re-index | Listing by date, partial retrieve, deletes | 4 |
 | 6 | Remote repos | `index --repo`, `metadata_index` source | 4 |
 | 7 | Reports and dashboards | Readers, folder listing in org retrieve, links | D3 |
 | 8 | Integrations | Readers, Apex callout and event links, summary section |  |
 | 9 | Impact and query tools | New types in `metadata_impact`, search and summary; G2 measured again | 7, 8 |
-| 10 | Feedback store and Jira diff | Migration 11, `feedback_jira_diff` | D2 |
+| 10 | Feedback store and Jira diff | Migration 12, `feedback_jira_diff` | D2 |
 | 11 | Review page | Story verdicts and design ratings | D1, 10 |
 | 12 | Report | `feedback_summary` and `report` | 11 |
 | 13 | Batched masking | One model call for up to 32 short strings |  |

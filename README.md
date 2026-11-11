@@ -269,6 +269,11 @@ The new code lives in npm workspaces under `packages/`:
   indexed by name and file, including bundles, static resources, sites, documents, folders
   and child types such as list views and bot versions. Report, dashboard, document and email
   template names come from folders people name, and are masked like `text`.
+  A run parses only the files that changed since the last run of the same source: the
+  `metadata_file` table keeps each file's hash and the components read from it, and links
+  are recomputed over the whole set. A run is full (every file parsed) when asked
+  (`index --full`), when the last run is more than 7 days old, or when the readers' code
+  changed (`readerVersion`, a hash of it).
 - `packages/connectors`: everything that talks to the outside: the Jira and Confluence
   client, the Salesforce CLI, git hosts for metadata, and local files (notes, emails).
   Local files can also be PDF, Word, PowerPoint, Excel, CSV/TSV or draw.io: each is read into
