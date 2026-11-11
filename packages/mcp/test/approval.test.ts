@@ -260,6 +260,71 @@ describe("approval page", () => {
     expect(await pending.decision).toEqual({ status: "approved", choice: "approved", missed: [], selected: ["n1"], priorities: { R1: "wont" }, lines: ["Send a reminder", "x".repeat(1_000)], digest: pending.digest });
   });
 
+  it("takes feedback: who gives it, a verdict per story, ratings with comments, and the model label when asked", async () => {
+    const s = server();
+    const req: ApprovalRequest = {
+      kind: "feedback",
+      title: "VIP <backlog>",
+      askModel: true,
+      stories: [
+        { item: "S1", key: "PORT-1", url: "https://acme.atlassian.net/browse/PORT-1", summary: "Show the flag to Sarah Whitfield", guess: "minor", detail: "12% of the words changed", verdict: "minor" },
+        { item: "S2", key: "PORT-2", url: "javascript:alert(1)", summary: "Set the <flag>" },
+        { item: "S3", summary: "Report on VIPs" },
+      ],
+      sections: [
+        { key: "doc-1:solution", design: "HLD", title: "3. Solution", rating: 4 },
+        { key: "doc-1:data-model", design: "HLD", title: "4. Data model" },
+      ],
+    };
+    const pending = await s.request(req);
+    const tab = await open(pending.url);
+    const html = (await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString();
+    expect(html).toContain("Show the flag to Sarah Whitfield");
+    expect(html).toContain("Set the &#60;flag&#62;");
+    expect(html).toContain('<a href="https://acme.atlassian.net/browse/PORT-1"');
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("Jira diff: minor edit, 12% of the words changed");
+    expect(html).toContain("Not compared with Jira yet");
+    expect(html).toMatch(/name="verdict-0"[^>]*>.*<option value="minor" selected>/);
+    expect(html).toMatch(/name="rating-0"[^>]*>.*<option value="4" selected>/);
+    expect(html).toContain('name="model"');
+    expect(html).toContain('<select id="role" name="role" required>');
+
+    // Who gives it is required.
+    expect((await submit(tab, { decision: "approved", "verdict-0": "accepted" })).status).toBe(400);
+    const r = await submit(tab, {
+      decision: "approved",
+      role: "po",
+      model: "  Opus 5.5 on Copilot  ",
+      "verdict-0": "major",
+      "verdict-1": "fine",
+      "verdict-2": "",
+      "verdict-9": "accepted",
+      "rating-0": "2",
+      "note-0": " Missed the sharing model ",
+      "rating-1": "9",
+    });
+    expect(r.status).toBe(303);
+    const d = await pending.decision;
+    expect(d).toMatchObject({ status: "approved", role: "po", model: "Opus 5.5 on Copilot", verdicts: { S1: "major" }, ratings: { "doc-1:solution": { value: 2, comment: "Missed the sharing model" } }, digest: requestDigest(req) });
+    expect(Object.keys(d.verdicts!)).toEqual(["S1"]);
+    expect(Object.keys(d.ratings!)).toEqual(["doc-1:solution"]);
+    expect((await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString()).toContain("Your feedback is saved.");
+  });
+
+  it("does not ask for the model label when the context has one, and cancels without a role", async () => {
+    const s = server();
+    const pending = await s.request({ kind: "feedback", title: "HLD", askModel: false, stories: [], sections: [{ key: "doc-1:solution", design: "HLD", title: "Solution" }] });
+    const tab = await open(pending.url);
+    const html = (await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString();
+    expect(html).not.toContain('name="model"');
+    expect(html).not.toContain("<h2 class=\"label\">Stories");
+    expect((await submit(tab, { decision: "rejected", model: "x" })).status).toBe(303);
+    expect(await pending.decision).toMatchObject({ status: "rejected", missed: [] });
+    expect((await pending.decision).role).toBeUndefined();
+    expect((await call(tab.page, { headers: { cookie: tab.cookie } })).body.toString()).toContain("Cancelled. Nothing was saved.");
+  });
+
   it("expires requests that wait too long, are cancelled, or are open when the server closes", async () => {
     const s = server({ timeoutMs: 50 });
     const late = await s.request(publish);

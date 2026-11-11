@@ -12,6 +12,10 @@ export {
   type PublishRequest,
   type RequirementItem,
   type RequirementsRequest,
+  type FeedbackRequest,
+  type FeedbackStoryItem,
+  type FeedbackSectionItem,
+  FEEDBACK_GIVERS,
   requestDigest,
 } from "./approval/server.js";
 export { isPrerelease, reviewsInputs } from "./approval/settings.js";

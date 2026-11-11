@@ -3,8 +3,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AtlassianError, type AtlassianClient } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, FeedbackRepository, Masker, MAX_PUBLISHED_TEXT, newVaultKey, Vault, WorkflowRepository, RequirementRepository, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, requestDigest, type Backlog, type Reviewer } from "../src/index.js";
-import { changedShare, compareStory, criteriaInAdf, storyBody, words } from "../src/feedback.js";
+import { ApprovalServer, createServer, requestDigest, type ApprovalRequest, type Backlog, type Decision, type FeedbackRequest, type Reviewer } from "../src/index.js";
+import { changedShare, compareStory, criteriaInAdf, designSections, storyBody, words } from "../src/feedback.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -77,7 +77,14 @@ async function connect() {
   const jira = fakeJira();
   const feedback = new FeedbackRepository(db);
   const runs = new WorkflowRepository(db);
-  const reviewer: Reviewer = { review: async (req) => ({ status: "approved", missed: [], digest: requestDigest(req) }) };
+  // The page's answer: approved as shown, unless a test sets what the user does.
+  const page: { answer?: (req: ApprovalRequest) => Partial<Decision>; shown: ApprovalRequest[] } = { shown: [] };
+  const reviewer: Reviewer = {
+    review: async (req) => {
+      page.shown.push(req);
+      return { status: "approved", missed: [], ...(req.kind === "feedback" ? page.answer?.(req) : {}), digest: requestDigest(req) };
+    },
+  };
   const server = createServer({
     contexts,
     masker,
@@ -101,7 +108,7 @@ async function connect() {
     return { isError: r.isError, text: r.content.map((c) => c.text).join("\n") };
   };
   await call("context_add_text", { context: "acme", title: "Call", content: "Karim Benali owns the VIP flag. Lea Martin sets it.", kind: "meeting-notes" });
-  return { call, contexts, jira, feedback, runs, masker, db };
+  return { call, contexts, jira, feedback, runs, masker, db, page };
 }
 
 const story = (id: string, summary: string, want: string, criteria = 1): Backlog["epics"][number]["stories"][number] => ({
@@ -346,6 +353,106 @@ describe("feedback_jira_diff", () => {
     expect(again.text).toContain("Nothing to publish");
     expect(publishedRows(c.db, id).map((row) => row.item)).toEqual(["S1", "S2", "S3", "S4"]);
     expect(c.feedback.sent("acme", id).get("S1")).toMatchObject({ points: 3, pointsField: "customfield_10016" });
+  });
+});
+
+const HLD = "# VIP flag: high-level design\n\n## 1. Context\n\nKarim Benali asked for it.\n\n## 3. Solution\n\nA checkbox.\n\n```md\n## Not a section\n```\n\n## 4. Data model ##\n\nOne field.\n\n## 4. Data model\n\nAgain.";
+
+describe("design sections", () => {
+  it("are the second-level headings outside code, with ids that survive renumbering", () => {
+    expect(designSections(HLD)).toEqual([
+      { id: "context", title: "1. Context" },
+      { id: "solution", title: "3. Solution" },
+      { id: "data-model", title: "4. Data model" },
+      { id: "data-model-2", title: "4. Data model" },
+    ]);
+    expect(designSections("## 12. Sécurité et accès")[0]!.id).toBe("securite-et-acces");
+    expect(designSections("## 显示")[0]!.id).toBe("显示");
+    expect(designSections("## ***")[0]!.id).toBe("section");
+    expect(designSections(Array.from({ length: 50 }, (_, i) => `## S${i}`).join("\n"))).toHaveLength(40);
+  });
+});
+
+describe("feedback_review", () => {
+  /** A published backlog whose first story cites a design, with a Jira diff run. */
+  async function reviewed() {
+    const c = await connect();
+    const design = await c.call("design_save", { context: "acme", title: "VIP flag HLD", designType: "high-level", content: HLD });
+    const designId = /(doc-[0-9a-f]{10})/.exec(design.text)![1]!;
+    const b = backlog();
+    b.epics[0]!.stories[0]!.sourceIds = [designId];
+    const { id, keys } = await published(c, b);
+    const s2 = c.jira.issues.get(keys["Set the VIP flag"]!)!.fields;
+    s2.description = editText(s2.description, (t) => t.replace("every month", "each month"));
+    await c.call("feedback_jira_diff", { context: "acme", artifactId: id });
+    return { ...c, id, designId };
+  }
+
+  it("shows the stories with the Jira diff's guess and the design's sections, in clear, and records what the user saves", async () => {
+    const c = await reviewed();
+    c.page.answer = (req) => {
+      const r = req as FeedbackRequest;
+      return { role: "po", model: "Opus 5.5 on Copilot", verdicts: { S1: "accepted", S2: "major" }, ratings: { [r.sections[0]!.key]: { value: 4, comment: "Karim Benali liked it" }, [r.sections[1]!.key]: { value: 2 } } };
+    };
+    const r = await c.call("feedback_review", { context: "acme", artifactId: c.id });
+    expect(r.isError).toBeFalsy();
+    const shown = c.page.shown.at(-1) as FeedbackRequest;
+    expect(shown).toMatchObject({ kind: "feedback", title: "VIP flag backlog", askModel: true });
+    expect(shown.stories.map((st) => `${st.item}:${st.guess}:${st.verdict}`)).toEqual(["S1:unchanged:accepted", "S2:minor:minor", "S3:unchanged:accepted", "S4:unchanged:accepted"]);
+    expect(shown.stories[1]).toMatchObject({ key: expect.stringMatching(/^PORT-\d+$/), url: expect.stringMatching(/^https:\/\/acme\.atlassian\.net\/browse\//), detail: expect.stringMatching(/% of the words changed/) });
+    // The page is in clear: the real name is back in the summary and the design.
+    expect(JSON.stringify(shown)).not.toMatch(/\[PERSON_\d+\]/);
+    expect(shown.sections.map((sec) => sec.key.split(":")[1])).toEqual(["context", "solution", "data-model", "data-model-2"]);
+    expect(shown.sections[0]).toMatchObject({ design: "VIP flag HLD", title: "1. Context" });
+
+    expect(r.text).toContain('Recorded feedback from the Product Owner on "VIP flag backlog": 2 story verdict(s) (1 accepted, 1 major edit) and 2 design section rating(s), average 3.0 of 5.');
+    expect(r.text).toContain("2 stories were left without a verdict");
+    expect(r.text).toContain('The model label is now "Opus 5.5 on Copilot".');
+    expect(r.text).not.toMatch(/Karim|Lea/);
+    expect(c.contexts.get("acme")!.settings.model).toBe("Opus 5.5 on Copilot");
+
+    const verdicts = c.feedback.list("acme", { kind: "verdict" });
+    expect(verdicts.map((f) => `${f.item}:${f.role}:${f.value}`)).toEqual(["S1:po:accepted", "S2:po:major"]);
+    expect(verdicts[1]).toMatchObject({ artifact: c.id, artifactVersion: 1, model: "Opus 5.5 on Copilot", details: { guess: "minor" } });
+    const ratings = c.feedback.list("acme", { kind: "rating" });
+    expect(ratings.map((f) => `${f.artifact === c.designId}:${f.item}:${f.value}`)).toEqual(["true:context:4", "true:solution:2"]);
+    // The comment is masked before it is saved.
+    expect(ratings[0]!.comment).toMatch(/^\[PERSON_\d+\] liked it$/);
+
+    // Opened again: what was given is shown, and the model is not asked for again.
+    c.page.answer = () => ({ role: "dev", verdicts: { S2: "minor" } });
+    const again = await c.call("feedback_review", { context: "acme", artifactId: c.id });
+    const second = c.page.shown.at(-1) as FeedbackRequest;
+    expect(second.askModel).toBe(false);
+    expect(second.stories[1]!.verdict).toBe("major");
+    expect(second.sections[0]!.rating).toBe(4);
+    expect(again.text).toContain("Recorded feedback from the dev team");
+    // Each role keeps its own verdict.
+    expect(c.feedback.list("acme", { kind: "verdict" }).map((f) => `${f.item}:${f.role}:${f.value}`)).toEqual(["S1:po:accepted", "S2:dev:minor", "S2:po:major"]);
+  });
+
+  it("records nothing when the user cancels, and refuses what cannot be reviewed", async () => {
+    const c = await reviewed();
+    c.page.answer = () => ({ status: "rejected" });
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id })).text).toContain("Nothing was recorded: the user cancelled the review.");
+    c.page.answer = () => ({ status: "expired" });
+    expect((await c.call("feedback_review", { context: "acme", artifactId: c.id })).text).toContain("did not send the page in time");
+    expect(c.feedback.list("acme", { kind: "verdict" })).toEqual([]);
+
+    const saved = await c.call("backlog_save", { context: "acme", backlog: { ...backlog(), title: "Other backlog" } });
+    const draft = /as (doc-\w+)/.exec(saved.text)![1]!;
+    expect((await c.call("feedback_review", { context: "acme", artifactId: draft })).text).toContain("has not been published to Jira yet");
+    const input = c.contexts.documents("acme").find((d) => d.kind === "meeting-notes")!;
+    expect((await c.call("feedback_review", { context: "acme", artifactId: input.id })).isError).toBe(true);
+  });
+
+  it("rates a design on its own", async () => {
+    const c = await reviewed();
+    c.page.answer = (req) => ({ role: "sa", ratings: { [(req as FeedbackRequest).sections[1]!.key]: { value: 5 } } });
+    const r = await c.call("feedback_review", { context: "acme", artifactId: c.designId });
+    expect((c.page.shown.at(-1) as FeedbackRequest).stories).toEqual([]);
+    expect(r.text).toContain("Recorded feedback from the Solution Architect on \"VIP flag HLD\": 0 story verdict(s) and 1 design section rating(s), average 5.0 of 5.");
+    expect(c.feedback.list("acme", { kind: "rating" })).toMatchObject([{ item: "solution", role: "sa", value: "5", artifactVersion: 1 }]);
   });
 });
 

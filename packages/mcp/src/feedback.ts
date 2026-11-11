@@ -5,11 +5,25 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { adfToText, AtlassianError, type AtlassianClient, type JiraStory } from "@sf-agent-po/connectors";
-import { type ContextRepository, type FeedbackInput, type FeedbackRepository, type JiraDiffValue, type Masker, MAX_PUBLISHED_TEXT, type PublishedStory, type WorkflowRepository } from "@sf-agent-po/core";
+import {
+  type ContextRepository,
+  type FeedbackEntry,
+  type FeedbackInput,
+  type FeedbackRepository,
+  type JiraDiffValue,
+  type Masker,
+  MAX_PUBLISHED_TEXT,
+  type PublishedStory,
+  type VerdictValue,
+  type WorkflowRepository,
+} from "@sf-agent-po/core";
 import { z } from "zod";
 import { type ArtifactMeta, getArtifact } from "./artifacts.js";
 import type { Backlog, Story } from "./backlog.js";
 import { itemHash, labelsFor, oneLine, storyFields } from "./jira.js";
+import { type FeedbackRequest, requestDigest } from "./approval/server.js";
+import type { DetailedDesign } from "./design/detailed-schema.js";
+import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
 
 type Text = { content: { type: "text"; text: string }[] };
@@ -21,6 +35,8 @@ export interface FeedbackKit {
   feedback: FeedbackRepository;
   atlassian?: () => AtlassianClient;
   workflows?: WorkflowRepository;
+  /** Opens the review page in the user's browser and waits for them. */
+  reviewerFor?: (call: CallContext) => Reviewer;
   guard: <A extends { context?: string }>(fn: (args: A, call: CallContext) => Promise<Text>) => (args: A, call: CallContext) => Promise<Text & { isError?: boolean }>;
   contextName: z.ZodDefault<z.ZodString>;
 }
@@ -137,6 +153,58 @@ export function workflowOf(runs: WorkflowRepository | undefined, context: string
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const STATUS: Record<string, string> = { new: "to do", indeterminate: "in progress", done: "done" };
+
+/** Sections a design can have rated, at most. */
+const MAX_SECTIONS = 40;
+/** Designs rated on one page, at most. */
+const MAX_DESIGNS = 10;
+
+/**
+ * A design's sections, from its "## " headings outside code: a stable id (the heading without
+ * its number, as a slug, so renumbering keeps the ratings) and the title as written.
+ */
+export function designSections(content: string): { id: string; title: string }[] {
+  const out: { id: string; title: string }[] = [];
+  const seen = new Map<string, number>();
+  let fence = false;
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    const m = fence ? null : /^## +(.+?)\s*#*\s*$/.exec(line);
+    if (!m) continue;
+    const title = m[1]!;
+    const base =
+      title
+        .replace(/^\d+(\.\d+)*\.?\s+/, "")
+        .normalize("NFKD")
+        .replace(/\p{M}/gu, "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60) || "section";
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    out.push({ id: n === 1 ? base : `${base}-${n}`, title });
+    if (out.length >= MAX_SECTIONS) break;
+  }
+  return out;
+}
+
+/** The verdict a Jira diff's guess suggests, for the review page to start from. */
+export const GUESSED_VERDICT: Record<JiraDiffValue, VerdictValue> = { unchanged: "accepted", minor: "minor", major: "major", deleted: "rejected" };
+
+/** What a Jira diff row found, in a few words, from its numbers. */
+function diffDetail(e: FeedbackEntry): string {
+  const d = e.details as { changedShare?: number; criteria?: [number, number | null]; points?: [number, number] };
+  return [
+    d.changedShare ? `${pct(d.changedShare)} of the words changed` : "",
+    Array.isArray(d.criteria) && d.criteria[1] !== null && d.criteria[1] !== undefined && d.criteria[0] !== d.criteria[1] ? `acceptance criteria ${d.criteria[0]} → ${d.criteria[1]}` : "",
+    Array.isArray(d.points) ? `story points ${d.points[0]} → ${d.points[1]}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+const ROLE_NAMES: Record<string, string> = { po: "the Product Owner", sa: "the Solution Architect", dev: "the dev team" };
 
 export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void {
   const { contexts, masker, guard, contextName } = kit;
@@ -282,6 +350,149 @@ export function registerFeedbackTools(server: McpServer, kit: FeedbackKit): void
       const parts = [head.join("\n"), rows.map((r) => r.line).join("\n")];
       if (!label) parts.push('No model label is set for this context: pass model (e.g. "Opus 5.5 on Copilot") so the report can compare models.');
       return text(parts.join("\n\n"));
+    }),
+  );
+
+  server.registerTool(
+    "feedback_review",
+    {
+      title: "Review published work",
+      description:
+        "Opens a review page in the user's browser, on this computer, where they say how a published backlog turned out: a verdict on each story (accepted, minor edit, major edit, rejected; " +
+        "the Jira diff's guess is filled in) and a rating from 1 to 5 for each section of the designs behind it, with optional comments. Records what they save; people's verdicts take " +
+        "precedence over the Jira diff. Run feedback_jira_diff first so the guesses are filled in. A design can also be rated on its own.",
+      inputSchema: {
+        context: contextName,
+        artifactId: z.string().describe("A backlog published to Jira, or a design to rate on its own."),
+        designIds: z.array(z.string()).max(MAX_DESIGNS).optional().describe("Designs to rate with the backlog; by default the designs its stories cite and the detailed designs that build it."),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    guard(async ({ context, artifactId, designIds }: { context: string; artifactId: string; designIds?: string[] }, call: CallContext) => {
+      if (!kit.reviewerFor) throw new Error("The review page is not available on this server.");
+      const doc = getArtifact(contexts, context, artifactId);
+      const meta = doc.metadata as ArtifactMeta & { backlog?: Backlog };
+      const isBacklog = doc.kind === "backlog" && Boolean(meta.backlog);
+      if (!isBacklog && doc.kind !== "design") throw new Error(`${artifactId} is neither a backlog nor a design artifact.`);
+      const mapping = meta.jira;
+      if (isBacklog && (!mapping || !Object.keys(mapping.items).length)) throw new Error(`Backlog ${artifactId} has not been published to Jira yet: there is no story to give a verdict on.`);
+
+      // The designs to rate.
+      let designs: ReturnType<typeof getArtifact>[];
+      if (!isBacklog) designs = [doc, ...(designIds ?? []).filter((id) => id !== doc.id).map((id) => getArtifact(contexts, context, id))];
+      else if (designIds) designs = designIds.map((id) => getArtifact(contexts, context, id));
+      else {
+        const backlog = meta.backlog!;
+        const cited = new Set(backlog.epics.flatMap((e) => [...(e.sourceIds ?? []), ...e.stories.flatMap((st) => st.sourceIds ?? [])]));
+        designs = contexts
+          .documents(context)
+          .filter((d) => d.kind === "design" && (d.metadata as ArtifactMeta).artifact && (cited.has(d.id) || (d.metadata as { design?: DetailedDesign }).design?.scope?.backlogId === doc.id))
+          .map((d) => getArtifact(contexts, context, d.id));
+      }
+      for (const d of designs) if (d.kind !== "design") throw new Error(`${d.id} is not a design artifact.`);
+      designs = [...new Map(designs.map((d) => [d.id, d])).values()].slice(0, MAX_DESIGNS);
+
+      const before = kit.feedback.list(context);
+      const latest = (artifact: string, version: number, item: string, kind: FeedbackEntry["kind"]) =>
+        before.filter((f) => f.artifact === artifact && f.artifactVersion === version && f.item === item && f.kind === kind).sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))[0];
+
+      // What the page shows is in clear; a comment quoting it is masked with these values.
+      const revealed: { type: string; value: string }[] = [];
+      const real = (t: string) => {
+        const r = masker.unmask(context, t);
+        revealed.push(...r.revealed);
+        return r.text;
+      };
+
+      const sent = isBacklog ? kit.feedback.sent(context, doc.id) : new Map<string, PublishedStory>();
+      const stories = isBacklog
+        ? meta.backlog!.epics.flatMap((epic) => (epic.priority === "wont" ? [] : epic.stories.filter((st) => st.priority !== "wont" && mapping!.items[st.id])))
+        : [];
+      const storyVersion = (id: string) => sent.get(id)?.artifactVersion ?? mapping?.publishedVersion ?? meta.version;
+      const req: FeedbackRequest = {
+        kind: "feedback",
+        title: real(doc.title),
+        askModel: !modelLabel(contexts, context),
+        stories: stories.map((st) => {
+          const entry = mapping!.items[st.id]!;
+          const v = storyVersion(st.id);
+          const diff = latest(doc.id, v, st.id, "jira_diff");
+          const verdict = (latest(doc.id, v, st.id, "verdict")?.value as VerdictValue | undefined) ?? (diff ? GUESSED_VERDICT[diff.value as JiraDiffValue] : undefined);
+          const detail = diff ? diffDetail(diff) : "";
+          return {
+            item: st.id,
+            key: entry.key,
+            url: entry.url,
+            summary: oneLine(real(st.summary)),
+            ...(diff && { guess: diff.value as JiraDiffValue }),
+            ...(detail && { detail }),
+            ...(verdict && { verdict }),
+          };
+        }),
+        sections: designs.flatMap((d) => {
+          const title = real(d.title);
+          return designSections(d.content).map((sec) => {
+            const rating = latest(d.id, d.metadata.version, sec.id, "rating");
+            return { key: `${d.id}:${sec.id}`, design: title, title: real(sec.title), ...(rating && { rating: Number(rating.value) }) };
+          });
+        }),
+      };
+      if (!req.stories.length && !req.sections.length) throw new Error(`There is nothing to review in ${artifactId}: no published story and no design section.`);
+
+      const decision = await kit.reviewerFor(call).review(req);
+      if (decision.digest !== requestDigest(req)) throw new Error("The feedback does not match what was shown, so nothing was recorded.");
+      if (decision.status !== "approved" || !decision.role) {
+        return text(`Nothing was recorded: the user ${decision.status === "expired" ? "did not send the page in time, or closed it" : "cancelled the review"}.`);
+      }
+      const role = decision.role;
+      if (decision.model) contexts.updateSettings(context, { model: decision.model });
+      const label = modelLabel(contexts, context);
+      const workflow = isBacklog ? workflowOf(kit.workflows, context, doc.id) : undefined;
+      const dictionary = revealed.map((r) => ({ ...r, caseSensitive: false }));
+      const entries: FeedbackInput[] = [];
+      for (const st of req.stories) {
+        const value = decision.verdicts?.[st.item];
+        if (!value) continue;
+        entries.push({ context, artifact: doc.id, artifactVersion: storyVersion(st.item), item: st.item, kind: "verdict", role, value, ...(label && { model: label }), ...(workflow && { workflow }), details: { ...(st.key && { key: st.key }), ...(st.guess && { guess: st.guess }) } });
+      }
+      const byDesign = new Map(designs.map((d) => [d.id, d]));
+      for (const sec of req.sections) {
+        const rating = decision.ratings?.[sec.key];
+        if (!rating) continue;
+        const [designId, item] = [sec.key.slice(0, sec.key.indexOf(":")), sec.key.slice(sec.key.indexOf(":") + 1)];
+        const d = byDesign.get(designId)!;
+        const comment = rating.comment ? (await masker.mask(context, rating.comment, dictionary)).text : undefined;
+        entries.push({
+          context,
+          artifact: designId,
+          artifactVersion: d.metadata.version,
+          item,
+          kind: "rating",
+          role,
+          value: String(rating.value),
+          ...(comment && { comment }),
+          ...(label && { model: label }),
+          ...(workflowOf(kit.workflows, context, designId) && { workflow: workflowOf(kit.workflows, context, designId) }),
+          details: { design: d.metadata.artifactType ?? "design" },
+        });
+      }
+      kit.feedback.record(entries);
+
+      const verdicts = entries.filter((e) => e.kind === "verdict");
+      const ratings = entries.filter((e) => e.kind === "rating");
+      const tally = (["accepted", "minor", "major", "rejected"] as const)
+        .map((v) => [v, verdicts.filter((e) => e.value === v).length] as const)
+        .filter(([, n]) => n)
+        .map(([v, n]) => `${n} ${v === "accepted" ? "accepted" : v === "rejected" ? "rejected" : `${v} edit`}`);
+      const parts = [
+        `Recorded feedback from ${ROLE_NAMES[role]} on "${doc.title}": ${verdicts.length} story verdict(s)${tally.length ? ` (${tally.join(", ")})` : ""} and ${ratings.length} design section rating(s)${ratings.length ? `, average ${(ratings.reduce((n, e) => n + Number(e.value), 0) / ratings.length).toFixed(1)} of 5` : ""}.`,
+      ];
+      if (verdicts.length) parts.push(`Verdicts: ${verdicts.map((e) => `${e.item} ${e.value}`).join(", ")}.`);
+      const skipped = req.stories.length - verdicts.length;
+      if (skipped) parts.push(`${skipped} stor${skipped === 1 ? "y was" : "ies were"} left without a verdict; their Jira diff guess, if any, still counts.`);
+      if (decision.model) parts.push(`The model label is now "${label}".`);
+      else if (!label) parts.push("No model label is set for this context, so the report cannot compare models.");
+      return text(parts.join("\n"));
     }),
   );
 }

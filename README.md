@@ -333,7 +333,13 @@ The new code lives in npm workspaces under `packages/`:
   and description changed, or an acceptance criterion added or removed; the share is the
   context's `majorEditShare` setting) or deleted. Only the result, how much changed and the
   status category are stored (the `feedback` table, per published version) and returned, never
-  Jira's text; the model label passed with it (`model`) is kept as a context setting for the report. The four agent workflows
+  Jira's text; the model label passed with it (`model`) is kept as a context setting for the report.
+  `feedback_review` opens a review page, like the approval page, where the user says who they
+  are (PO, SA or dev team) and gives a verdict on each published story (accepted, minor edit,
+  major edit, rejected; the Jira diff's guess is filled in) and rates each section of the
+  designs behind the backlog from 1 to 5. Ratings are kept by the section's heading without
+  its number, so renumbering a design keeps them; comments are masked before they are saved,
+  and the page asks once for the model label when the context has none. The four agent workflows
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
