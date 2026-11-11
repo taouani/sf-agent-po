@@ -6,6 +6,7 @@ export {
   confluencePageId,
   type AtlassianConfig,
   type IssueState,
+  type JiraStory,
 } from "./atlassian.js";
 export { diagramNames, markdownToStorage, type StorageOptions } from "./confluence-storage.js";
 export {

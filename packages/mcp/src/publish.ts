@@ -5,7 +5,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AtlassianError, diagramNames, DRAWIO_MEDIA_TYPE, drawioMacro, drawioXml, layoutDiagram, markdownToStorage, type AtlassianClient, type DiagramGraph } from "@sf-agent-po/connectors";
-import type { ContextRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
+import type { ContextRepository, FeedbackRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
 import { type Artifact, getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
@@ -29,6 +29,8 @@ export interface PublishKit {
   lock: KeyedLock;
   /** The confirmed requirements, when the server keeps them: the backlog check reads them. */
   requirements?: RequirementRepository;
+  /** Feedback, when the server keeps it: jira_publish keeps each story as sent, for the Jira diff. */
+  feedback?: FeedbackRepository;
 }
 
 const text = (t: string): Result => ({ content: [{ type: "text", text: t }] });

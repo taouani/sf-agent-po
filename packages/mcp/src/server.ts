@@ -15,6 +15,7 @@ import {
   type SourceDocument,
   type TextRecognizer,
   type WorkflowRepository,
+  type FeedbackRepository,
 } from "@sf-agent-po/core";
 import type { AtlassianClient, BackgroundIndexer, LoadError } from "@sf-agent-po/connectors";
 import { loadLocalDocuments, MAX_FILE_BYTES, textDocument } from "@sf-agent-po/connectors";
@@ -25,6 +26,7 @@ import { reviewsInputs } from "./approval/settings.js";
 import { Intake, IntakeError, type IntakeResult, type Reviewer } from "./inputs.js";
 import { KeyedLock } from "./artifacts.js";
 import { PartialPublishError, registerBacklogTools } from "./jira.js";
+import { registerFeedbackTools } from "./feedback.js";
 import { registerTraceTools } from "./trace.js";
 import { registerImpactTools } from "./impact-tools.js";
 import { registerScopeTools } from "./scope-tools.js";
@@ -62,6 +64,8 @@ export interface ServerOptions {
   metadata?: { index: MetadataIndex; indexer: BackgroundIndexer };
   /** The requirements and workflow runs: the workflow tools are offered with them. */
   workflows?: { requirements: RequirementRepository; runs: WorkflowRepository };
+  /** Feedback on published work: the feedback tools are offered with it. */
+  feedback?: FeedbackRepository;
 }
 
 /** Images taken from one folder in one call: each one is a page for the user to check. */
@@ -171,10 +175,13 @@ export function createServer(opts: ServerOptions): McpServer {
       }
     };
 
-  const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock(), ...(opts.workflows ? { requirements: opts.workflows.requirements } : {}) };
+  const publishKit = { contexts, masker, atlassian: opts.atlassian, reviewerFor, guard, contextName, lock: new KeyedLock(), ...(opts.workflows ? { requirements: opts.workflows.requirements } : {}), ...(opts.feedback && { feedback: opts.feedback }) };
   registerPublishTools(server, publishKit);
   registerBacklogTools(server, publishKit);
   registerAgentPrompts(server, publishKit, { guided: Boolean(opts.workflows) });
+  if (opts.feedback) {
+    registerFeedbackTools(server, { contexts, masker, feedback: opts.feedback, atlassian: opts.atlassian, guard, contextName, ...(opts.workflows && { workflows: opts.workflows.runs }) });
+  }
   if (opts.metadata) {
     registerMetadataTools(server, { ...opts.metadata, masker, guard, contextName });
     registerScopeTools(server, { index: opts.metadata.index, contexts, masker, reviewerFor, guard, contextName });
