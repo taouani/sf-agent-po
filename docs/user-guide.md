@@ -246,7 +246,7 @@ Export prints only to a terminal, so an AI agent running commands cannot read th
 | `key export`, `key import` | Back up and restore the masking key |
 | `report` | The feedback report, optionally as CSV |
 
-`doctor`, `key`, `report` and `index --repo` come with 1.0.0-next.8; run `npm view sf-agent-po@next version` to see which version `@next` is. Each command takes `--help` (for example `npx -y sf-agent-po@next doctor --help`). `index`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` and `doctor` take `--dir <project folder>`. `doctor --no-calls` skips the calls to Jira and Confluence, and `report --context <name>` limits the report to one context.
+`doctor`, `key`, `report` and `index --repo` come with 1.0.0-next.8, and `metadata_code` with 1.0.0-next.9; run `npm view sf-agent-po@next version` to see which version `@next` is. Each command takes `--help` (for example `npx -y sf-agent-po@next doctor --help`). `index`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` and `doctor` take `--dir <project folder>`. `doctor --no-calls` skips the calls to Jira and Confluence, and `report --context <name>` limits the report to one context.
 
 ### Tools
 
