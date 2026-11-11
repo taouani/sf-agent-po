@@ -6,10 +6,11 @@ import path from "node:path";
 import os from "node:os";
 import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type ParseCache, type SnapshotInfo } from "@sf-agent-po/core";
 import { run } from "./exec.js";
+import { parseRepoSpec, redactLocation, repoSource, resolveMetadataSource, type MetadataSourceSpec } from "./metadata-source.js";
 import { checkOrgArg, orgIdOf, retrieveOrgMetadata, type RetrieveOptions } from "./org-metadata.js";
 import { defaultSfRunner } from "./salesforce.js";
 
-export type IndexTarget = { kind: "project"; dir: string } | { kind: "org"; targetOrg: string };
+export type IndexTarget = { kind: "project"; dir: string } | { kind: "org"; targetOrg: string } | { kind: "remote"; repo: string | MetadataSourceSpec };
 
 export interface IndexOptions {
   /** The workspace: retrieved org metadata is kept under `<workspace>/orgs`. */
@@ -20,6 +21,8 @@ export interface IndexOptions {
   force?: boolean;
   /** Parse every file again, reusing nothing from the last run. */
   full?: boolean;
+  /** Let git and gh ask for credentials: a run in a terminal, not the server's. */
+  interactive?: boolean;
 }
 
 /**
@@ -103,6 +106,33 @@ export async function indexProject(index: MetadataIndex, dir: string, options: P
   }
 }
 
+/**
+ * Indexes a remote repository: cloned with the user's own gh, glab or git into
+ * `<workspace>/repos` the first time, brought up to date on later runs, so that the parse
+ * cache finds the files that did not change.
+ */
+export async function indexRemote(index: MetadataIndex, spec: string | MetadataSourceSpec, options: IndexOptions): Promise<SnapshotInfo> {
+  const repo = typeof spec === "string" ? parseRepoSpec(spec) : spec;
+  if (repo.provider === "local") return indexProject(index, repo.location, options);
+  try {
+    return await index.build(
+      { source: repoSource(repo), kind: "repo" },
+      // Fetched under the lease, so that two runs of one repository never share a checkout.
+      (lease, cache) => scrubbing(options.workspace, async () => {
+        const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress, interactive: options.interactive });
+        lease.renew();
+        const revision = await gitRevision(dir);
+        if (revision) lease.setRevision(revision);
+        options.progress?.(`Reading ${redactLocation(repo.location)}${repo.ref ? ` at ${repo.ref}` : ""}`);
+        return scanProject(dir, { cache });
+      }),
+      { force: options.force, full: options.full },
+    );
+  } catch (err) {
+    throw scrubbed(err, options.workspace);
+  }
+}
+
 /** Retrieves an org's metadata with the user's sf CLI and indexes it. */
 export async function indexOrg(index: MetadataIndex, targetOrg: string, options: IndexOptions): Promise<SnapshotInfo> {
   checkOrgArg(targetOrg);
@@ -145,7 +175,9 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
 }
 
 export function indexTarget(index: MetadataIndex, target: IndexTarget, options: IndexOptions): Promise<SnapshotInfo> {
-  return target.kind === "project" ? indexProject(index, target.dir, options) : indexOrg(index, target.targetOrg, options);
+  if (target.kind === "project") return indexProject(index, target.dir, options);
+  if (target.kind === "remote") return indexRemote(index, target.repo, options);
+  return indexOrg(index, target.targetOrg, options);
 }
 
 export interface IndexJob {
@@ -173,7 +205,7 @@ export class BackgroundIndexer {
 
   /** Starts indexing a target, or returns the run already going for it. */
   start(target: IndexTarget): { job: IndexJob; done: Promise<IndexJob> } {
-    const key = target.kind === "project" ? `project:${path.resolve(target.dir)}` : `org:${target.targetOrg}`;
+    const key = target.kind === "project" ? `project:${path.resolve(target.dir)}` : target.kind === "remote" ? repoSource(typeof target.repo === "string" ? parseRepoSpec(target.repo) : target.repo) : `org:${target.targetOrg}`;
     const running = this.jobs.get(key);
     if (running?.job.state === "running") return running;
     const job: IndexJob = { target: target.kind === "project" ? projectSource(target.dir) : key, state: "running", startedAt: new Date().toISOString() };

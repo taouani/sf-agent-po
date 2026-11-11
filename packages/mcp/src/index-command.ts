@@ -1,20 +1,24 @@
-// `sf-agent-po index`: fills the metadata index of the workspace from a project folder or an
-// org, in the foreground, and says what it found.
+// `sf-agent-po index`: fills the metadata index of the workspace from a project folder, a
+// remote repository or an org, in the foreground, and says what it found.
 
 import path from "node:path";
 import type { IndexTarget } from "@sf-agent-po/connectors";
 import type { SnapshotInfo } from "@sf-agent-po/core";
 
-export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder>) [--workspace <folder>] [--full] [--force]
+export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder> | --repo <repository>) [--workspace <folder>] [--full] [--force]
 
-Reads a Salesforce project folder (source or metadata format), or retrieves an org's
-metadata with your Salesforce CLI (sf, logged in with sf org login), into the
-metadata index of the workspace (SF_AGENT_WORKSPACE, else .sf-agent here). An org is
-only read, never changed. An org run retrieves only what changed since the last run
-(profiles and permission sets every time), and all of it once a week; files that did
-not change are not parsed again, unless they were last parsed more than 7 days ago or
-sf-agent-po's readers changed. --full retrieves and parses everything. --force starts
-even if another run of the same source seems to be going.`;
+Reads a Salesforce project folder (source or metadata format), a repository, or
+retrieves an org's metadata with your Salesforce CLI (sf, logged in with sf org
+login), into the metadata index of the workspace (SF_AGENT_WORKSPACE, else .sf-agent
+here). An org is only read, never changed. A repository is github:owner/repo,
+gitlab:group/repo, azure-devops:<clone URL> or git:<clone URL>, with #<branch> to
+pick a branch or tag: it is cloned with your own gh, glab or git into the workspace,
+and fetched again on the next run. An org run retrieves only what changed since the
+last run (profiles and permission sets every time), and all of it once a week; files
+that did not change are not parsed again, unless they were last parsed more than 7
+days ago or sf-agent-po's readers changed. --full retrieves and parses everything.
+--force starts even if another run of the same source seems to be going (two runs of
+one repository then share its checkout).`;
 
 export interface IndexArgs {
   target: IndexTarget;
@@ -39,13 +43,13 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     if (arg === "--force") force = true;
     else if (arg === "--full") full = true;
     else if (arg === "--workspace") workspace = path.resolve(cwd, value(++i, arg));
-    else if (arg === "--org" || arg === "--project") {
-      if (target) throw new Error(`Give one of --org or --project.\n\n${INDEX_USAGE}`);
+    else if (arg === "--org" || arg === "--project" || arg === "--repo") {
+      if (target) throw new Error(`Give one of --org, --project or --repo.\n\n${INDEX_USAGE}`);
       const v = value(++i, arg);
-      target = arg === "--org" ? { kind: "org", targetOrg: v } : { kind: "project", dir: path.resolve(cwd, v) };
+      target = arg === "--org" ? { kind: "org", targetOrg: v } : arg === "--repo" ? { kind: "remote", repo: v } : { kind: "project", dir: path.resolve(cwd, v) };
     } else throw new Error(`Unknown option "${arg}".\n\n${INDEX_USAGE}`);
   }
-  if (!target) throw new Error(`Give --org or --project.\n\n${INDEX_USAGE}`);
+  if (!target) throw new Error(`Give --org, --project or --repo.\n\n${INDEX_USAGE}`);
   return { target, workspace, force, full };
 }
 

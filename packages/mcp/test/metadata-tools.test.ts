@@ -104,6 +104,9 @@ describe("metadata tools", () => {
     const { call, indexer } = await connect();
     const root = project();
     expect((await call("metadata_index", { org: "a", project: root })).isError).toBe(true);
+    const bad = await call("metadata_index", { repo: "git:ext::sh -c id" });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain("not a clone URL");
     const started = await call("metadata_index", { project: root });
     expect(started.text).toMatch(/Indexing repo:sf-agent-meta-\w+#[0-9a-f]{8} in the background/);
     // The path, which can hold the user's name, is never shown.

@@ -14,13 +14,16 @@ describe("index command", () => {
     });
     expect(parseIndexArgs(["--org", "dev", "--workspace", "w"], {}, cwd)).toMatchObject({ workspace: path.join(cwd, "w") });
     expect(parseIndexArgs(["--help"], {}, cwd)).toEqual({ help: INDEX_USAGE });
+    // A repository is read when the run starts, which checks it.
+    expect(parseIndexArgs(["--repo", "github:acme/core#main"], {}, cwd)).toMatchObject({ target: { kind: "remote", repo: "github:acme/core#main" } });
   });
 
   it("refuses missing, doubled and unknown options", () => {
-    expect(() => parseIndexArgs([], {}, cwd)).toThrow(/Give --org or --project/);
+    expect(() => parseIndexArgs([], {}, cwd)).toThrow(/Give --org, --project or --repo/);
     expect(() => parseIndexArgs(["--org"], {}, cwd)).toThrow(/--org needs a value/);
     expect(() => parseIndexArgs(["--org", "--force"], {}, cwd)).toThrow(/--org needs a value/);
     expect(() => parseIndexArgs(["--org", "a", "--project", "b"], {}, cwd)).toThrow(/one of/);
+    expect(() => parseIndexArgs(["--repo", "github:a/b", "--org", "b"], {}, cwd)).toThrow(/one of/);
     expect(() => parseIndexArgs(["--orgs", "a"], {}, cwd)).toThrow(/Unknown option "--orgs"/);
   });
 

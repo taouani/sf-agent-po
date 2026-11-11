@@ -137,17 +137,18 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
     {
       title: "Index an org or a project",
       description:
-        "Starts indexing a Salesforce org (its metadata is retrieved read-only with the user's sf CLI, which must be logged in to it) or a Salesforce project folder, in the background. " +
+        "Starts indexing a Salesforce org (its metadata is retrieved read-only with the user's sf CLI, which must be logged in to it), a Salesforce project folder, or a remote repository (cloned with the user's own gh, glab or git), in the background. " +
         "A large org takes several minutes, up to half an hour: call metadata_sources to follow it. Indexing again replaces the previous index of that source when it finishes.",
       inputSchema: {
         org: z.string().optional().describe("The org's alias or username, as sf org login saved it."),
         project: z.string().optional().describe("A Salesforce project folder (source or metadata format)."),
+        repo: z.string().optional().describe("A remote repository: github:owner/repo, gitlab:group/repo, azure-devops:<clone URL> or git:<clone URL>, with #<branch or tag> to pick one."),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(async ({ org, project }: { org?: string; project?: string; context?: string }) => {
-      if (Boolean(org) === Boolean(project)) throw new Error("Give either org or project.");
-      const { job } = indexer.start(org ? { kind: "org", targetOrg: org } : { kind: "project", dir: project! });
+    guard(async ({ org, project, repo }: { org?: string; project?: string; repo?: string; context?: string }) => {
+      if ([org, project, repo].filter(Boolean).length !== 1) throw new Error("Give one of org, project or repo.");
+      const { job } = indexer.start(org ? { kind: "org", targetOrg: org } : repo ? { kind: "remote", repo } : { kind: "project", dir: project! });
       return text(`Indexing ${job.target} in the background (${job.state}). Call metadata_sources to follow it.`);
     }),
   );
