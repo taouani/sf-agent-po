@@ -276,7 +276,7 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
             facts.printed.blind = true;
             if (near.length)
               flags.push(
-                `Apex that works on ${objectShown} also does what the index cannot follow, so it may use this unseen: ${(await Promise.all(near.slice(0, MAX_BLIND).map(async (b) => `${(await line(pieces, b)).slice(2)} (${blindWhy(b)})`))).join("; ")}${near.length > MAX_BLIND ? "; ..." : ""}.`,
+                `Apex that works on ${objectShown} also does what the index cannot follow, so it may use this unseen: ${(await Promise.all(near.slice(0, MAX_BLIND).map(async (b) => `${(await line(pieces, b)).slice(2)} (${blindWhy(b)})`))).join("; ")}${near.length > MAX_BLIND ? "; ..." : ""}. Read their code with metadata_code (find the field or object name) to check.`,
               );
             if (others) flags.push(`${others} other Apex class(es) or trigger(s) in the source build queries from strings, name classes at run time or were too large to read: search the code for ${objectShown} before relying on this list.`);
           }
@@ -286,7 +286,7 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
       }
       await recordChecked(kit, context, changes);
       sections.push(
-        "The index does not see dynamic Apex, SOQL built from strings, long formula chains, list views on fields, reports in private folders, endpoints built at run time, or what outside systems do with what they receive (middleware, ETL, API clients of connected apps): say so where a conclusion depends on them.",
+        "The index does not see dynamic Apex, SOQL built from strings, long formula chains, list views on fields, reports in private folders, endpoints built at run time, or what outside systems do with what they receive (middleware, ETL, API clients of connected apps). Read the code of a class it flags with metadata_code; say so where a conclusion still depends on what cannot be seen.",
       );
       return text(sections.join("\n\n"));
     }),

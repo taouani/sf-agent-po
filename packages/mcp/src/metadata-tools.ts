@@ -47,6 +47,11 @@ const MAX_CHILDREN = 300;
 const MAX_DETAIL_ENTRIES = 40;
 /** How much of a component's details is shown, as JSON. */
 const MAX_DETAILS = 6_000;
+/** Lines of Apex shown by one metadata_code call by default, and at most. */
+const CODE_LINES = 200;
+const MAX_CODE_LINES = 500;
+/** Lines listed for a metadata_code search. */
+const MAX_FOUND = 60;
 
 /**
  * A component's details with long lists and maps cut to their first entries, and a count of
@@ -287,7 +292,63 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
           const shown = related.slice(0, MAX_RELATED);
           out.push(`Linked (${related.length}${related.length > shown.length ? `, first ${shown.length}` : ""}):\n${(await Promise.all(shown.map((r) => relatedLine(pieces, r)))).join("\n")}`);
         } else out.push("No links found in the index. Dynamic Apex, SOQL built from strings and long formula chains are not seen: check with the user.");
+        if ((c.type === "ApexClass" || c.type === "ApexTrigger") && index.body(c.id) !== undefined) {
+          out.push(`Its code (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code${c.attrs.dynamic ? ", which shows what the links above cannot: the queries it builds from strings and the classes it names at run time" : ""}.`);
+        }
         return text(out.join("\n\n"));
+      },
+    ),
+  );
+
+  server.registerTool(
+    "metadata_code",
+    {
+      title: "Read Apex code",
+      description:
+        "Shows the code of an Apex class or trigger from the index, with line numbers, masked like any input: personal data in strings and comments is replaced by pseudonyms. " +
+        "Use it when the links are not enough, above all for code the index marks as dynamic (queries built from strings, classes named at run time): read the code and say what it does. " +
+        "find lists the lines that contain a text (\"Database.query\", a field name), to read around them with from.",
+      inputSchema: {
+        context: contextName,
+        source: sourceArg,
+        type: z.enum(["ApexClass", "ApexTrigger"]),
+        name: z.string().describe('The class or trigger name, e.g. "Account_SM".'),
+        from: z.number().int().min(1).default(1).describe("The first line to show."),
+        lines: z.number().int().min(1).max(MAX_CODE_LINES).default(CODE_LINES).describe("How many lines to show."),
+        find: z.string().min(2).optional().describe("Instead of a range: the lines that contain this text, any case."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    guard(
+      async ({ context, source, type, name, from, lines, find }: { context: string; source?: string; type: "ApexClass" | "ApexTrigger"; name: string; from: number; lines: number; find?: string }) => {
+        const snap = pick(index, source);
+        const pieces = new Pieces(kit.masker, context);
+        const c = index.component(snap.id, type, name);
+        if (!c || c.missing) return text(`No ${type} named ${name} in ${snap.source}.`);
+        const body = index.body(c.id);
+        if (body === undefined) {
+          return text(
+            c.attrs.tooLarge
+              ? `${name} is too large for the index to keep its code.`
+              : `The index of ${snap.source} has no code for ${name}: it was built by an earlier version. Index the source again (npx sf-agent-po@next index) and ask again.`,
+          );
+        }
+        const all = body.replace(/\r\n?/g, "\n").split("\n");
+        const numbered = (i: number) => `${String(i + 1).padStart(String(all.length).length)}  ${all[i]}`;
+        if (find !== undefined) {
+          // The model may pass a pseudonym back: look for the real text.
+          const wanted = pieces.real(find).toLowerCase();
+          const hits = all.flatMap((l, i) => (l.toLowerCase().includes(wanted) ? [i] : []));
+          if (!hits.length) return text(`No line of ${name} contains "${find}".`);
+          const shown = hits.slice(0, MAX_FOUND);
+          const listed = await pieces.mask(shown.map(numbered).join("\n"));
+          return text(`${type} ${name}: ${hits.length} line(s) of ${all.length} contain "${find}"${hits.length > shown.length ? `, the first ${shown.length} shown` : ""}. Read around one with from.\n\n${listed}`);
+        }
+        if (from > all.length) return text(`${name} has ${all.length} lines.`);
+        const last = Math.min(all.length, from + lines - 1);
+        const code = await pieces.mask(all.slice(from - 1, last).map((_, k) => numbered(from - 1 + k)).join("\n"));
+        const more = last < all.length ? ` More from line ${last + 1}.` : "";
+        return text(`${type} ${name}, lines ${from}-${last} of ${all.length}, from ${snap.source}. Personal data is masked.${more}\n\n${code}`);
       },
     ),
   );

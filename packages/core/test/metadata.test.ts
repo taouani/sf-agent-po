@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apexCode, classify, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -241,8 +241,11 @@ describe("flows", () => {
     expect(byName("Legacy").attrs).toEqual({ host: "legacy.example.com", active: true, protocolSecurityDisabled: false });
     expect(byName("Mobile").attrs).toMatchObject({ scopes: ["Api", "RefreshToken"], callbackHosts: ["app.example.com"] });
     expect(byName("Policy__c.Notify_ERP").attrs).toEqual({ host: "erp.example.com", fields: ["Id", "Status__c"], includeSessionId: false });
-    const kept = JSON.stringify(components.filter((c) => c.file && !c.file.includes("/objects/")));
+    // The code of a class is kept apart (masked when shown), with its secrets hidden.
+    const kept = JSON.stringify(components.filter((c) => c.file && !c.file.includes("/objects/")).map(({ body: _, ...c }) => c));
     for (const secret of ["SECRET", "jane.doe@example.com", "for/acme", "/hook", "/orders"]) expect(kept).not.toContain(secret);
+    expect(byName("ErpClient").body).toContain("v1?apikey=[hidden secret]'");
+    expect(JSON.stringify(components)).not.toContain("SECRET");
   });
 
   it("names the field a report column reads", () => {
@@ -395,8 +398,10 @@ describe("Apex, permissions and layouts", () => {
     const { components, edges } = await scanProject(join(fixtures, "source"));
     const service = components.find((c) => c.name === "RenewalService")!;
     expect(service).toMatchObject({ type: "ApexClass", attrs: { kind: "class", sharing: "with", queries: 2, dml: 4 }, text: "" });
-    // Comments are not read: they can name people, and what they mention is not used.
-    expect(JSON.stringify(service)).not.toContain("Dupont");
+    // Comments are not read: they can name people, and what they mention is not used. They stay
+    // in the code, which a tool masks before it shows it.
+    expect(JSON.stringify({ ...service, body: undefined })).not.toContain("Dupont");
+    expect(service.body).toContain("Dupont");
     expect(out(edges, "RenewalService")).toEqual(
       [
         "calls ApexClass:RenewalNotifier",
@@ -899,5 +904,55 @@ describe("MetadataIndex runs of the same source", () => {
     const late = await slow;
     expect(index.latest("s")).toMatchObject({ id: late.id, revision: "slow" });
     expect(index.snapshots().map((s) => s.id)).toEqual([late.id]);
+  });
+});
+
+describe("Apex code in the index", () => {
+  it("hides the secrets written in strings, and keeps the rest", () => {
+    const hidden = (code: string) => hideCodeSecrets(code);
+    expect(hidden("String apiKey = 'k_9f8e7d';")).toBe("String apiKey = '[hidden secret]';");
+    expect(hidden("private static final String CLIENT_SECRET='abc123def';")).toBe("private static final String CLIENT_SECRET='[hidden secret]';");
+    expect(hidden("req.setHeader('Authorization', 'Bearer eyabc.def');")).toBe("req.setHeader('Authorization', 'Bearer [hidden secret]');");
+    expect(hidden("req.setHeader('x-api-key', 'zz99zz99');")).toBe("req.setHeader('x-api-key', '[hidden secret]');");
+    expect(hidden("req.setBody('grant_type=password&client_id=abc&client_secret=s3cr3t&password=hunter22');")).toBe(
+      "req.setBody('grant_type=password&client_id=abc&client_secret=[hidden secret]&password=[hidden secret]');",
+    );
+    expect(hidden("u = 'https://x.example/v1?apikey=K1&q=1';")).toBe("u = 'https://x.example/v1?apikey=[hidden secret]&q=1';");
+    // Not secrets: a parameter's name, a label with spaces, a named credential, a query, a comment.
+    for (const code of [
+      "String body = 'client_secret=' + secret;",
+      "String passwordHint = 'Enter your password';",
+      "req.setEndpoint('callout:ERP/token');",
+      "String q = 'SELECT Id FROM Account WHERE Token__c = :t';",
+      "// password = 'hunter22'\nx = 1;",
+      "String s = 'it\\'s fine'; Integer token = 3;",
+      "String unclosed = 'abc\nString tokenName = 'x';",
+    ])
+      expect(hidden(code)).toBe(code);
+  });
+
+  it("keeps a class's code, comments included, apart from its searchable text", async () => {
+    const src = "public class Mapper {\n  // Reads the field named in custom metadata\n  String q = 'SELECT ' + f + ' FROM Account';\n}";
+    const c = readApex("ApexClass", "Mapper", src, "classes/Mapper.cls");
+    expect(c.body).toBe(src);
+    expect(c.text).toBe("");
+    expect(readApex("ApexClass", "Big", "x".repeat(MAX_APEX_LENGTH + 1), "classes/Big.cls").body).toBeUndefined();
+
+    const db = new Database(":memory:");
+    open.push(db);
+    const index = new MetadataIndex(db);
+    const run = () => index.build({ source: "s", kind: "repo" }, async () => ({ components: [c, { type: "CustomObject", name: "Account", file: "o", attrs: {}, text: "" }], edges: [], skipped: [] }));
+    const first = await run();
+    const mapper = index.component(first.id, "ApexClass", "Mapper")!;
+    expect(index.body(mapper.id)).toBe(src);
+    expect(index.body(index.component(first.id, "CustomObject", "Account")!.id)).toBeUndefined();
+    // The code is not searched: a word only found in a comment finds nothing.
+    expect(index.search(first.id, "custom metadata")).toEqual([]);
+
+    // A new snapshot replaces the old one, and the old code goes with it.
+    const second = await run();
+    expect(index.body(mapper.id)).toBeUndefined();
+    expect(index.body(index.component(second.id, "ApexClass", "Mapper")!.id)).toBe(src);
+    expect(db.db.prepare("SELECT count(*) AS n FROM component_body").get()).toEqual({ n: 1 });
   });
 });

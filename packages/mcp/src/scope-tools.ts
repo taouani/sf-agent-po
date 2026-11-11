@@ -118,7 +118,7 @@ async function describeScope(pieces: Pieces, snap: SnapshotInfo, scope: Metadata
       })}`,
     );
   if (scope.unknown.length) out.push(`Not in the index: ${(await Promise.all(scope.unknown.map((u) => pieces.mask(u)))).join(", ")}.`);
-  out.push("The index does not see dynamic Apex, SOQL built from strings or long formula chains: check with the user when a conclusion depends on them.");
+  out.push("The index does not follow dynamic Apex, SOQL built from strings or long formula chains: read the code of such a class with metadata_code, and check with the user when a conclusion still depends on them.");
   return out.join("\n\n");
 }
 

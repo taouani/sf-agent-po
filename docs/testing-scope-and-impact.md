@@ -13,6 +13,7 @@ The scope and impact tools are in the published pre-release `sf-agent-po@next` (
 | `metadata_summary` | Gives the objects of a source and their size, and where the org connects (hosts, connected apps, event channels). |
 | `metadata_search` | Finds components by name or label, or what calls a host. |
 | `metadata_component` | Shows one component and what links to it. |
+| `metadata_code` | Shows the code of an Apex class or trigger, masked, by line range or by the lines that contain a text. |
 | `scope_propose` | Opens the approval page where you confirm the objects the work touches. |
 | `scope_show` | Shows the confirmed scope: objects, fields, rules, automation, code, access. |
 | `metadata_impact` | Lists what depends on each change, and the weak links. |

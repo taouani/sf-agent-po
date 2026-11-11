@@ -63,6 +63,48 @@ export function apexCode(src: string): string {
   return out.join("");
 }
 
+/** What replaces a secret written in code. */
+export const HIDDEN_SECRET = "[hidden secret]";
+/** Names of what holds a secret: a variable, a header, a parameter. */
+const SECRET_NAME = /(?:pass(?:word|wd|phrase)?|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|credentials?|signature|authorization)/i;
+/** A secret in a URL or a form body: "?apikey=...", "&client_secret=...". */
+const SECRET_PARAM = /((?:^|[?&])[\w.-]*(?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|apikey|key|sig|signature)=)[^&#\s]+/gi;
+
+/**
+ * Apex code with the secrets written in its strings hidden, before it is kept: a string set to
+ * something named like a secret (`String apiKey = '...'`, `setHeader('Authorization', '...')`),
+ * the value of a secret parameter in a URL or form body, and the token after "Bearer" or "Basic".
+ * Comments and other strings stay, to be masked like any input when a tool returns them.
+ */
+export function hideCodeSecrets(src: string): string {
+  const out: string[] = [];
+  let i = 0;
+  let from = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "/" && (src[i + 1] === "/" || src[i + 1] === "*")) {
+      const end = src[i + 1] === "/" ? src.indexOf("\n", i) : src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : src[i + 1] === "/" ? end : end + 2;
+    } else if (c === "'") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== "'" && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+      const stop = Math.min(j, src.length);
+      const value = src.slice(i + 1, stop);
+      // What comes before the string in its statement: "String apiKey =", "setHeader('Authorization',".
+      const before = src.slice(Math.max(0, i - 80), i).split(/[;{}]/).pop()!;
+      let hidden = value
+        .replace(SECRET_PARAM, `$1${HIDDEN_SECRET}`)
+        .replace(/^((?:Bearer|Basic|Token)\s+)\S.*$/i, `$1${HIDDEN_SECRET}`);
+      if (hidden === value && /^\S{4,}$/.test(value) && !/[=:]$/.test(value) && SECRET_NAME.test(before) && !/^(?:callout|https?):/i.test(value)) hidden = HIDDEN_SECRET;
+      out.push(src.slice(from, i + 1), hidden);
+      from = stop;
+      i = stop + 1;
+    } else i++;
+  }
+  out.push(src.slice(from));
+  return out.join("");
+}
+
 /** The inline SOQL queries in code ([SELECT ...]), with where each starts and ends. */
 function soqlBlocks(code: string): { start: number; end: number; query: string }[] {
   const blocks: { start: number; end: number; query: string }[] = [];
@@ -205,12 +247,15 @@ const DYNAMIC: readonly (readonly [string, RegExp])[] = [
  * the object of the record or list it is given; `record.Field = x` writes a field and
  * `record.Field` reads it, for records whose type the code declares (the nearest declaration of
  * that name before the use); classes, flows and custom labels it names are linked. Comments are
- * not kept: they can name people.
+ * not read for links. The code itself is kept as `body`, with its secrets hidden, for an agent to
+ * read what the links cannot show (a query built from strings); it is masked whenever a tool returns it.
  */
 export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source: string, file: string): ParsedComponent {
   const refs: Ref[] = [];
   const attrs: Record<string, unknown> = { lines: source.split("\n").length };
   if (source.length > MAX_APEX_LENGTH) return { type, name, file, attrs: { ...attrs, tooLarge: true }, text: "" };
+  // Secrets in strings are hidden before the code is kept.
+  const body = hideCodeSecrets(source);
   // One space for every run of whitespace (blanked comments included): the patterns below
   // then never meet a long run, where backtracking would cost quadratic time.
   const blanked = apexCode(source);
@@ -417,5 +462,5 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     add({ kind: "calls", type: "ApexClass", name: c, known: true });
   }
 
-  return { type, name, file, attrs, refs, text: "" };
+  return { type, name, file, attrs, refs, text: "", body };
 }

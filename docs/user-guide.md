@@ -257,7 +257,7 @@ You rarely call tools by name; this list helps when you want to be precise.
 | `context_list`, `context_show`, `context_read` | List contexts; list a context's inputs; return their masked text |
 | `context_add_file`, `context_add_text`, `context_add_jira`, `context_add_confluence` | Add inputs, masked |
 | `context_remove_document`, `context_review_inputs` | Remove an input; turn input review on or off |
-| `metadata_index`, `metadata_sources`, `metadata_summary`, `metadata_search`, `metadata_component` | Index and explore the org or project |
+| `metadata_index`, `metadata_sources`, `metadata_summary`, `metadata_search`, `metadata_component`, `metadata_code` | Index and explore the org or project, and read Apex code (masked) |
 | `scope_propose`, `scope_show`, `metadata_impact` | The scope of the work, and what a change affects |
 | `workflow_start`, `workflow_step`, `workflow_submit`, `workflow_status` | The guided workflows |
 | `trace_show` | The traceability matrix |
@@ -286,4 +286,4 @@ You rarely call tools by name; this list helps when you want to be precise.
 | The masking key | Your OS keychain, or a key file readable only by you |
 | The name model | Your user cache folder (or `SF_AGENT_PO_MODEL_DIR`) |
 
-Inputs, designs and backlogs are stored masked; the real values they stand for are in the vault, encrypted with the key. The metadata index keeps the org's metadata as it was retrieved, and masks it when a tool returns it. The agents send what they read, masked, to your tool's model, as with anything you share in a chat. The server writes a `.gitignore` into `.sf-agent` so git leaves the workspace out; back up the key.
+Inputs, designs and backlogs are stored masked; the real values they stand for are in the vault, encrypted with the key. The metadata index keeps the org's metadata as it was retrieved, and masks it when a tool returns it. It keeps the code of Apex classes and triggers too, with the secrets written in their strings (API keys, passwords, tokens) hidden first, so `metadata_code` can show it masked. The agents send what they read, masked, to your tool's model, as with anything you share in a chat. The server writes a `.gitignore` into `.sf-agent` so git leaves the workspace out; back up the key.

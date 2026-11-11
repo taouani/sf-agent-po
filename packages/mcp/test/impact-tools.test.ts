@@ -165,7 +165,7 @@ describe("metadata_impact", () => {
     expect(r.text).toContain("Access to it is given by 1 PermissionSet, 1 Profile");
     expect(r.text).toContain("1 inactive flow(s) depend on it");
     expect(r.text).toMatch(/component\(s\) save Policy__c records[^\n]*Flow Close_Policy/);
-    expect(r.text).toContain("Apex that works on Policy__c also does what the index cannot follow, so it may use this unseen: ApexClass PolicySearch (query built from a string).");
+    expect(r.text).toContain("Apex that works on Policy__c also does what the index cannot follow, so it may use this unseen: ApexClass PolicySearch (query built from a string). Read their code with metadata_code");
     expect(r.text).toContain("1 other Apex class(es) or trigger(s) in the source");
     expect(r.text).toContain("no confirmed scope in this source");
     expect(r.text).not.toContain("Karim");
