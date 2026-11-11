@@ -85,7 +85,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 **Hosts.**
 
 - **Claude Code.** You run the host kit there; I fix what it finds.
-- **Cursor.** Cursor is moving custom commands to skills, so `init` writes Cursor skills, keeping commands for older versions. I check Cursor's current file format first (assumption: `.cursor/skills/<name>/SKILL.md`).
+- **Cursor.** Cursor is moving custom commands to skills, so `init` writes Cursor skills, keeping commands for older versions. Built in #77 without the commands: Cursor 2.4 and later would offer both, so the minimum is Cursor 2.4. I check Cursor's current file format first (assumption: `.cursor/skills/<name>/SKILL.md`).
 - **Copilot.** Copilot's files are checked again on next.7.
 - **Cursor's version string.** It stays as Cursor reports it; `doctor` shows it as reported.
 

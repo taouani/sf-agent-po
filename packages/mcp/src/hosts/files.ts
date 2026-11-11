@@ -153,7 +153,8 @@ export function hostFiles(host: Host): HostFile[] {
         // Skills (Cursor 2.4 and later), run with /<name> only: Cursor is moving custom commands to skills.
         ...WORKFLOWS.map((w) => ({
           path: `.cursor/skills/${w.id}/SKILL.md`,
-          content: frontmatter({ name: w.id, description: w.description, "disable-model-invocation": true }) + guidedPrompt(w.workflow, { contextText }) + "\n",
+          // The name bare, as the rules above have their fields: ids are lowercase letters, digits and hyphens.
+          content: `---\nname: ${w.id}\n` + frontmatter({ description: w.description, "disable-model-invocation": true }).slice(4) + guidedPrompt(w.workflow, { contextText }) + "\n",
           replaces: `.cursor/commands/${w.id}.md`,
         })),
       ];

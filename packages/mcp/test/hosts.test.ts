@@ -77,8 +77,8 @@ describe("host files", () => {
     expect(file("copilot", "agents/salesforce-product-owner.agent.md")).toMatch(/^---\nname: "Salesforce Product Owner"\ndescription: ".+"\ntarget: "vscode"\n---\n/);
     expect(file("cursor", "rules/salesforce-product-owner.mdc")).toMatch(/^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
     // A skill's name matches its folder, and it runs only when the user types /<name>.
-    expect(file("cursor", "skills/po-review/SKILL.md")).toMatch(/^---\nname: "po-review"\ndescription: ".+"\ndisable-model-invocation: true\n---\n/);
-    expect(hostFiles("cursor").filter((f) => f.path.startsWith(".cursor/skills/")).every((f) => f.path === `.cursor/skills/${/^---\nname: "([a-z0-9-]+)"/.exec(f.content)![1]}/SKILL.md`)).toBe(true);
+    expect(file("cursor", "skills/po-review/SKILL.md")).toMatch(/^---\nname: po-review\ndescription: ".+"\ndisable-model-invocation: true\n---\n/);
+    expect(hostFiles("cursor").filter((f) => f.path.startsWith(".cursor/skills/")).every((f) => f.path === `.cursor/skills/${/^---\nname: ([a-z0-9-]+)\n/.exec(f.content)![1]}/SKILL.md`)).toBe(true);
 
     // The workflow text is the same as the MCP prompt's, apart from the context sentence.
     const mcp = guidedPrompt("sa_high_level_design", { context: "x" });
@@ -148,6 +148,9 @@ describe("sf-agent-po init", () => {
       // A dangling link to a file outside, and a folder that is a link to outside.
       await symlink(path.join(outside, "notes.txt"), path.join(dir, ".cursor/rules/salesforce-solution-architect.mdc"));
       await symlink(outside, path.join(dir, ".cursor/skills"));
+      // An old command folder that is a link out of the project is not named for deletion.
+      await writeFile(path.join(outside, "sa-hld.md"), "theirs");
+      await symlink(outside, path.join(dir, ".cursor/commands"));
       // A folder where a file should go makes that one write fail.
       await mkdir(path.join(dir, ".cursor/rules/salesforce-product-owner.mdc"));
 
@@ -155,7 +158,8 @@ describe("sf-agent-po init", () => {
       expect(report[0]).toBe("skipped  .cursor/rules/salesforce-solution-architect.mdc (a symbolic link; remove it to write the file)");
       expect(report[1]).toMatch(/^failed   \.cursor\/rules\/salesforce-product-owner\.mdc \(.*EISDIR/);
       expect(report.slice(2).every((l) => l.startsWith("skipped") && l.includes("link to outside"))).toBe(true);
-      expect(await readdir(outside)).toEqual([]);
+      expect(report.some((l) => l.startsWith("left"))).toBe(false);
+      expect(await readdir(outside)).toEqual(["sa-hld.md"]);
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
@@ -168,8 +172,11 @@ describe("sf-agent-po init", () => {
     expect(report).toContain("left     .cursor/commands/sa-hld.md (an earlier version's file, replaced by .cursor/skills/sa-hld/SKILL.md: delete it so it is not offered twice)");
     expect(report).toContain("created  .cursor/skills/sa-hld/SKILL.md");
     expect(report.filter((l) => l.startsWith("left"))).toHaveLength(1);
-    // Left alone: it may hold the user's own edits.
+    // Left alone, also when forced: it may hold the user's own edits. A dry run names it too.
+    const forced = await runInit({ hosts: ["cursor"], dir, force: true, dryRun: false });
+    expect(forced.filter((l) => l.startsWith("left"))).toHaveLength(1);
     expect(await readFile(path.join(dir, ".cursor/commands/sa-hld.md"), "utf8")).toBe("old");
+    expect((await runInit({ hosts: ["cursor"], dir, force: false, dryRun: true })).filter((l) => l.startsWith("left"))).toHaveLength(1);
   });
 
   it("leaves out the Copilot agents when the Claude Code agents are there, since VS Code loads both", async () => {
