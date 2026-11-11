@@ -128,6 +128,8 @@ if (flag("--smoke")) {
       const { join } = await import("node:path");
       const core = await import(pathToFileURL(join(process.cwd(), "node_modules", "sf-agent-po", "node_modules", "@sf-agent-po", "core", "dist", "index.js")).href);
       if (!core.BUILTIN_CONTENT_DIR) throw new Error("the core package does not load");
+      // Without its readers' code or the XML parser's version, the parse cache would never be used.
+      if (!core.readerVersionComplete()) throw new Error("the metadata readers' version cannot be computed from the package");
     `;
     execFileSync(process.execPath, ["--input-type=module", "-e", check], { cwd: dir, stdio: "inherit" });
     console.log("Smoke test passed: the tarball installs, init lists the files, and the library loads.");

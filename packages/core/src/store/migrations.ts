@@ -264,4 +264,25 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 11,
+    name: "metadata parse cache",
+    sql: `
+      -- The parse cache (phase 5): what the last run of a source read from each file, by the
+      -- file's hash, so that the next run parses only the files that changed. reader is the
+      -- readers' version: rows written by other readers are not used. parsed_at is when the
+      -- file was last parsed: a row older than a week is parsed again. components is the
+      -- file's components as JSON; like the component table, it is the metadata as the
+      -- project holds it, unmasked.
+      CREATE TABLE metadata_file (
+        source      TEXT NOT NULL,
+        file        TEXT NOT NULL,
+        hash        TEXT NOT NULL,
+        reader      TEXT NOT NULL,
+        parsed_at   TEXT NOT NULL,
+        components  TEXT NOT NULL,
+        PRIMARY KEY (source, file)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];

@@ -111,6 +111,7 @@ async function index(argv: string[]): Promise<void> {
     const snapshot = await indexTarget(metadata, opts.target, {
       workspace: opts.workspace,
       force: opts.force,
+      full: opts.full,
       progress: (m) => console.error(m),
     });
     for (const line of describeSnapshot(snapshot)) console.log(line);

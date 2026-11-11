@@ -1,12 +1,19 @@
 import type { Database } from "../store/db.js";
-import type { ComponentType, EdgeKind, ParsedMetadata } from "./model.js";
+import type { ComponentType, EdgeKind, ParseCache, ParsedComponent, ParsedMetadata } from "./model.js";
 import { componentKey } from "./objects.js";
+import { readerVersion } from "./reader-version.js";
 
 /**
  * How long a run that has not finished keeps others from indexing the same source. A run
  * that died (the host closed) holds it no longer than this, and is then cleared away.
  */
 export const BUILD_LEASE_MS = 60 * 60 * 1000;
+
+/**
+ * A file parsed longer ago than this is parsed again, even unchanged: every file is read
+ * afresh at least weekly, which catches what the cache or a changed-date listing could miss.
+ */
+export const FULL_RUN_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface SnapshotSource {
   /** What was indexed: a folder path, a repository URL, or an org alias. */
@@ -33,6 +40,10 @@ export interface SnapshotStats {
   skipped?: { file: string; reason: string }[];
   /** How many were skipped in all, when there were more than `skipped` lists. */
   skippedCount?: number;
+  /** Whether every file was parsed, with no use of the parse cache. */
+  full?: boolean;
+  /** The files read in detail, and how many came unchanged from the parse cache. */
+  files?: { read: number; reused: number };
   error?: string;
 }
 
@@ -190,7 +201,11 @@ export class MetadataIndex {
    * way (started, or renewed its lease, less than an hour ago), this refuses, unless `force`
    * is set.
    */
-  async build(source: SnapshotSource, read: (lease: BuildLease) => Promise<ParsedMetadata>, options: { force?: boolean } = {}): Promise<SnapshotInfo> {
+  async build(
+    source: SnapshotSource,
+    read: (lease: BuildLease, cache: ParseCache) => Promise<ParsedMetadata>,
+    options: { force?: boolean; full?: boolean } = {},
+  ): Promise<SnapshotInfo> {
     const id = this.database.write(() => {
       const since = new Date(Date.now() - BUILD_LEASE_MS).toISOString();
       const running = this.db
@@ -209,9 +224,11 @@ export class MetadataIndex {
       },
     };
     try {
-      const parsed = await read(lease);
+      const cache = this.parseCache(source.source, options.full);
+      const parsed = await read(lease, cache);
       return this.database.write(() => {
-        this.store(id, source.source, parsed);
+        this.store(id, source.source, parsed, cache.full);
+        cache.save();
         return this.snapshotById(id)!;
       });
     } catch (err) {
@@ -223,6 +240,47 @@ export class MetadataIndex {
   }
 
   private readonly building = new Set<number>();
+
+  /**
+   * The parse cache of a source for one run. A file's components are reused when its hash
+   * and the readers' version match, and it was parsed less than FULL_RUN_AFTER_MS ago, so
+   * that every file is parsed again at least weekly; nothing is reused when `forceFull` is
+   * set. Rows are looked up one file at a time, so the cache is never all in memory. `save`
+   * writes only what this run parsed and removes the rows of files that are gone (and of
+   * sources no longer indexed), in the transaction that stores the snapshot, so a failed run
+   * keeps the old rows.
+   */
+  private parseCache(source: string, forceFull = false): ParseCache & { full: boolean; save(): void } {
+    const reader = readerVersion();
+    const since = new Date(Date.now() - FULL_RUN_AFTER_MS).toISOString();
+    const lookup = this.db.prepare("SELECT hash, components FROM metadata_file WHERE source = ? AND file = ? AND reader = ? AND parsed_at > ?");
+    const seen = new Set<string>();
+    const parsed = new Map<string, { hash: string; components: string }>();
+    return {
+      full: forceFull,
+      get: (file, hash) => {
+        if (forceFull) return undefined;
+        const r = lookup.get(source, file, reader, since) as { hash: string; components: string } | undefined;
+        if (!r || r.hash !== hash) return undefined;
+        seen.add(file);
+        return JSON.parse(r.components) as ParsedComponent[];
+      },
+      put: (file, hash, components) => {
+        if (seen.has(file) && !parsed.has(file)) return; // reused as it was
+        seen.add(file);
+        parsed.set(file, { hash, components: JSON.stringify(components) });
+      },
+      save: () => {
+        const now = new Date().toISOString();
+        const upsert = this.db.prepare("INSERT OR REPLACE INTO metadata_file (source, file, hash, reader, parsed_at, components) VALUES (?, ?, ?, ?, ?, ?)");
+        for (const [file, r] of parsed) upsert.run(source, file, r.hash, reader, now, r.components);
+        const remove = this.db.prepare("DELETE FROM metadata_file WHERE source = ? AND file = ?");
+        const files = (this.db.prepare("SELECT file FROM metadata_file WHERE source = ?").all(source) as { file: string }[]).map((r) => r.file);
+        for (const file of files) if (!seen.has(file)) remove.run(source, file);
+        this.db.prepare("DELETE FROM metadata_file WHERE source NOT IN (SELECT source FROM metadata_snapshot)").run();
+      },
+    };
+  }
 
   private fail(id: number, error: string): void {
     this.database.write(() => {
@@ -241,7 +299,7 @@ export class MetadataIndex {
     this.building.clear();
   }
 
-  private store(id: number, source: string, parsed: ParsedMetadata): void {
+  private store(id: number, source: string, parsed: ParsedMetadata, full: boolean): void {
     const insert = this.db.prepare(
       "INSERT INTO component (snapshot, type, name, parent, parent_type, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     );
@@ -262,7 +320,15 @@ export class MetadataIndex {
       if (src === undefined || dst === undefined || src === dst) continue;
       edges += Number(edge.run(src, dst, e.kind).changes);
     }
-    const stats: SnapshotStats = { counts, referenced, edges, skipped: parsed.skipped, ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}) };
+    const stats: SnapshotStats = {
+      counts,
+      referenced,
+      edges,
+      skipped: parsed.skipped,
+      ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}),
+      full: full || !parsed.files?.reused,
+      ...(parsed.files ? { files: parsed.files } : {}),
+    };
     this.db.prepare("UPDATE metadata_snapshot SET status = 'ready', finished_at = ?, stats = ? WHERE id = ?").run(new Date().toISOString(), JSON.stringify(stats), id);
     // The run that finishes last holds the newest reading of the source, whichever started
     // first, so it replaces every other; a run still building elsewhere is left alone unless

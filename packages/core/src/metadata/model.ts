@@ -95,4 +95,16 @@ export interface ParsedMetadata {
   skipped: { file: string; reason: string }[];
   /** How many were skipped in all, when there were more than `skipped` lists. */
   skippedCount?: number;
+  /** With a parse cache: the files read in detail, and how many of them came from the cache. */
+  files?: { read: number; reused: number };
+}
+
+/**
+ * What the last run read from each file, by its content's hash, so that a run parses only
+ * the files that changed. `get` gives the components of a file whose hash has not changed;
+ * `put` records a file's components for the next run.
+ */
+export interface ParseCache {
+  get(file: string, hash: string): ParsedComponent[] | undefined;
+  put(file: string, hash: string, components: ParsedComponent[]): void;
 }

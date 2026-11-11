@@ -5,11 +5,12 @@ import { describeSnapshot, INDEX_USAGE, parseIndexArgs } from "../src/index-comm
 describe("index command", () => {
   const cwd = path.resolve("/work");
   it("reads an org or a project, and the workspace", () => {
-    expect(parseIndexArgs(["--org", "dev"], {}, cwd)).toEqual({ target: { kind: "org", targetOrg: "dev" }, workspace: path.join(cwd, ".sf-agent"), force: false });
-    expect(parseIndexArgs(["--project", "repo", "--force"], { SF_AGENT_WORKSPACE: "/ws" }, cwd)).toEqual({
+    expect(parseIndexArgs(["--org", "dev"], {}, cwd)).toEqual({ target: { kind: "org", targetOrg: "dev" }, workspace: path.join(cwd, ".sf-agent"), force: false, full: false });
+    expect(parseIndexArgs(["--project", "repo", "--force", "--full"], { SF_AGENT_WORKSPACE: "/ws" }, cwd)).toEqual({
       target: { kind: "project", dir: path.join(cwd, "repo") },
       workspace: path.resolve("/ws"),
       force: true,
+      full: true,
     });
     expect(parseIndexArgs(["--org", "dev", "--workspace", "w"], {}, cwd)).toMatchObject({ workspace: path.join(cwd, "w") });
     expect(parseIndexArgs(["--help"], {}, cwd)).toEqual({ help: INDEX_USAGE });

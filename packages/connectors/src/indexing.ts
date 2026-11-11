@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type SnapshotInfo } from "@sf-agent-po/core";
+import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type ParseCache, type SnapshotInfo } from "@sf-agent-po/core";
 import { run } from "./exec.js";
 import { checkOrgArg, orgIdOf, retrieveOrgMetadata, type RetrieveOptions } from "./org-metadata.js";
 import { defaultSfRunner } from "./salesforce.js";
@@ -18,6 +18,8 @@ export interface IndexOptions {
   sf?: RetrieveOptions["sf"];
   /** Start even if another run of the same source looks alive (its lease has not run out). */
   force?: boolean;
+  /** Parse every file again, reusing nothing from the last run. */
+  full?: boolean;
 }
 
 /**
@@ -87,13 +89,14 @@ export function summarizeWarnings(warnings: readonly string[]): string[] {
 }
 
 /** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */
-export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
+export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force" | "full"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
   const revision = await gitRevision(dir);
   options.progress?.(`Reading ${path.basename(path.resolve(dir))}`);
   try {
-    const read = () => scrubbing(options.workspace, () => scanProject(dir, { exclude: options.workspace ? [options.workspace] : [] }));
+    const read = (_lease: unknown, cache: ParseCache) => scrubbing(options.workspace, () => scanProject(dir, { exclude: options.workspace ? [options.workspace] : [], cache }));
     return await index.build({ source: projectSource(dir), kind: "repo", ...(revision ? { revision } : {}) }, read, {
       force: options.force,
+      full: options.full,
     });
   } catch (err) {
     throw scrubbed(err, options.workspace);
@@ -113,7 +116,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
     return await index.build(
       { source: `org:${id}`, kind: "org", revision: new Date().toISOString() },
       // Errors are scrubbed inside the read too, because the index stores what it throws.
-      (lease) => scrubbing(options.workspace, async () => {
+      (lease, cache) => scrubbing(options.workspace, async () => {
         const retrieved = await retrieveOrgMetadata({
           targetOrg,
           org: { id, ...(typeof alias === "string" ? { alias } : {}) },
@@ -123,7 +126,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
           heartbeat: () => lease.renew(),
         });
         options.progress?.("Reading the retrieved metadata");
-        const parsed = await scanProject(retrieved.dir);
+        const parsed = await scanProject(retrieved.dir, { cache });
         // Files came back, but nothing the index reads: the retrieval went wrong somewhere.
         if (!parsed.components.some((c) => !c.missing)) throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
         // What the org could not return is reported with what could not be read.
@@ -132,7 +135,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
       }),
-      { force: options.force },
+      { force: options.force, full: options.full },
     );
   } catch (err) {
     throw scrubbed(err, options.workspace);
