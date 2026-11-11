@@ -10,10 +10,11 @@ export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or u
 Reads a Salesforce project folder (source or metadata format), or retrieves an org's
 metadata with your Salesforce CLI (sf, logged in with sf org login), into the
 metadata index of the workspace (SF_AGENT_WORKSPACE, else .sf-agent here). An org is
-only read, never changed. Files that did not change since the last run are not parsed
-again, unless they were last parsed more than 7 days ago or sf-agent-po's readers
-changed; --full parses every file. --force starts even if another run of the same
-source seems to be going.`;
+only read, never changed. An org run retrieves only what changed since the last run
+(profiles and permission sets every time), and all of it once a week; files that did
+not change are not parsed again, unless they were last parsed more than 7 days ago or
+sf-agent-po's readers changed. --full retrieves and parses everything. --force starts
+even if another run of the same source seems to be going.`;
 
 export interface IndexArgs {
   target: IndexTarget;

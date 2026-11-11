@@ -124,7 +124,9 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
           sf,
           progress: options.progress,
           heartbeat: () => lease.renew(),
+          full: options.full,
         });
+        if (retrieved.incremental) options.progress?.(`Retrieved ${retrieved.incremental.retrieved} changed or always retrieved components; ${retrieved.incremental.deleted} deleted since the last run`);
         options.progress?.("Reading the retrieved metadata");
         const parsed = await scanProject(retrieved.dir, { cache });
         // Files came back, but nothing the index reads: the retrieval went wrong somewhere.

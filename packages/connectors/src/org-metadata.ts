@@ -1,9 +1,9 @@
 // Retrieves an org's metadata through the user's Salesforce CLI, in metadata format, for the
 // metadata index (decision B). Read-only: it lists and retrieves, never deploys.
 
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { parseMetadataXml } from "@sf-agent-po/core";
+import { classifyFile, parseMetadataXml } from "@sf-agent-po/core";
 import { defaultSfRunner, type SfRunner } from "./salesforce.js";
 
 /**
@@ -31,6 +31,68 @@ const PROFILE_LISTS = [
   "applicationVisibilities", "classAccesses", "customMetadataTypeAccesses", "customPermissions", "customSettingAccesses",
   "fieldPermissions", "flowAccesses", "layoutAssignments", "objectPermissions", "pageAccesses", "recordTypeVisibilities", "tabVisibilities",
 ];
+
+/**
+ * Types whose members are retrieved on every run. Salesforce does not change the date of a
+ * profile or permission set when only its access changes, so both are retrieved each time. A
+ * permission set comes back whole (API 40 and later), so it replaces its last copy; a profile
+ * only lists access to what is retrieved with it, so it is merged into its last copy. Labels,
+ * workflows and email templates are listed without a dependable date per file.
+ */
+const MERGED = new Set(["Profile"]);
+const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate"]);
+/** Files of these types go when their type is retrieved again: an email folder with its templates. */
+const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate" };
+
+/** A retrieval older than this is redone in full: dates can miss a change (access on a profile). */
+export const FULL_RETRIEVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+/** The layout of a retrieval folder: 2 keeps every file in metadata/, whatever the parts. */
+const LAYOUT = 2;
+/** The folder of a retrieval that holds its files, at stable paths from run to run. */
+export const RETRIEVAL_TREE = "metadata";
+
+/** Each list a profile or permission set holds per component: its key element and the component's type. */
+const ACCESS_KEYS: Record<string, [string, string]> = {
+  fieldPermissions: ["field", "CustomField"],
+  objectPermissions: ["object", "CustomObject"],
+  classAccesses: ["apexClass", "ApexClass"],
+  pageAccesses: ["apexPage", "ApexPage"],
+  layoutAssignments: ["layout", "Layout"],
+  recordTypeVisibilities: ["recordType", "RecordType"],
+  tabVisibilities: ["tab", "CustomTab"],
+  tabSettings: ["tab", "CustomTab"],
+  applicationVisibilities: ["application", "CustomApplication"],
+  customPermissions: ["name", "CustomPermission"],
+  flowAccesses: ["flow", "Flow"],
+  customMetadataTypeAccesses: ["name", "CustomObject"],
+  customSettingAccesses: ["name", "CustomObject"],
+};
+
+/** The pattern of each access list's key element. */
+const KEY_PATTERNS = new Map(Object.entries(ACCESS_KEYS).map(([tag, [key]]) => [tag, new RegExp(`<${key}>([\\s\\S]*?)</${key}>`)]));
+
+/**
+ * A profile retrieved with only some components, merged into its last full copy: what was retrieved now wins; the last copy's access to components not retrieved now
+ * (and not deleted, which `changed` also answers for) is kept.
+ */
+export function mergeAccess(previous: string, retrieved: string, changed: (type: string, member: string) => boolean): string {
+  const lists = new RegExp(`<(${Object.keys(ACCESS_KEYS).join("|")})>([\\s\\S]*?)</\\1>`, "g");
+  const keyOf = (tag: string, body: string) => KEY_PATTERNS.get(tag)!.exec(body)?.[1]?.trim();
+  const fresh = new Set<string>();
+  for (const m of retrieved.matchAll(lists)) {
+    const key = keyOf(m[1]!, m[2]!);
+    if (key) fresh.add(`${m[1]}\0${key}`);
+  }
+  const kept: string[] = [];
+  for (const m of previous.matchAll(lists)) {
+    const key = keyOf(m[1]!, m[2]!);
+    if (!key || fresh.has(`${m[1]}\0${key}`) || changed(ACCESS_KEYS[m[1]!]![1], key)) continue;
+    kept.push(`    ${m[0]}\n`);
+  }
+  const close = Math.max(retrieved.lastIndexOf("</Profile>"), retrieved.lastIndexOf("</PermissionSet>"));
+  if (close < 0 || !kept.length) return retrieved;
+  return `${retrieved.slice(0, close)}${kept.join("")}${retrieved.slice(close)}`;
+}
 
 /**
  * Members an org lists but never returns: those of historical trending objects (`__hd`),
@@ -152,6 +214,8 @@ export interface OrgRetrieval {
   /** What the CLI said it could not retrieve (a component missing, or not visible to the user). */
   warnings: string[];
   retrievedAt: string;
+  /** For a run that retrieved only what changed: how many members it retrieved, and how many were deleted. */
+  incremental?: { retrieved: number; deleted: number };
 }
 
 export interface RetrieveOptions {
@@ -179,6 +243,8 @@ export interface RetrieveOptions {
   maxFilesPerRetrieve?: number;
   /** How long one retrieve may take, in minutes (60 by default). */
   waitMinutes?: number;
+  /** Retrieve everything, not only what changed since the last retrieval. */
+  full?: boolean;
 }
 
 /** The org id from `sf org display`, checked. */
@@ -231,7 +297,8 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   // Folders of runs that died (the caller holds the lease, so no other run is alive). Without
   // a readable pointer nothing is known to be complete, so nothing but old work folders goes:
   // the last good retrieval, or an earlier version's, stays until a new one is complete.
-  const previous = await currentRetrieval(options.dir, orgId);
+  const pointer = await readPointer(options.dir, orgId);
+  const previous = pointer?.folder;
   await removeStale(options.dir, orgId, previous ? { keep: previous } : { workOnly: true });
   // Work in a folder of its own, which becomes the retrieval: folders are never renamed,
   // because Windows refuses to while an antivirus or an editor still holds new files in them.
@@ -250,19 +317,29 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       timeoutMs: wait * 60_000,
     });
     heartbeat();
-    const { entries, version } = readManifest(await readFile(path.join(work, "package.xml"), "utf8"), options.types ?? DEFAULT_ORG_TYPES);
+    const types = options.types ?? DEFAULT_ORG_TYPES;
+    const { entries, version } = readManifest(await readFile(path.join(work, "package.xml"), "utf8"), types);
     // An empty listing is a CLI or permission problem, not an empty org: it must not replace
     // a good index.
     if (!entries.length) throw new Error(`The metadata listing of ${targetOrg} is empty: check that the user can view setup and configuration.`);
     const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
-    const queue = splitManifest(entries, options.maxFilesPerRetrieve);
+    progress(`Reading when each component of ${targetOrg} last changed`);
+    const dates = await listDates(sf, targetOrg, entries.map((e) => e.type).filter((t) => !ALWAYS.has(t)), { cwd: work, timeoutMs: wait * 60_000, heartbeat });
+    // The last tree, which an incremental run starts from: gone (deleted, or quarantined by an
+    // antivirus) means a full run, as does a profile it has no copy of to merge into.
+    const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
+    const baseProfiles = base ? await profilesIn(base) : undefined;
+    const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now() }) : undefined;
+    const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
+    const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     const warnings: string[] = [];
     let n = 0;
     while (queue.length) {
       const part = queue.shift()!;
       const name = `part-${++n}`;
       await writeFile(path.join(work, `${name}.xml`), writeManifest(part, version));
-      progress(queue.length || n > 1 ? `Retrieving part ${n} of ${n + queue.length}` : `Retrieving ${entries.reduce((k, e) => k + e.members.length, 0)} components`);
+      const members = part.reduce((k, e) => k + e.members.length, 0);
+      progress(queue.length || n > 1 ? `Retrieving part ${n} of ${n + queue.length}` : `Retrieving ${members} ${plan ? "changed or always retrieved " : ""}components`);
       let result: unknown;
       try {
         result = await sf(
@@ -288,16 +365,73 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
         throw new Error(`The org returned nothing for part ${n}${warnings.length ? `: ${warnings.slice(-3).join("; ")}` : ""}.`);
       }
     }
-    if (n > 1) await mergeProfiles(work, Array.from({ length: n }, (_, i) => `part-${i + 1}`));
-    // Only the retrieved parts are kept. The project file must go, as it would steer the scan
-    // to its empty package folder; the manifests and what the CLI left (.sf, .sfdx) may stay
-    // if Windows holds them, and go with the folder later.
+    const parts = Array.from({ length: n }, (_, i) => `part-${i + 1}`);
+    if (n > 1) await mergeProfiles(work, parts);
+    // Every file goes to one tree at the same path from run to run, so that the index's parse
+    // cache finds the files that did not change. A run that retrieved only what changed starts
+    // from a copy of the last tree.
+    const tree = path.join(work, RETRIEVAL_TREE);
+    await mkdir(tree, { recursive: true });
+    if (plan) {
+      progress("Copying the last retrieval");
+      await cp(base!, tree, { recursive: true });
+      await removeRetrievedAgain(tree, plan.changed, new Set(entries.flatMap((e) => (MERGED.has(e.type) ? e.members.map((m) => `${e.type}\0${m}`) : []))));
+      heartbeat();
+    }
+    for (const part of parts) {
+      for (const f of await filesUnder(path.join(work, part))) {
+        const rel = f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f;
+        if (rel === "package.xml") continue;
+        const target = path.join(tree, rel);
+        const kind = classifyFile(rel)?.type;
+        const text = await readFile(path.join(work, part, f));
+        if (plan && kind && MERGED.has(kind)) {
+          const last = await readFile(target, "utf8").catch(() => undefined);
+          if (last !== undefined) {
+            await writeFile(target, mergeAccess(last, text.toString("utf8"), (type, member) => plan.changed.has(groupOf(type, member))));
+            continue;
+          }
+        }
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, text);
+      }
+      await remove(path.join(work, part));
+    }
+    // Only the tree is kept. The project file must go, as it would steer the scan to its
+    // empty package folder; the manifests and what the CLI left (.sf, .sfdx) may stay if
+    // Windows holds them, and go with the folder later.
     await rm(path.join(work, "sfdx-project.json"), { force: true, maxRetries: 10, retryDelay: 300 });
-    for (const f of await readdir(work)) if (!/^part-\d+$/.test(f)) await remove(path.join(work, f)).catch(() => {});
+    for (const f of await readdir(work)) if (f !== RETRIEVAL_TREE) await remove(path.join(work, f)).catch(() => {});
     const retrievedAt = new Date().toISOString();
-    // A small file names the new retrieval, and only then is the previous one removed. Folders
-    // of runs that died go at the next start, so a run started meanwhile is never touched.
-    await writeRetrying(pointerFile(options.dir, orgId), JSON.stringify({ folder: path.basename(work), retrievedAt }, null, 2));
+    // A component the org did not return (a warning) is retrieved again next time: its date is
+    // kept only when the tree holds its group's file. Members not in the manifest (those of
+    // managed packages) are left out.
+    const present = new Set<string>();
+    for (const f of await filesUnder(tree)) {
+      const c = classifyFile(f);
+      if (c) present.add(groupOf(REPLACED_WITH[c.type] ?? c.type, c.name));
+    }
+    const keptDates: Record<string, Record<string, string>> = {};
+    for (const e of entries) {
+      const listed = dates[e.type];
+      if (!listed) continue;
+      const kept: Record<string, string> = {};
+      for (const m of e.members) if (listed[m] && present.has(groupOf(e.type, m))) kept[m] = listed[m];
+      keptDates[e.type] = kept;
+    }
+    // A small file names the new retrieval, with what it holds and when each component last
+    // changed, and only then is the previous one removed. Folders of runs that died go at the
+    // next start, so a run started meanwhile is never touched.
+    const next: Pointer = {
+      folder: path.basename(work),
+      retrievedAt,
+      layout: LAYOUT,
+      fullAt: plan ? pointer!.fullAt! : retrievedAt,
+      types: [...types],
+      members: Object.fromEntries(entries.map((e) => [e.type, e.members])),
+      dates: keptDates,
+    };
+    await writeRetrying(pointerFile(options.dir, orgId), JSON.stringify(next));
     await removeStale(options.dir, orgId, { only: previous });
     return {
       dir: work,
@@ -307,6 +441,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       parts: n,
       warnings,
       retrievedAt,
+      ...(plan ? { incremental: { retrieved: wanted.reduce((k, e) => k + e.members.length, 0), deleted: plan.deleted } } : {}),
     };
   } catch (err) {
     await remove(work).catch(() => {});
@@ -314,14 +449,129 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   }
 }
 
+/** What an org's pointer file holds: the last complete retrieval, and what it was made of. */
+interface Pointer {
+  folder: string;
+  retrievedAt: string;
+  /** Missing in retrievals by earlier versions, which kept their parts' folders. */
+  layout?: number;
+  /** When the org was last retrieved in full. */
+  fullAt?: string;
+  types?: string[];
+  members?: Record<string, string[]>;
+  /** Each member's last-modified date, by type, from sf org list metadata. */
+  dates?: Record<string, Record<string, string>>;
+}
+
+/**
+ * What changed since the last retrieval, as the groups to retrieve again (an object with its
+ * children and layouts, or one member), or undefined when this run must retrieve everything:
+ * asked to, no usable last retrieval, other types, the last full one a week old or more, or a
+ * profile the last tree has no copy of to merge into (a new one).
+ *
+ * Dates cannot see every change: access on a profile or permission set (both retrieved every
+ * time), and what a standard object holds itself (its settings, overrides, search layouts),
+ * which Salesforce does not date. The weekly full run, or `--full`, picks those up.
+ */
+function changesSince(
+  pointer: Pointer | undefined,
+  entries: readonly ManifestEntry[],
+  dates: Record<string, Record<string, string>>,
+  types: readonly string[],
+  baseProfiles: Set<string>,
+  { full, now }: { full?: boolean; now: number },
+): { changed: Set<string>; deleted: number } | undefined {
+  if (full || !pointer || pointer.layout !== LAYOUT || !pointer.fullAt || !pointer.members || !pointer.dates) return undefined;
+  // An unreadable date counts as old.
+  if (!(now - Date.parse(pointer.fullAt) < FULL_RETRIEVE_AFTER_MS)) return undefined;
+  if ([...(pointer.types ?? [])].sort().join() !== [...types].sort().join()) return undefined;
+  const before = new Set(Object.entries(pointer.members).flatMap(([type, members]) => members.map((m) => `${type}\0${m}`)));
+  const changed = new Set<string>();
+  for (const e of entries) {
+    for (const m of e.members) {
+      if (MERGED.has(e.type)) {
+        if (!before.has(`${e.type}\0${m}`) || !baseProfiles.has(m)) return undefined;
+        continue;
+      }
+      if (ALWAYS.has(e.type)) continue;
+      const was = pointer.dates[e.type]?.[m];
+      const is = dates[e.type]?.[m];
+      // No date (a listing that failed, a member it did not show) counts as a change.
+      if (!was || !is || was !== is || !before.has(`${e.type}\0${m}`)) changed.add(groupOf(e.type, m));
+    }
+  }
+  const now_ = new Set(entries.flatMap((e) => e.members.map((m) => `${e.type}\0${m}`)));
+  let deleted = 0;
+  for (const [type, members] of Object.entries(pointer.members)) {
+    for (const m of members) {
+      if (now_.has(`${type}\0${m}`)) continue;
+      deleted++;
+      changed.add(groupOf(type, m));
+    }
+  }
+  return { changed, deleted };
+}
+
+/**
+ * Removes from a copy of the last tree the files this run retrieves again or that are gone:
+ * the changed groups' files, every file of a type retrieved each time (but a profile still in
+ * the org, which is merged), and those of deleted members.
+ */
+async function removeRetrievedAgain(tree: string, changed: Set<string>, mergedNow: Set<string>): Promise<void> {
+  for (const f of await filesUnder(tree)) {
+    const c = classifyFile(f);
+    if (!c) continue;
+    const type = REPLACED_WITH[c.type] ?? c.type;
+    const gone = MERGED.has(type) ? !mergedNow.has(`${type}\0${c.name}`) : ALWAYS.has(type) || changed.has(groupOf(type, c.name));
+    if (gone) await remove(path.join(tree, f));
+  }
+}
+
+/** The profiles a retrieval tree holds, by name; undefined when the tree is gone. */
+async function profilesIn(tree: string): Promise<Set<string> | undefined> {
+  if (!(await stat(tree).then((s) => s.isDirectory(), () => false))) return undefined;
+  const names = new Set<string>();
+  for (const f of await readdir(path.join(tree, "profiles")).catch(() => [] as string[])) {
+    const c = classifyFile(`profiles/${f}`);
+    if (c?.type === "Profile") names.add(c.name);
+  }
+  return names;
+}
+
+/** When each member of `types` last changed, from sf org list metadata; a type whose listing fails is left out. */
+async function listDates(sf: SfRunner, targetOrg: string, types: readonly string[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Record<string, Record<string, string>>> {
+  const { heartbeat, ...run } = opts;
+  const out: Record<string, Record<string, string>> = {};
+  const queue = [...types];
+  const worker = async () => {
+    for (let type = queue.shift(); type; type = queue.shift()) {
+      try {
+        const result: unknown = await sf(["org", "list", "metadata", "--metadata-type", type, "--target-org", targetOrg], run);
+        const rows = Array.isArray(result) ? result : result ? [result] : [];
+        const dates: Record<string, string> = {};
+        for (const r of rows as { fullName?: unknown; lastModifiedDate?: unknown }[]) {
+          if (typeof r?.fullName === "string" && typeof r.lastModifiedDate === "string") dates[r.fullName] = r.lastModifiedDate;
+        }
+        out[type] = dates;
+      } catch {
+        // Without dates, every member of the type counts as changed.
+      }
+      heartbeat();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, types.length) }, worker));
+  return out;
+}
+
 /** The file naming an org's last complete retrieval. */
 const pointerFile = (dir: string, orgId: string) => path.join(dir, `${orgId}.json`);
 
-/** The folder name of an org's last complete retrieval, if there is one. */
-async function currentRetrieval(dir: string, orgId: string): Promise<string | undefined> {
+/** An org's last complete retrieval, if there is one, with its folder name checked. */
+async function readPointer(dir: string, orgId: string): Promise<Pointer | undefined> {
   try {
-    const folder = (JSON.parse(await readFile(pointerFile(dir, orgId), "utf8")) as { folder?: unknown }).folder;
-    return typeof folder === "string" && folder.startsWith(`${orgId}-`) && !/[\\/]/.test(folder) ? folder : undefined;
+    const pointer = JSON.parse(await readFile(pointerFile(dir, orgId), "utf8")) as Pointer;
+    const folder = pointer.folder as unknown;
+    return typeof folder === "string" && folder.startsWith(`${orgId}-`) && !/[\\/]/.test(folder) ? pointer : undefined;
   } catch {
     return undefined;
   }
@@ -342,11 +592,16 @@ async function removeStale(dir: string, orgId: string, which: { keep: string } |
   }
 }
 
-/** Writes a small file, trying again for a few seconds while Windows holds the old one. */
+/**
+ * Writes a file whole or not at all (a new file renamed over the old one), trying again for a
+ * few seconds while Windows holds the old one.
+ */
 async function writeRetrying(file: string, text: string): Promise<void> {
+  const next = `${file}.next`;
+  await writeFile(next, text);
   for (let attempt = 0; ; attempt++) {
     try {
-      return await writeFile(file, text);
+      return await rename(next, file);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (attempt >= 20 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw err;
