@@ -208,7 +208,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 Updated 11 Nov 2026, in the order to do them. Done before: the next.6 release, the G3 decision (10 Nov), the OpenRouter credit ($0.49).
 
-- [ ] Set up trusted publishing on npmjs.com (section 6 of the [phase 5 plan](phase-5-plan.md)): package Settings, Trusted publishing, GitHub Actions, user `taouani`, repository `sf-agent-po`, workflow `release-next.yml`, environment `npm-next`; tick `npm dist-tag` if offered.
+- [ ] Set up trusted publishing on npmjs.com (section 6 of the [phase 5 plan](phase-5-plan.md)): package Settings, Trusted publishing, GitHub Actions, user `taouani`, repository `sf-agent-po`, workflow `release-next.yml`, environment `npm-next`; under Allowed actions tick **npm publish** (a new publisher allows only staged publishing by default) and `npm dist-tag`.
 - [ ] Delete the `NPM_TOKEN` secret from the `npm-next` environment.
 - [ ] Within 2 days of the setup, start the Release next workflow from `main` with **dry-run unticked** (it is ticked by default), and approve the `npm-next` environment when asked. It publishes 1.0.0-next.8 (next.7 was never published). If its summary says `latest` was not moved, run the command it gives after `npm login`.
 - [ ] Only once that release has gone out without the secret: set Publishing access to "Require two-factor authentication and disallow tokens", then delete the npm token.

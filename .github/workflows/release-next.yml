@@ -103,7 +103,11 @@ jobs:
             if npm publish "$@" 2>&1 | tee "$log"; then exit 0; fi
             if ! grep -Eq 'TLOG_CREATE_ENTRY_ERROR|code E5[0-9][0-9]|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' "$log"; then
               if published; then echo "sf-agent-po@$VERSION is on npm"; exit 0; fi
-              if grep -Eq 'code E401|code E403|code E404|code ENEEDAUTH|code EOTP' "$log"; then
+              if grep -q 'OIDC permission denied' "$log"; then
+                # npm knew the workflow but its trusted publisher does not allow a direct publish:
+                # publishers made since September 2026 allow only "npm stage publish" unless told otherwise.
+                echo "::error::npm accepted the workflow's identity but not the publish. On npmjs.com, edit the trusted publisher of sf-agent-po and tick npm publish (and npm dist-tag) under Allowed actions, then run this workflow again"
+              elif grep -Eq 'code E401|code E403|code E404|code ENEEDAUTH|code EOTP' "$log"; then
                 echo "::error::npm refused the publish. Check the trusted publisher on npmjs.com (user taouani, repository sf-agent-po, workflow release-next.yml, environment npm-next), or add an NPM_TOKEN secret to the npm-next environment"
               else
                 echo "::error::npm publish failed with an error that trying again would not fix: see the npm error above"
