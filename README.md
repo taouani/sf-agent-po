@@ -208,10 +208,10 @@ The new code lives in npm workspaces under `packages/`:
   `loadDetectionModel` downloads the model on first use (138 MB, checked against pinned
   SHA-256 checksums, cached in the user's cache folder or `SF_AGENT_PO_MODEL_DIR`) and runs it
   on the WebAssembly build of ONNX Runtime that the package ships in `vendor/` (no native code).
-  Short pieces of text (up to 128 tokens: metadata strings, table cells, Jira fields) that
-  arrive together or while the model is busy run in one call, up to 32 at a time, padded to
-  the longest; long texts are cut into pieces that run alone. A document's title, content and
-  metadata strings are detected at once, and their pseudonyms given in order.
+  The model's answers for short texts (up to 200 characters, the last 5,000) are kept in
+  memory, so metadata keys, labels and Jira fields that come back are not run again; the model
+  gives the same text the same answer, so this changes only the time. (Running short texts
+  together was tried in #76: about half as fast, and it changed detections.)
   `npm test` copies those runtime files there first; set `SF_AGENT_PO_MODEL_TEST=1` to also
   run the test against the real model.
   `Vault` replaces what `detect` finds with stable pseudonyms per context (`[PERSON_1]`,

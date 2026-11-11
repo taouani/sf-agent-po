@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPolicy,
+  cachedDetector,
   cnIdValid,
   detect,
   compileDictionary,
@@ -270,5 +271,49 @@ describe("performance", () => {
     detectWithRules(json);
     detectWithRules(longRun);
     expect(performance.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe("the model's kept answers", () => {
+  const counting = () => {
+    const calls: string[] = [];
+    const model = async (text: string): Promise<Span[]> => {
+      calls.push(text);
+      return text.includes("Ada") ? [{ start: text.indexOf("Ada"), end: text.indexOf("Ada") + 3, type: "PER", source: "ner" }] : [];
+    };
+    return { calls, model };
+  };
+
+  it("runs the model once for a short text seen again, and hands out copies", async () => {
+    const { calls, model } = counting();
+    const cached = cachedDetector(model);
+    const first = await cached("Ada approved it.");
+    first[0]!.start = 99;
+    expect(await cached("Ada approved it.")).toEqual([{ start: 0, end: 3, type: "PER", source: "ner" }]);
+    // Asked together, the second caller waits for the first run.
+    await Promise.all([cached("Ask Ada."), cached("Ask Ada.")]);
+    expect(calls).toEqual(["Ada approved it.", "Ask Ada."]);
+  });
+
+  it("keeps no long text, and forgets the least recently used one when full", async () => {
+    const { calls, model } = counting();
+    const cached = cachedDetector(model, 2, 10);
+    const long = "Ada wrote this long text.";
+    await cached(long);
+    await cached(long);
+    for (const t of ["a", "b", "a", "c", "a", "b"]) await cached(t);
+    // "b" went when "c" came (a was used after it); a stayed.
+    expect(calls).toEqual([long, long, "a", "b", "c", "b"]);
+  });
+
+  it("does not keep a failed run", async () => {
+    let fail = true;
+    const cached = cachedDetector(async () => {
+      if (fail) throw new Error("model down");
+      return [];
+    });
+    await expect(cached("Ada")).rejects.toThrow("model down");
+    fail = false;
+    await expect(cached("Ada")).resolves.toEqual([]);
   });
 });

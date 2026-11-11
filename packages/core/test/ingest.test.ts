@@ -88,24 +88,6 @@ describe("masking inputs", () => {
     await expect(masker.maskDocument("acme", { ...doc })).rejects.toThrow(/already masked/);
   });
 
-  it("asks the model about all of a document's strings at once, and numbers pseudonyms in their order", async () => {
-    let running = 0;
-    let most = 0;
-    const names = ["Ann Lee", "Bo Chen", "Cy Diaz"];
-    // Answers later strings first, as a batch might.
-    const slow: EntityDetector = async (text) => {
-      running++;
-      most = Math.max(most, running);
-      await new Promise((r) => setTimeout(r, names.findIndex((n) => text.includes(n)) >= 0 ? 30 - 10 * names.findIndex((n) => text.includes(n)) : 0));
-      running--;
-      return fakeModel(names)(text);
-    };
-    const { masker } = setup(slow);
-    const doc = await masker.maskDocument("acme", { kind: "other", title: "From Ann Lee", source: "x", content: "Bo Chen replied.", metadata: { cc: ["Cy Diaz"] } });
-    expect(most).toBeGreaterThan(1);
-    expect([doc.title, doc.content, (doc.metadata as { cc: string[] }).cc[0]]).toEqual(["From [PERSON_1]", "[PERSON_2] replied.", "[PERSON_3]"]);
-  });
-
   it("stores added documents masked, with no original in clear", async () => {
     const { db, contexts, masker } = setup(fakeModel(["Sarah Whitfield"]));
     const [doc] = await masker.addDocuments(contexts, "acme", [{ kind: "email", title: "Re: VIP", source: "mail-1", content: "From Sarah Whitfield <sarah@example.com>" }]);
@@ -153,6 +135,24 @@ describe("masking inputs", () => {
     const removing: EntityDetector = async () => (contexts.removeDocument("acme", doc!.id), []);
     expect(await new Masker({ vault, model: removing }).maskContext(contexts, "acme")).toMatchObject({ masked: 0, changed: 1 });
     expect(contexts.documents("acme")).toEqual([]);
+  });
+});
+
+describe("masking with the model's kept answers", () => {
+  it("runs the model once for each different short string, and masks every copy alike", async () => {
+    const calls: string[] = [];
+    const model = fakeModel(["Karim Benali"]);
+    const { masker } = setup(async (t) => (calls.push(t), model(t)));
+    const rows = Array.from({ length: 50 }, (_, i) => ({ owner: "Karim Benali", type: "Text", row: i % 2 }));
+    const doc = await masker.maskDocument("acme", { kind: "meeting-notes", title: "Owners", source: "owners.csv", content: "Owner: Karim Benali", metadata: { rows } });
+    const masked = doc.metadata!.rows as { owner: string; type: string; row: number }[];
+    expect(new Set(masked.map((r) => r.owner))).toEqual(new Set(["[PERSON_1]"]));
+    expect(masked[1]).toEqual({ owner: "[PERSON_1]", type: "Text", row: 1 });
+    // Every copy is still counted.
+    expect((doc.metadata!.masking as { counts: Record<string, number> }).counts).toEqual({ PERSON: 51 });
+    // Title, content, then: rows, owner, Karim Benali, type, Text, row, 0, 1.
+    expect(calls).toHaveLength(10);
+    expect(new Set(calls).size).toBe(calls.length);
   });
 });
 
