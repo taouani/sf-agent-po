@@ -167,7 +167,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Remaining
 
-1. **Close phase 4.** G3 is accepted; what is left is the first live check of next.6 (a guided design and backlog on Copilot, the draw.io macro, the matrix page and the sub-tasks) and your review of the French word list.
+1. **Close phase 4.** G3 is accepted; what is left is the first live check, now on next.8 (a guided design and backlog, the draw.io macro, the matrix page and the sub-tasks) and your review of the French word list.
 2. **Phase 5, feedback, hosts, hardening (next).** Story verdicts, design ratings and the Jira diff after publish; the Claude Code host check; `doctor`; faster masking (batched calls); the v1 user guide and a contributor guide (done in #79); trusted publishing on npm; indexing remote repos in v1; removal of the 0.x server. Added by RM1: incremental re-index of changed files, and reports, dashboards and integrations in the index.
 3. **Phase 6, release candidate.** Bug fixes, the final evaluation across models, release notes, 1.0 on npm.
 
@@ -191,7 +191,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 | Item | Why it waits | Goes to |
 | --- | --- | --- |
 | G3 on the D4 models (GPT Sol 6.1, Grok 7.1, Opus in French) | About $30 of credit, which you are not adding now | When credit allows; it no longer blocks phase 4 |
-| Eval baseline on 0.x | The eval measures v1 directly now | I suggest dropping it; your call |
+| Eval baseline on 0.x | The eval measures v1 directly now | Dropped with 0.x (#78); compare against the `v0-final` tag if needed |
 | Copilot memory: a README note, an `init` host instruction, a check for untraced claims | You asked to discuss it only, on 9 Nov | Open, your call |
 | Claude Code host check | You test it when ready | Phase 5 |
 | Trusted publishing (no npm token) | Needs a setting on npmjs.com | Before January 2027 |
@@ -200,7 +200,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 | Fewer tools (D6) | Only if the eval shows wrong tool picks | Phase 5 |
 | Move 0.x `context_add_file` to the new loader | Goes away with the old server | Phase 5 |
 | Cursor version string | Cosmetic | Phase 5 |
-| Metadata text on the input review page | Needs your call on whether to review it | Open question |
+| Metadata text on the input review page | Decided in phase 5 (D7 A): not shown, since metadata is masked on the way out | Closed |
 | Native model runtime as an option | RT1 chose WebAssembly for install size | After 1.0 |
 | Web app, Atlassian Data Center, Azure DevOps Boards, telemetry | Won't for v1 in the feature list (FE1) | After 1.0, if ever |
 
@@ -210,16 +210,17 @@ Updated 11 Nov 2026, in the order to do them. Done before: the next.6 release, t
 
 - [ ] Set up trusted publishing on npmjs.com (section 6 of the [phase 5 plan](phase-5-plan.md)): package Settings, Trusted publishing, GitHub Actions, user `taouani`, repository `sf-agent-po`, workflow `release-next.yml`, environment `npm-next`; tick `npm dist-tag` if offered.
 - [ ] Delete the `NPM_TOKEN` secret from the `npm-next` environment.
-- [ ] Within 2 days of the setup, start the Release next workflow: it publishes 1.0.0-next.8 (next.7 was never published). If its summary says `latest` was not moved, run the command it gives after `npm login`.
-- [ ] Set Publishing access to "Require two-factor authentication and disallow tokens", then delete the npm token.
-- [ ] Push the `v0-final` tag on the last 0.x commit: `git fetch origin && git tag v0-final e1dae46 && git push origin v0-final`.
+- [ ] Within 2 days of the setup, start the Release next workflow from `main` with **dry-run unticked** (it is ticked by default), and approve the `npm-next` environment when asked. It publishes 1.0.0-next.8 (next.7 was never published). If its summary says `latest` was not moved, run the command it gives after `npm login`.
+- [ ] Only once that release has gone out without the secret: set Publishing access to "Require two-factor authentication and disallow tokens", then delete the npm token.
+- [ ] Push the `v0-final` tag on the last 0.x commit (the README already links it): `git fetch origin && git tag v0-final e1dae46 && git push origin v0-final`.
 - [ ] Say whether you have 0.x contexts to bring over (no command imports them yet).
-- [ ] Run `npx -y sf-agent-po@next doctor` on your laptop and send the output.
-- [ ] Re-index your UAT org in full (`index --org <alias> --full`) and send the time: G2 again, with reports and integrations, against 30 minutes. After a few changes, run it without `--full`, against 5 minutes.
+- [ ] In the folder your AI tool opens (where the server starts), run `npx -y sf-agent-po@next doctor` on your laptop and send the output.
+- [ ] In the same folder, re-index your UAT org in full (`npx -y sf-agent-po@next index --org <alias> --full`) and send the time: G2 again, with reports and integrations, against 30 minutes. After a few changes, run it without `--full`, against 5 minutes.
 - [ ] Run the Lifetime Spent check again; if an Apex class is still missed, send its name or the line that reads the field.
-- [ ] Test the Claude Code host (`init --host claude-code`, `/sa-hld`, `/po-backlog`) and send the results, for PR 14b.
-- [ ] In Cursor 2.4 or later, check that the workflows appear as skills, and delete the old `.cursor/commands` files.
-- [ ] One guided design and backlog, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
-- [ ] Let your team edit that backlog in Jira, then compare it with Jira and give your verdicts on the review page (gate item 3).
+- [ ] Test the Claude Code host and send the results, for the Claude Code part of PR 14 (14b): add the server (`claude mcp add`, see the [package README](../packages/mcp/README.md)), run `npx -y sf-agent-po@next init --host claude-code`, then `/sa-hld` and `/po-backlog`.
+- [ ] In Cursor 2.4 or later, run `npx -y sf-agent-po@next init --host cursor` (skills came after next.6), check that the workflows appear as skills, and delete the old `.cursor/commands` files that `init` lists.
+- [ ] One guided design and backlog in any host, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
+- [ ] Publish one real backlog your team works on (not the test project), let them edit it in Jira, then compare it with Jira and give your verdicts on the review page (gate item 3).
 - [ ] Review the French word list in `packages/core/content/checks/fr.md`.
+- [ ] Decide on Copilot memory (backlog row above), when you want to.
 - [ ] Optional: two or three anonymised real requirement sets, in English and French, to use as scenarios.
