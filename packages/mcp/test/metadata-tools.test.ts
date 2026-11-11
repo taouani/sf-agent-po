@@ -198,20 +198,46 @@ describe("metadata tools", () => {
     expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", from: 999 })).text).toContain(`Mapper has ${lines.length} lines.`);
 
     const found = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "database.QUERY" });
-    expect(found.text).toContain(`1 line(s) of ${lines.length} contain`);
+    expect(found.text).toContain('ApexClass Mapper: 1 line(s) contain "database.QUERY"');
     expect(found.text).toContain("Database.query(");
     // A pseudonym the model was shown finds the real text, and comes back masked.
     const pseudonym = /\[PERSON_\d+\]/.exec(first.text)![0];
     const byName = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: pseudonym });
     expect(byName.text).toContain(`  2    // Written for ${pseudonym}`);
     expect(byName.text).not.toContain("Karim");
+    // A real name the model guesses is not confirmed by the lines that hold it.
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "Benali" })).text).toContain('No line of Mapper contains "Benali"');
     const many = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "// line" });
-    expect(many.text).toContain("300 line(s)");
+    expect(many.text).toContain("200 line(s) contain");
     expect(many.text).toContain("the first 60 shown");
+    expect(many.text).toContain("More may follow: search again from line 206.");
+    const later = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "// line", from: 206 });
+    expect(later.text).toContain("100 line(s) from line 206 contain");
+    expect(later.text).toContain("206    // line 200");
+    expect(later.text).not.toContain("More may follow");
     expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", find: "nowhere" })).text).toContain('No line of Mapper contains "nowhere"');
 
     expect((await call("metadata_code", { context: "acme", type: "ApexTrigger", name: "Mapper" })).text).toContain("No ApexTrigger named Mapper");
     expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", lines: 501 })).isError).toBe(true);
+  });
+
+  it("show code with its secrets hidden, and long lines cut", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    const fixture = `'${"{\"a\":1}".repeat(1_000)}'`;
+    writeFileSync(
+      path.join(root, "classes/Client.cls"),
+      ["public class Client {", "  String apiKey = 'k_9f8e7d6c';", "  // req.setHeader('Authorization', 'Bearer abcDEF123456');", ...Array.from({ length: 100 }, () => `  String json = ${fixture};`), "}"].join("\n"),
+    );
+    await indexProject(index, root);
+    const r = await call("metadata_code", { context: "acme", type: "ApexClass", name: "Client" });
+    expect(r.text).toContain("String apiKey = 'HIDDEN_SECRET';");
+    expect(r.text).toContain("'Bearer HIDDEN_SECRET'");
+    expect(r.text).not.toContain("k_9f8e7d6c");
+    expect(r.text).not.toContain("abcDEF123456");
+    expect(r.text).toMatch(/\.\.\. \(\d+ more characters\)/);
+    expect(r.text.length).toBeLessThan(40_000);
+    expect(r.text).toMatch(/lines 1-\d+ of 104, .* More from line \d+\./);
   });
 
   it("say why there is no code to show", async () => {
@@ -226,6 +252,9 @@ describe("metadata tools", () => {
     const old = await call("metadata_code", { context: "acme", type: "ApexClass", name: "PolicyService" });
     expect(old.text).toContain(`The index of ${snap.source} has no code for PolicyService`);
     expect(old.text).toContain("Index the source again");
+    // A file the scan could not read has no lines either: indexing again would not help.
+    db.db.prepare("UPDATE component SET attrs = '{}' WHERE name = 'PolicyService'").run();
+    expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "PolicyService" })).text).toContain("could not be read when");
   });
 
   it("mask the error of a failed run", async () => {

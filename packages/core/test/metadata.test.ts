@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apexCode, classify, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, detectWithRules, HIDDEN_SECRET, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -244,8 +244,8 @@ describe("flows", () => {
     // The code of a class is kept apart (masked when shown), with its secrets hidden.
     const kept = JSON.stringify(components.filter((c) => c.file && !c.file.includes("/objects/")).map(({ body: _, ...c }) => c));
     for (const secret of ["SECRET", "jane.doe@example.com", "for/acme", "/hook", "/orders"]) expect(kept).not.toContain(secret);
-    expect(byName("ErpClient").body).toContain("v1?apikey=[hidden secret]'");
-    expect(JSON.stringify(components)).not.toContain("SECRET");
+    expect(byName("ErpClient").body).toContain("v1?apikey=HIDDEN_SECRET'");
+    expect(JSON.stringify(components)).not.toContain("K1_SECRET");
   });
 
   it("names the field a report column reads", () => {
@@ -908,27 +908,57 @@ describe("MetadataIndex runs of the same source", () => {
 });
 
 describe("Apex code in the index", () => {
-  it("hides the secrets written in strings, and keeps the rest", () => {
-    const hidden = (code: string) => hideCodeSecrets(code);
-    expect(hidden("String apiKey = 'k_9f8e7d';")).toBe("String apiKey = '[hidden secret]';");
-    expect(hidden("private static final String CLIENT_SECRET='abc123def';")).toBe("private static final String CLIENT_SECRET='[hidden secret]';");
-    expect(hidden("req.setHeader('Authorization', 'Bearer eyabc.def');")).toBe("req.setHeader('Authorization', 'Bearer [hidden secret]');");
-    expect(hidden("req.setHeader('x-api-key', 'zz99zz99');")).toBe("req.setHeader('x-api-key', '[hidden secret]');");
-    expect(hidden("req.setBody('grant_type=password&client_id=abc&client_secret=s3cr3t&password=hunter22');")).toBe(
-      "req.setBody('grant_type=password&client_id=abc&client_secret=[hidden secret]&password=[hidden secret]');",
-    );
-    expect(hidden("u = 'https://x.example/v1?apikey=K1&q=1';")).toBe("u = 'https://x.example/v1?apikey=[hidden secret]&q=1';");
-    // Not secrets: a parameter's name, a label with spaces, a named credential, a query, a comment.
+  it("hides the secrets written in strings and comments, and keeps the rest", () => {
+    const H = HIDDEN_SECRET;
+    const cases: [string, string][] = [
+      ["String apiKey = 'k_9f8e7d';", `String apiKey = '${H}';`],
+      ["private static final String CLIENT_SECRET='abc123def';", `private static final String CLIENT_SECRET='${H}';`],
+      ["req.setHeader('Authorization', 'Bearer eyabcdef.ghi');", `req.setHeader('Authorization', 'Bearer ${H}');`],
+      ["req.setHeader('Authorization', 'dXNlcjpwd2Q=');", `req.setHeader('Authorization', '${H}');`],
+      ["req.setHeader('x-api-key', 'zz99zz99');", `req.setHeader('x-api-key', '${H}');`],
+      ["req.setHeader('Ocp-Apim-Subscription-Key', 'abcdabcd');", `req.setHeader('Ocp-Apim-Subscription-Key', '${H}');`],
+      ["req.setHeader('X-Auth', 'abcdabcd');", `req.setHeader('X-Auth', '${H}');`],
+      ["req.setHeader('Cookie', 'sid=00Dabc!xyz');", `req.setHeader('Cookie', 'sid=${H}');`],
+      ["String h = 'Authorization: Bearer abc123def';", `String h = 'Authorization: Bearer ${H}';`],
+      ["Blob cryptoKey = EncodingUtil.base64Decode('mRMjHmlC1C+1L/Dkz8EJuw==');", `Blob cryptoKey = EncodingUtil.base64Decode('${H}');`],
+      ["String pw = 'hunterhunter';", `String pw = '${H}';`],
+      ["String secretKey = 'correct horse battery staple';", `String secretKey = '${H}';`],
+      ["m.put('access_token', 'abc123');", `m.put('access_token', '${H}');`],
+      [
+        "req.setBody('grant_type=password&client_id=abc&client_secret=s3cr3t&password=hunter22');",
+        `req.setBody('grant_type=password&client_id=abc&client_secret=${H}&password=${H}');`,
+      ],
+      ["u = 'https://x.example/v1?apikey=K1&q=1';", `u = 'https://x.example/v1?apikey=${H}&q=1';`],
+      [`b = '{"password":"hunterhunter","user":"x"}';`, `b = '{"password":"${H}","user":"x"}';`],
+      ["b = '<password>HunterHunter</password>';", `b = '<password>${H}</password>';`],
+      ["Blob c = Blob.valueOf('svcuser:Winter2024!');", `Blob c = Blob.valueOf('svcuser:${H}');`],
+      [
+        "req.setHeader('Authorization',\n  'Basic ' +\n  EncodingUtil.base64Encode(Blob.valueOf(USER + ':' + 'Hunter2024')));",
+        `req.setHeader('Authorization',\n  'Basic ' +\n  EncodingUtil.base64Encode(Blob.valueOf(USER + ':' + '${H}')));`,
+      ],
+      // Commented-out code.
+      ["/* req.setHeader('Authorization', 'Bearer abcDEF123'); */", `/* req.setHeader('Authorization', 'Bearer ${H}'); */`],
+      ["// req.setHeader('x-api-key', 'zz99zz99');\nx = 1;", `// req.setHeader('x-api-key', '${H}');\nx = 1;`],
+    ];
+    for (const [code, hidden] of cases) expect(hideCodeSecrets(code)).toBe(hidden);
+    // Not secrets: names, messages, queries, objects named near a secret, prose in comments.
     for (const code of [
       "String body = 'client_secret=' + secret;",
       "String passwordHint = 'Enter your password';",
       "req.setEndpoint('callout:ERP/token');",
       "String q = 'SELECT Id FROM Account WHERE Token__c = :t';",
-      "// password = 'hunter22'\nx = 1;",
+      "String TOKEN_FIELD = 'Access_Token__c';",
+      "String t = (String) m.get('access_token');",
+      "if (token == null) objName = 'Account';",
+      "// token\nString obj = 'Contact';",
+      "String e = 'Token expired for this user';",
+      "// don't change it, it's used by the batch\nString s = 'Status__c';",
       "String s = 'it\\'s fine'; Integer token = 3;",
       "String unclosed = 'abc\nString tokenName = 'x';",
     ])
-      expect(hidden(code)).toBe(code);
+      expect(hideCodeSecrets(code)).toBe(code);
+    // The placeholder is shown as it is by the masking rules.
+    expect(detectWithRules(`String password = '${H}';\nreq.setHeader('Authorization', 'Bearer ${H}');`)).toEqual([]);
   });
 
   it("keeps a class's code, comments included, apart from its searchable text", async () => {

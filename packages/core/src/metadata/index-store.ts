@@ -362,13 +362,18 @@ export class MetadataIndex {
     return (this.db.prepare("SELECT * FROM metadata_snapshot ORDER BY id DESC").all() as unknown as SnapshotRow[]).map(toSnapshot);
   }
 
-  /** A component by type and API name; the case of the name does not matter (the column ignores it, as Salesforce does). */
-  /** The code of an Apex class or trigger, unmasked, if the run that indexed it kept it. */
+  /** The code of an Apex class or trigger (secrets hidden, not masked), if the run that indexed it kept it. */
   body(component: number): string | undefined {
     const r = this.db.prepare("SELECT body FROM component_body WHERE component = ?").get(component) as { body: string } | undefined;
     return r?.body;
   }
 
+  /** Whether the index keeps a component's code, without reading it. */
+  hasBody(component: number): boolean {
+    return this.db.prepare("SELECT 1 FROM component_body WHERE component = ?").get(component) !== undefined;
+  }
+
+  /** A component by type and API name; the case of the name does not matter (the column ignores it, as Salesforce does). */
   component(snapshot: number, type: ComponentType, name: string): IndexedComponent | undefined {
     const r = this.db
       .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.type = ? AND c.name = ?`)
