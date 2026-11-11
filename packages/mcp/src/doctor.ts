@@ -137,7 +137,7 @@ export async function runDoctor(opts: DoctorOptions, deps: DoctorDeps): Promise<
     }
   };
 
-  await step("Node", async () => nodeCheck(deps.nodeVersion));
+  await step("Node", async () => nodeCheck(deps.nodeVersion, deps.env));
   const { databaseFile } = await import("./startup.js");
   const file = databaseFile(opts.workspace);
   let database = opts.database;
@@ -185,10 +185,23 @@ export async function runDoctor(opts: DoctorOptions, deps: DoctorDeps): Promise<
   return results.map((r) => ({ ...r, detail: tidyText(r.detail, deps.home, deps.platform), ...(r.fix ? { fix: tidyText(r.fix, deps.home, deps.platform) } : {}) }));
 }
 
-function nodeCheck(version: string): Omit<CheckResult, "check"> {
+function nodeCheck(version: string, env: NodeJS.ProcessEnv): Omit<CheckResult, "check">[] {
   const major = Number(version.split(".")[0]);
-  if (major >= 24) return { level: "pass", detail: `Node ${version}` };
-  return { level: "fail", detail: `Node ${version}; sf-agent-po needs Node 24 or later.`, fix: "Install Node 24 LTS from nodejs.org, or with your version manager (nvm install 24)." };
+  const results: Omit<CheckResult, "check">[] = [
+    major >= 24
+      ? { level: "pass", detail: `Node ${version}` }
+      : { level: "fail", detail: `Node ${version}; sf-agent-po needs Node 24 or later.`, fix: "Install Node 24 LTS from nodejs.org, or with your version manager (nvm install 24)." },
+  ];
+  // Often set to get past a company proxy: it turns off certificate checks for every call,
+  // the ones that carry the Atlassian token included.
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    results.push({
+      level: "warn",
+      detail: "NODE_TLS_REJECT_UNAUTHORIZED=0 turns off certificate checks, so a machine in the middle could read the Jira and Confluence token.",
+      fix: "Remove NODE_TLS_REJECT_UNAUTHORIZED from your shell and your AI tool's MCP settings. Behind a proxy that inspects HTTPS, set NODE_OPTIONS=--use-system-ca instead, so Node trusts the certificates your system trusts.",
+    });
+  }
+  return results;
 }
 
 async function workspaceCheck(database: Database, opts: DoctorOptions, home: string): Promise<{ result: Omit<CheckResult, "check">; current: boolean; readable?: boolean }> {

@@ -84,7 +84,7 @@ describe("doctor", () => {
     const project = path.join(home, "proj");
     const opts: DoctorOptions = { workspace: path.join(project, ".sf-agent"), project, atlassianCalls: true, model: "load" };
     const results = await runDoctor(opts, deps(home));
-    expect(byCheck(results, "Node")[0]).toMatchObject({ level: "pass", detail: "Node 24.11.0" });
+    expect(byCheck(results, "Node")).toEqual([expect.objectContaining({ level: "pass", detail: "Node 24.11.0" })]);
     expect(byCheck(results, "Workspace")[0]).toMatchObject({ level: "warn", detail: expect.stringContaining(path.join("~", "proj", ".sf-agent")) });
     // No workspace was created to check it.
     expect(() => new Database(databaseFile(opts.workspace), [], { readOnly: true })).toThrow();
@@ -167,7 +167,7 @@ describe("doctor", () => {
     const home = tempDir();
     const d = deps(home, {
       nodeVersion: "22.3.0",
-      env: { PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), ATLASSIAN_EMAIL: "me@x.com" },
+      env: { PATH: "", SF_AGENT_PO_MODEL_DIR: path.join(home, "models"), ATLASSIAN_EMAIL: "me@x.com", NODE_TLS_REJECT_UNAUTHORIZED: "0" },
       fetch: (async () => {
         throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND huggingface.co"), { code: "ENOTFOUND" }) });
       }) as typeof fetch,
@@ -177,6 +177,7 @@ describe("doctor", () => {
     });
     const results = await runDoctor({ workspace: path.join(home, "w"), project: home, atlassianCalls: true, model: "load" }, d);
     expect(byCheck(results, "Node")[0]).toMatchObject({ level: "fail" });
+    expect(byCheck(results, "Node")[1]).toMatchObject({ level: "warn", detail: expect.stringContaining("NODE_TLS_REJECT_UNAUTHORIZED=0"), fix: expect.stringContaining("--use-system-ca") });
     expect(byCheck(results, "Jira and Confluence")[0]).toMatchObject({ level: "fail", detail: "ATLASSIAN_SITE_URL and ATLASSIAN_API_TOKEN are not set in this shell." });
     expect(byCheck(results, "Name model")[0]).toMatchObject({ level: "fail", detail: expect.stringContaining("ENOTFOUND"), fix: expect.stringContaining("HTTPS_PROXY") });
     expect(byCheck(results, "Salesforce CLI")[0]).toMatchObject({ level: "fail", detail: "sf org list failed: boom" });
