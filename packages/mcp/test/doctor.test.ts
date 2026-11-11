@@ -120,6 +120,9 @@ describe("doctor", () => {
       // One edited, one with CRLF line ends as a Windows checkout has them (the same file).
       writeFileSync(path.join(project, f.path), i === 0 ? "edited" : i === 1 ? f.content.replace(/\n/g, "\r\n") : f.content);
     }
+    // A command an earlier version wrote for Cursor, which a skill now replaces.
+    mkdirSync(path.join(project, ".cursor/commands"), { recursive: true });
+    writeFileSync(path.join(project, ".cursor/commands/po-review.md"), "old");
     const { DEFAULT_MODEL } = await import("@sf-agent-po/core");
     const modelDir = path.join(home, "models", DEFAULT_MODEL.id, DEFAULT_MODEL.revision);
     for (const f of Object.values(DEFAULT_MODEL.files)) {
@@ -142,7 +145,10 @@ describe("doctor", () => {
     expect(byCheck(results, "Name model")[0]).toMatchObject({ level: "pass", detail: expect.stringContaining("finds the name") });
     expect(byCheck(results, "Jira and Confluence").map((r) => r.level)).toEqual(["pass", "fail"]);
     expect(calls).toEqual(["https://x.atlassian.net/rest/api/3/myself", "https://x.atlassian.net/wiki/api/v2/spaces?limit=1"]);
-    expect(byCheck(results, "AI tool files")).toEqual([expect.objectContaining({ level: "warn", detail: expect.stringContaining("1 from another version or edited") })]);
+    expect(byCheck(results, "AI tool files")).toEqual([
+      expect.objectContaining({ level: "warn", detail: expect.stringContaining("1 from another version or edited") }),
+      expect.objectContaining({ level: "warn", detail: expect.stringMatching(/^cursor: 1 file\(s\) from an earlier version/), fix: "Delete .cursor/commands/po-review.md, so your AI tool does not offer both." }),
+    ]);
     expect(byCheck(results, "Metadata index")).toEqual([
       expect.objectContaining({ level: "warn", detail: `repo:proj#abcd1234 was indexed 9 day(s) ago.`, fix: expect.stringContaining("index --project <its folder>") }),
       expect.objectContaining({ level: "warn", detail: `org:${ORG_ID} (uat) was indexed 9 day(s) ago.`, fix: expect.stringContaining("index --org uat") }),

@@ -412,13 +412,16 @@ async function toolCheck(tool: Tool, deps: DoctorDeps): Promise<Omit<CheckResult
 }
 
 /** For each host, how many of its files are in the project, and how many differ from this version's. */
-export async function hostFilesState(project: string): Promise<{ host: Host; expected: number; present: number; outdated: number }[]> {
+export async function hostFilesState(project: string): Promise<{ host: Host; expected: number; present: number; outdated: number; replaced: string[] }[]> {
   const out = [];
   for (const host of HOSTS) {
     let expected = 0;
     let present = 0;
     let outdated = 0;
+    const replaced: string[] = [];
     for (const file of hostFiles(host)) {
+      // An earlier version's file for the same purpose, still there.
+      if (file.replaces && (await lstat(path.join(project, file.replaces)).catch(() => undefined))) replaced.push(file.replaces);
       // Not written when the other file is there, because the host would load both.
       if (file.unlessPresent && (await lstat(path.join(project, file.unlessPresent.path)).catch(() => undefined))) continue;
       expected++;
@@ -428,18 +431,26 @@ export async function hostFilesState(project: string): Promise<{ host: Host; exp
       // A checkout with CRLF line ends (core.autocrlf on Windows) holds the same file.
       if (content.replace(/\r\n/g, "\n") !== file.content) outdated++;
     }
-    out.push({ host, expected, present, outdated });
+    out.push({ host, expected, present, outdated, replaced });
   }
   return out;
 }
 
 async function hostFilesCheck(project: string, home: string): Promise<Omit<CheckResult, "check">[]> {
   const shown = tidyPath(project, home);
-  const state = (await hostFilesState(project)).filter((s) => s.present);
+  const all = await hostFilesState(project);
+  const state = all.filter((s) => s.present);
+  const old = all
+    .filter((s) => s.replaced.length)
+    .map((s) => ({
+      level: "warn" as const,
+      detail: `${s.host}: ${s.replaced.length} file(s) from an earlier version are still in ${shown}, and newer files replace them.`,
+      fix: `Delete ${s.replaced.join(", ")}, so your AI tool does not offer both.`,
+    }));
   if (!state.length) {
-    return [{ level: "warn", detail: `No AI tool files in ${shown}.`, fix: "Run, in your project folder: npx sf-agent-po@next init --host claude-code (or cursor, copilot, all)" }];
+    return [{ level: "warn", detail: `No AI tool files in ${shown}.`, fix: "Run, in your project folder: npx sf-agent-po@next init --host claude-code (or cursor, copilot, all)" }, ...old];
   }
-  return state.map((s) =>
+  const files = state.map((s): Omit<CheckResult, "check"> =>
     s.present < s.expected || s.outdated
       ? {
           level: "warn",
@@ -448,6 +459,7 @@ async function hostFilesCheck(project: string, home: string): Promise<Omit<Check
         }
       : { level: "pass", detail: `${s.host}: all ${s.expected} files in ${shown}, up to date.` },
   );
+  return [...files, ...old];
 }
 
 /** An index older than this gets a warning: Salesforce changes keep coming. */

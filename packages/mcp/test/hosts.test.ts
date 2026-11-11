@@ -52,10 +52,10 @@ describe("host files", () => {
     expect(hostFiles("cursor").map((f) => f.path)).toEqual([
       ".cursor/rules/salesforce-solution-architect.mdc",
       ".cursor/rules/salesforce-product-owner.mdc",
-      ".cursor/commands/sa-hld.md",
-      ".cursor/commands/sa-detailed.md",
-      ".cursor/commands/po-backlog.md",
-      ".cursor/commands/po-review.md",
+      ".cursor/skills/sa-hld/SKILL.md",
+      ".cursor/skills/sa-detailed/SKILL.md",
+      ".cursor/skills/po-backlog/SKILL.md",
+      ".cursor/skills/po-review/SKILL.md",
     ]);
     expect(hostFiles("copilot").map((f) => f.path)).toEqual([
       ".github/agents/salesforce-solution-architect.agent.md",
@@ -76,11 +76,14 @@ describe("host files", () => {
     expect(file("copilot", "prompts/po-backlog.prompt.md")).toMatch(/^---\ndescription: ".+"\nargument-hint: "context=<name> \[scope\]"\nagent: "agent"\n---\n/);
     expect(file("copilot", "agents/salesforce-product-owner.agent.md")).toMatch(/^---\nname: "Salesforce Product Owner"\ndescription: ".+"\ntarget: "vscode"\n---\n/);
     expect(file("cursor", "rules/salesforce-product-owner.mdc")).toMatch(/^---\ndescription: .+\nglobs:\nalwaysApply: false\n---\n/);
+    // A skill's name matches its folder, and it runs only when the user types /<name>.
+    expect(file("cursor", "skills/po-review/SKILL.md")).toMatch(/^---\nname: "po-review"\ndescription: ".+"\ndisable-model-invocation: true\n---\n/);
+    expect(hostFiles("cursor").filter((f) => f.path.startsWith(".cursor/skills/")).every((f) => f.path === `.cursor/skills/${/^---\nname: "([a-z0-9-]+)"/.exec(f.content)![1]}/SKILL.md`)).toBe(true);
 
     // The workflow text is the same as the MCP prompt's, apart from the context sentence.
     const mcp = guidedPrompt("sa_high_level_design", { context: "x" });
     const tail = mcp.slice(mcp.indexOf("Your task:"));
-    for (const host of HOSTS) expect(file(host, host === "copilot" ? "sa-hld.prompt.md" : "sa-hld.md")).toContain(tail);
+    for (const host of HOSTS) expect(file(host, { copilot: "sa-hld.prompt.md", cursor: "sa-hld/SKILL.md", "claude-code": "sa-hld.md" }[host])).toContain(tail);
 
     const agent = file("claude-code", "agents/salesforce-solution-architect.md");
     expect(agent).toMatch(/^---\nname: "salesforce-solution-architect"\ndescription: ".+"\n---\n/);
@@ -144,7 +147,7 @@ describe("sf-agent-po init", () => {
       await mkdir(path.join(dir, ".cursor/rules"), { recursive: true });
       // A dangling link to a file outside, and a folder that is a link to outside.
       await symlink(path.join(outside, "notes.txt"), path.join(dir, ".cursor/rules/salesforce-solution-architect.mdc"));
-      await symlink(outside, path.join(dir, ".cursor/commands"));
+      await symlink(outside, path.join(dir, ".cursor/skills"));
       // A folder where a file should go makes that one write fail.
       await mkdir(path.join(dir, ".cursor/rules/salesforce-product-owner.mdc"));
 
@@ -156,6 +159,17 @@ describe("sf-agent-po init", () => {
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+
+  it("says to delete the command files an earlier version wrote, which the Cursor skills replace", async () => {
+    await mkdir(path.join(dir, ".cursor/commands"), { recursive: true });
+    await writeFile(path.join(dir, ".cursor/commands/sa-hld.md"), "old");
+    const report = await runInit({ hosts: ["cursor"], dir, force: false, dryRun: false });
+    expect(report).toContain("left     .cursor/commands/sa-hld.md (an earlier version's file, replaced by .cursor/skills/sa-hld/SKILL.md: delete it so it is not offered twice)");
+    expect(report).toContain("created  .cursor/skills/sa-hld/SKILL.md");
+    expect(report.filter((l) => l.startsWith("left"))).toHaveLength(1);
+    // Left alone: it may hold the user's own edits.
+    expect(await readFile(path.join(dir, ".cursor/commands/sa-hld.md"), "utf8")).toBe("old");
   });
 
   it("leaves out the Copilot agents when the Claude Code agents are there, since VS Code loads both", async () => {

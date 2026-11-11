@@ -170,10 +170,10 @@ node /absolute/path/to/sf-agent-po/dist/index.js init --host all --dir /path/to/
 | Host | Files | How to use |
 | --- | --- | --- |
 | Claude Code | `.claude/agents/salesforce-{solution-architect,product-owner}.md`, `.claude/commands/{sa-hld,sa-detailed,po-backlog,po-review}.md` | Subagents, plus `/sa-hld renewal integrations` etc. (the first word is the context) |
-| Cursor | `.cursor/rules/salesforce-*.mdc` (agent-requested rules), `.cursor/commands/*.md` | `/sa-hld` etc. in Agent chat; name the context in your message, or the agent asks |
+| Cursor (2.4 or later) | `.cursor/rules/salesforce-*.mdc` (agent-requested rules), `.cursor/skills/{sa-hld,sa-detailed,po-backlog,po-review}/SKILL.md` (skills run only when you type them) | `/sa-hld` etc. in Agent chat; name the context in your message, or the agent asks |
 | GitHub Copilot (VS Code) | `.github/agents/salesforce-*.agent.md` (custom agents), `.github/prompts/*.prompt.md` | Pick the agent, or run `/sa-hld context=renewal` etc. |
 
-`--host` takes `claude-code`, `cursor`, `copilot` or `all` (the default); repeat it or separate hosts with commas. Existing files are skipped unless you pass `--force`, symbolic links are never followed out of the project, and `--dry-run` lists what would be written. VS Code also loads Claude Code agents from `.claude/agents`, so when those are present the Copilot agent files are left out to avoid listing each agent twice. The Copilot agents are marked for VS Code, because the Copilot agent on github.com cannot reach a local MCP server.
+`--host` takes `claude-code`, `cursor`, `copilot` or `all` (the default); repeat it or separate hosts with commas. Existing files are skipped unless you pass `--force`, symbolic links are never followed out of the project, and `--dry-run` lists what would be written. VS Code also loads Claude Code agents from `.claude/agents`, so when those are present the Copilot agent files are left out to avoid listing each agent twice. The Copilot agents are marked for VS Code, because the Copilot agent on github.com cannot reach a local MCP server. Cursor is moving custom commands to skills, so `init` now writes skills where versions up to next.7 wrote `.cursor/commands/*.md`; `init` and `doctor` name those old files, which you delete so Cursor does not offer each workflow twice.
 
 ## Sample scenarios
 

@@ -77,6 +77,9 @@ export async function runInit(opts: InitOptions): Promise<string[]> {
   for (const host of opts.hosts) {
     for (const file of hostFiles(host)) {
       const target = path.join(opts.dir, file.path);
+      if (file.replaces && (await lstat(path.join(opts.dir, file.replaces)).catch(() => undefined))) {
+        report.push(`left     ${file.replaces} (an earlier version's file, replaced by ${file.path}: delete it so it is not offered twice)`);
+      }
       try {
         if (file.unlessPresent && (await present(file.unlessPresent.path))) {
           report.push(`skipped  ${file.path} (${file.unlessPresent.reason})`);
