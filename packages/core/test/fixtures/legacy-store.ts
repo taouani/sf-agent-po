@@ -3,9 +3,12 @@
 // new batch replacing the documents from the same sources. Kept so the importer is tested
 // against files exactly as 0.x wrote them.
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { documentId } from "../../src/index.js";
+
+/** 0.x's document id, kept here so the test notices if the importer's ever differs. */
+const documentId = (source: string) => `doc-${createHash("sha1").update(source).digest("hex").slice(0, 10)}`;
 
 export interface LegacyDocument {
   id: string;

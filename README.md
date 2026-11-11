@@ -214,7 +214,7 @@ The code lives in npm workspaces under `packages/`:
   command opens the workspace read-only and reads only masked data, so it needs no vault key,
   and nothing leaves the machine. The four agent workflows
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
-  prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
+  prompts and guided workflows (`workflow_start`, `workflow_submit`); they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the
   browser. `industry_guidance` gives the industry templates. `npx sf-agent-po@next init` writes the
   agent files for Claude Code, Cursor and Copilot from the same text, with the v1 rules. For

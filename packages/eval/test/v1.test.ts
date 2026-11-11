@@ -1,15 +1,14 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
 import os from "node:os";
-import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { BackgroundIndexer } from "../../connectors/src/index.js";
-import { ContextRepository, Database, documentId, Masker, MetadataIndex, newVaultKey, RequirementRepository, Vault, WorkflowRepository } from "../../core/src/index.js";
+import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, RequirementRepository, Vault, WorkflowRepository } from "../../core/src/index.js";
 import { ApprovalServer, createServer, type RequirementsRequest } from "../../mcp/src/index.js";
 import { databaseFile } from "../../mcp/src/startup.js";
+import { insurance, referenceBacklog } from "./reference.js";
 import {
   Approver,
   firstTryShare,
@@ -29,15 +28,7 @@ import {
 } from "../src/index.js";
 
 const closers: (() => Promise<unknown>)[] = [];
-const insurance = listScenarios().find((s) => s.id === "insurance-renewal")!;
 
-/** The hand-written reference backlog, with its input placeholders turned into document ids. */
-function referenceBacklog(): unknown {
-  const text = readFileSync(join(insurance.dir, "reference-backlog.json"), "utf8").replace(/\{\{inputs\/([^}]+)\}\}/g, (_, f: string) =>
-    documentId(resolve(insurance.inputsDir, f)),
-  );
-  return JSON.parse(text);
-}
 afterEach(async () => {
   await Promise.all(closers.splice(0).map((c) => c()));
 });
@@ -194,7 +185,8 @@ describe("runScenario with the v1 server", () => {
         return r;
       };
       await call("workflow_start", { context: "eval", workflow, industry: "insurance" });
-      const doc = (await call("context_show", { context: "eval" })).text.match(/doc-[0-9a-f]{10}/)![0];
+      const shown = (await call("context_show", { context: "eval" })).text;
+      const doc = shown.match(/doc-[0-9a-f]{10}/)![0];
       const step = { context: "eval", workflow, step: "requirements" };
       if (backlog) await call("workflow_submit", { ...step, answer: { keep: true } });
       else {
@@ -204,7 +196,7 @@ describe("runScenario with the v1 server", () => {
           answer: { requirements: [{ kind: "functional", statement: "Policyholders accept their renewal quote online.", priority: "must", sourceIds: [doc] }] },
         });
       }
-      if (backlog) await call("backlog_save", { context: "eval", backlog: referenceBacklog() });
+      if (backlog) await call("backlog_save", { context: "eval", backlog: referenceBacklog(shown) });
       else await call("design_save", { context: "eval", title: "Renewal portal: high-level design", designType: "high-level", content: "# Renewal portal\n\nThe PAS stays the system of record." });
       return { finalText: "Done.", toolCalls, turns: toolCalls.length + 1, inputTokens: 100, outputTokens: 50, stop: "done" as const };
     }

@@ -14,7 +14,7 @@ describe("built-in content", () => {
     expect(library.industries().map((t) => t.id).sort()).toEqual([...ids].sort());
     for (const id of ids) {
       const t = library.industry(id)!;
-      expect(t.products.length && t.dataModel.length && t.regulations.length, id).toBeTruthy();
+      for (const field of ["products", "dataModel", "regulations", "integrations", "watchFor"] as const) expect(t[field].length, `${id} ${field}`).toBeGreaterThan(0);
       expect(library.industryGuidance(id), id).toContain(`## Industry: ${t.name}`);
     }
   });
@@ -38,8 +38,8 @@ describe("built-in content", () => {
 
   it("has the agents' roles, practices and design templates", () => {
     for (const id of ["sa-role", "sa-principles", "po-role", "po-practices"]) expect(library.agent(id).length, id).toBeGreaterThan(100);
-    expect(library.template("high-level-design")).toContain("#");
-    expect(library.template("detailed-design")).toContain("#");
+    expect(library.template("high-level-design")).toMatch(/^## 1\. Context and scope$[\s\S]*^## 4\. Solution overview$/m);
+    expect(library.template("detailed-design")).toMatch(/^## 1\. Scope$[\s\S]*^## 2\. Data model changes$/m);
     expect(() => library.template("nope")).toThrow(/No templates content "nope". Available: detailed-design, high-level-design/);
   });
 

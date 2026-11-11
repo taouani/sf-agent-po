@@ -4,7 +4,7 @@ Use this rubric to judge the agents' output for this scenario, by hand or with a
 
 ## Inputs
 
-Load the scenario with `context_add_file` on `inputs/` and `context_add_metadata` with provider `local` on `metadata/`, into a context such as `insurance-renewal`.
+Load the scenario with `context_add_file` on `inputs/` into a context such as `insurance-renewal`, and index `metadata/` with `metadata_index` (or `npx sf-agent-po@next index --project metadata`).
 
 ## High-level design (sa_high_level_design)
 
