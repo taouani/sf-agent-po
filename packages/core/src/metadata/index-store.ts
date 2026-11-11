@@ -10,8 +10,8 @@ import { readerVersion } from "./reader-version.js";
 export const BUILD_LEASE_MS = 60 * 60 * 1000;
 
 /**
- * A source last indexed longer ago than this is read in full, every file parsed again: a
- * weekly full run catches what the cache or a changed-date listing could miss.
+ * A file parsed longer ago than this is parsed again, even unchanged: every file is read
+ * afresh at least weekly, which catches what the cache or a changed-date listing could miss.
  */
 export const FULL_RUN_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -242,37 +242,42 @@ export class MetadataIndex {
   private readonly building = new Set<number>();
 
   /**
-   * The parse cache of a source for one run. A run reuses nothing (it is full) when asked,
-   * when the source's last run is older than FULL_RUN_AFTER_MS, or when the readers changed
-   * since (their rows do not match). `save` replaces the source's rows with what this run
-   * read, in the transaction that stores the snapshot, so a failed run keeps the old ones.
+   * The parse cache of a source for one run. A file's components are reused when its hash
+   * and the readers' version match, and it was parsed less than FULL_RUN_AFTER_MS ago, so
+   * that every file is parsed again at least weekly; nothing is reused when `forceFull` is
+   * set. Rows are looked up one file at a time, so the cache is never all in memory. `save`
+   * writes only what this run parsed and removes the rows of files that are gone (and of
+   * sources no longer indexed), in the transaction that stores the snapshot, so a failed run
+   * keeps the old rows.
    */
   private parseCache(source: string, forceFull = false): ParseCache & { full: boolean; save(): void } {
     const reader = readerVersion();
-    const last = this.latest(source);
-    const old = !last || Date.now() - Date.parse(last.finishedAt ?? last.startedAt) > FULL_RUN_AFTER_MS;
-    const rows = new Map<string, { hash: string; components: string }>();
-    if (!forceFull && !old) {
-      for (const r of this.db.prepare("SELECT file, hash, components FROM metadata_file WHERE source = ? AND reader = ?").iterate(source, reader) as Iterable<{ file: string; hash: string; components: string }>) {
-        rows.set(r.file, { hash: r.hash, components: r.components });
-      }
-    }
-    const next = new Map<string, { hash: string; components: string }>();
+    const since = new Date(Date.now() - FULL_RUN_AFTER_MS).toISOString();
+    const lookup = this.db.prepare("SELECT hash, components FROM metadata_file WHERE source = ? AND file = ? AND reader = ? AND parsed_at > ?");
+    const seen = new Set<string>();
+    const parsed = new Map<string, { hash: string; components: string }>();
     return {
-      full: rows.size === 0,
+      full: forceFull,
       get: (file, hash) => {
-        const r = rows.get(file);
+        if (forceFull) return undefined;
+        const r = lookup.get(source, file, reader, since) as { hash: string; components: string } | undefined;
         if (!r || r.hash !== hash) return undefined;
-        next.set(file, r);
+        seen.add(file);
         return JSON.parse(r.components) as ParsedComponent[];
       },
       put: (file, hash, components) => {
-        if (next.get(file)?.hash !== hash) next.set(file, { hash, components: JSON.stringify(components) });
+        if (seen.has(file) && !parsed.has(file)) return; // reused as it was
+        seen.add(file);
+        parsed.set(file, { hash, components: JSON.stringify(components) });
       },
       save: () => {
-        this.db.prepare("DELETE FROM metadata_file WHERE source = ?").run(source);
-        const insert = this.db.prepare("INSERT INTO metadata_file (source, file, hash, reader, components) VALUES (?, ?, ?, ?, ?)");
-        for (const [file, r] of next) insert.run(source, file, r.hash, reader, r.components);
+        const now = new Date().toISOString();
+        const upsert = this.db.prepare("INSERT OR REPLACE INTO metadata_file (source, file, hash, reader, parsed_at, components) VALUES (?, ?, ?, ?, ?, ?)");
+        for (const [file, r] of parsed) upsert.run(source, file, r.hash, reader, now, r.components);
+        const remove = this.db.prepare("DELETE FROM metadata_file WHERE source = ? AND file = ?");
+        const files = (this.db.prepare("SELECT file FROM metadata_file WHERE source = ?").all(source) as { file: string }[]).map((r) => r.file);
+        for (const file of files) if (!seen.has(file)) remove.run(source, file);
+        this.db.prepare("DELETE FROM metadata_file WHERE source NOT IN (SELECT source FROM metadata_snapshot)").run();
       },
     };
   }

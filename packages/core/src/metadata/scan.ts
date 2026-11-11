@@ -244,7 +244,7 @@ export async function scanProject(root: string, options: { exclude?: readonly st
         if (meta.length > MAX_FILE_BYTES) meta = "";
       }
       // An unchanged file is not parsed again: its components come from the last run.
-      const hash = options.cache && createHash("sha256").update(content).update("\0").update(meta).digest("hex");
+      const hash = options.cache && createHash("sha256").update(`${content.length}:`).update(content).update(meta).digest("hex");
       let parsed = hash ? options.cache!.get(file, hash) : undefined;
       if (parsed) reused++;
       else {
@@ -252,8 +252,10 @@ export async function scanProject(root: string, options: { exclude?: readonly st
         read++;
       }
       if (hash) options.cache!.put(file, hash, parsed);
-      for (const c of parsed) {
-        if (c.name.endsWith(".")) skip(file, `a ${c.type} without a name`);
+      const children = what.kind === "object" || what.kind === "mdapiObject";
+      for (const [i, c] of parsed.entries()) {
+        // An object's children without a name are left out, as before the cache.
+        if (children && i > 0 && c.name.endsWith(".")) skip(file, `a ${c.type} without a name`);
         else add(c, file);
       }
       knownHome(file);

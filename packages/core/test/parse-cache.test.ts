@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, rmSync, unlinkSync, writeFileSync, readFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Database, FULL_RUN_AFTER_MS, MetadataIndex, readerVersion, scanProject, type ParsedMetadata } from "../src/index.js";
+import { Database, FULL_RUN_AFTER_MS, MetadataIndex, readerVersion, readerVersionComplete, scanProject, type ParsedMetadata } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata", "source");
 const FIELD = "force-app/main/default/objects/Policy__c/fields/Premium__c.field-meta.xml";
@@ -61,13 +61,18 @@ describe("parse cache", () => {
     expect(rows(db).map((r) => r.file)).not.toContain(CLASS);
   });
 
-  it("runs in full when asked, after 7 days, or when the readers changed", async () => {
+  it("parses again when asked, a file last parsed more than 7 days ago, and everything when the readers changed", async () => {
     const { db, run } = setup();
-    await run();
+    const all = (await run()).stats.files!.read;
     expect((await run({ full: true })).stats).toMatchObject({ full: true, files: { reused: 0 } });
     expect((await run()).stats.full).toBe(false);
 
-    db.db.prepare("UPDATE metadata_snapshot SET finished_at = ?").run(new Date(Date.now() - FULL_RUN_AFTER_MS - 60_000).toISOString());
+    // Daily runs still parse each file at least weekly: a row older than that is not reused.
+    const old = new Date(Date.now() - FULL_RUN_AFTER_MS - 60_000).toISOString();
+    db.db.prepare("UPDATE metadata_file SET parsed_at = ? WHERE file = ?").run(old, FIELD);
+    expect((await run()).stats.files).toEqual({ read: 1, reused: all - 1 });
+    expect((await run()).stats.files).toEqual({ read: 0, reused: all });
+    db.db.prepare("UPDATE metadata_file SET parsed_at = ?").run(old);
     expect((await run()).stats.full).toBe(true);
 
     db.db.prepare("UPDATE metadata_file SET reader = 'older readers'").run();
@@ -88,8 +93,40 @@ describe("parse cache", () => {
     expect(rows(db)).toEqual(before);
   });
 
-  it("has a stable readers' version, from the readers' code", () => {
+  it("writes only what a run parsed, and drops the rows of sources no longer indexed", async () => {
+    const { db, run } = setup();
+    await run();
+    const stamp = new Date(Date.now() - 1000).toISOString();
+    db.db.prepare("UPDATE metadata_file SET parsed_at = ?").run(stamp);
+    db.db.prepare("INSERT INTO metadata_file (source, file, hash, reader, parsed_at, components) VALUES ('repo:gone', 'a.xml', 'h', 'r', ?, '[]')").run(stamp);
+    await run();
+    // Reused rows keep the time they were parsed.
+    expect((db.db.prepare("SELECT DISTINCT parsed_at AS t FROM metadata_file").all() as { t: string }[]).map((r) => r.t)).toEqual([stamp]);
+    expect(db.db.prepare("SELECT 1 FROM metadata_file WHERE source = 'repo:gone'").get()).toBeUndefined();
+  });
+
+  it("gives what a fresh parse gives, in both formats", async () => {
+    for (const format of ["source", "mdapi"]) {
+      const dir = join(import.meta.dirname, "fixtures", "metadata", format);
+      const fresh = await scanProject(dir);
+      const rows = new Map<string, { hash: string; json: string }>();
+      const cache = {
+        get: (file: string, hash: string) => (rows.get(file)?.hash === hash ? JSON.parse(rows.get(file)!.json) : undefined),
+        put: (file: string, hash: string, components: unknown) => void rows.set(file, { hash, json: JSON.stringify(components) }),
+      };
+      const first = await scanProject(dir, { cache });
+      const second = await scanProject(dir, { cache });
+      expect(second.files?.reused, format).toBe(first.files?.read);
+      for (const r of [first, second]) {
+        const { files: _files, ...rest } = r;
+        expect(rest, format).toStrictEqual(fresh);
+      }
+    }
+  });
+
+  it("has a stable readers' version, from the readers' code and the XML parser's version", () => {
     expect(readerVersion()).toMatch(/^[0-9a-f]{16}$/);
     expect(readerVersion()).toBe(readerVersion());
+    expect(readerVersionComplete()).toBe(true);
   });
 });
