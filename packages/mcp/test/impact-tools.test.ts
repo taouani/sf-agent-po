@@ -70,6 +70,26 @@ function project(): string {
     `<?xml version="1.0"?><PermissionSet><label>Policy editor</label><fieldPermissions><field>Policy__c.Status__c</field><readable>true</readable><editable>true</editable></fieldPermissions>` +
       `<objectPermissions><object>Policy__c</object><allowRead>true</allowRead><allowEdit>true</allowEdit></objectPermissions></PermissionSet>`,
   );
+  // Integrations and analytics on Policy__c.Status__c.
+  w("reports/Sales/Pipeline.report", `<?xml version="1.0"?><Report><name>Karim pipeline</name><columns><field>Policy__c.Status__c</field></columns><format>Tabular</format></Report>`);
+  w("dashboards/Sales/Weekly.dashboard", `<?xml version="1.0"?><Dashboard><title>Weekly</title><leftSection><components><report>Sales/Pipeline</report></components></leftSection></Dashboard>`);
+  w(
+    "workflows/Policy__c.workflow",
+    `<?xml version="1.0"?><Workflow><outboundMessages><fullName>Notify_ERP</fullName><endpointUrl>https://erp.example.com/hook?key=abc</endpointUrl><fields>Status__c</fields><name>Notify ERP</name></outboundMessages></Workflow>`,
+  );
+  w("platformEventChannelMembers/Policy_CDC.platformEventChannelMember", `<?xml version="1.0"?><PlatformEventChannelMember><eventChannel>ChangeEvents</eventChannel><selectedEntity>Policy__ChangeEvent</selectedEntity></PlatformEventChannelMember>`);
+  w("remoteSiteSettings/Partner.remoteSite", `<?xml version="1.0"?><RemoteSiteSetting><url>https://api.partner.example</url><isActive>true</isActive></RemoteSiteSetting>`);
+  w("namedCredentials/ERP.namedCredential", `<?xml version="1.0"?><NamedCredential><label>ERP</label><endpoint>https://erp.example.com/api</endpoint><principalType>NamedUser</principalType></NamedCredential>`);
+  w("externalServiceRegistrations/Orders.externalServiceRegistration", `<?xml version="1.0"?><ExternalServiceRegistration><label>Orders</label><namedCredentialReference>ERP</namedCredentialReference></ExternalServiceRegistration>`);
+  w(
+    "flows/Send_Order.flow",
+    `<?xml version="1.0"?><Flow><processType>AutoLaunchedFlow</processType><status>Active</status><actionCalls><name>send</name><actionName>Orders.postOrder</actionName><actionType>externalService</actionType></actionCalls></Flow>`,
+  );
+  w("classes/PartnerClient.cls", "public class PartnerClient { void x(HttpRequest r) { r.setEndpoint('https://api.partner.example/v1'); } void y(HttpRequest r) { r.setEndpoint('https://direct.example.org/x'); } }");
+  w("classes/PartnerClient.cls-meta.xml", "<ApexClass/>");
+  w("classes/ErpClient.cls", "public class ErpClient { void x(HttpRequest r) { r.setEndpoint('callout:ERP/orders'); } }");
+  w("classes/ErpClient.cls-meta.xml", "<ApexClass/>");
+  w("connectedApps/Mobile.connectedApp", `<?xml version="1.0"?><ConnectedApp><label>Mobile</label><oauthConfig><callbackUrl>https://app.example.com/cb</callbackUrl><scopes>Api</scopes></oauthConfig></ConnectedApp>`);
   return root;
 }
 
@@ -133,6 +153,37 @@ describe("metadata_impact", () => {
     expect(r.text).toContain("1 other Apex class(es) or trigger(s) in the source");
     expect(r.text).toContain("no confirmed scope in this source");
     expect(r.text).not.toContain("Karim");
+  });
+
+  it("names the reports and dashboards on a field, and the outside systems that receive it", async () => {
+    const { call } = await connect();
+    const r = await call("metadata_impact", { context: "acme", changes: [{ type: "CustomField", name: "Policy__c.Status__c" }] });
+    expect(r.text).toMatch(/Reports and dashboards \(1 report\(s\), 1 dashboard\(s\)\) show, group or filter on it: check[^\n]*First 2: Report [^;]+; Dashboard [^\n]+ \(through a report\)\./);
+    // Reports are counted apart, not in the list of what depends on it.
+    expect(r.text).not.toMatch(/Depends on it[^#]*- Report /);
+    expect(r.text).toContain("An outside system receives it through 1 outbound message(s) (Policy__c.Notify_ERP to erp.example.com)");
+    expect(r.text).toContain("Change data capture publishes Policy__c changes (channel ChangeEvents)");
+    expect(r.text).not.toContain("Karim");
+
+    const site = await call("metadata_impact", { context: "acme", changes: [{ type: "RemoteSiteSetting", name: "Partner", change: "delete" }] });
+    expect(site.text).toContain("1 Apex class(es) call api.partner.example with an endpoint written in the code, not through a named credential: ApexClass PartnerClient.");
+  });
+
+  it("summarizes where the org connects, and finds what calls a host", async () => {
+    const { call } = await connect();
+    const r = await call("metadata_summary", { context: "acme" });
+    const section = r.text.slice(r.text.indexOf("Integrations"));
+    expect(section).toContain("- api.partner.example: through remote site setting Partner; an endpoint written in Apex; from ApexClass PartnerClient\n");
+    expect(section).toContain("- direct.example.org: through an endpoint written in Apex; from ApexClass PartnerClient [no remote site setting or named credential in the source allows this host]");
+    expect(section).toMatch(/- erp\.example\.com: through named credential ERP; outbound message Policy__c\.Notify_ERP \(sends 1 field\(s\) of Policy__c\); from [^\n]*ApexClass ErpClient/);
+    expect(section).toMatch(/- erp\.example\.com: [^\n]*ExternalServiceRegistration Orders "Orders"[^\n]*Flow Send_Order \(through one of these\)/);
+    expect(section).toContain('Connected apps (systems that sign in to the org):\n- ConnectedApp Mobile "Mobile": scopes Api; returns to app.example.com');
+    expect(section).toContain("Event channels (what subscribers outside the org receive):\n- ChangeEvents (change data capture): Policy__ChangeEvent");
+    expect(section).not.toContain("/hook");
+
+    const found = await call("metadata_search", { context: "acme", query: "erp.example.com" });
+    expect(found.text).toContain("- NamedCredential ERP");
+    expect(found.text).toContain("- WorkflowOutboundMessage Policy__c.Notify_ERP");
   });
 
   it("warns about saves a new rule can stop, deletes that break things, and what lies outside the scope", async () => {

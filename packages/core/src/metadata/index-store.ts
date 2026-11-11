@@ -484,6 +484,39 @@ export class MetadataIndex {
   }
 
   /**
+   * Components of these types in the source (not those only referenced), by type and name, at
+   * most `limit` (default 500); with `attr`, only those whose attrs have it (Apex with
+   * calloutHosts).
+   */
+  ofTypes(snapshot: number, types: readonly ComponentType[], options: { attr?: string; limit?: number } = {}): IndexedComponent[] {
+    if (!types.length) return [];
+    if (options.attr !== undefined && !/^[A-Za-z]\w*$/.test(options.attr)) throw new Error(`Not an attribute name: ${options.attr}`);
+    const limit = Math.min(Math.max(options.limit ?? 500, 1), 5_000);
+    const attr = options.attr ? `AND json_extract(c.attrs, '$.${options.attr}') IS NOT NULL` : "";
+    return (
+      this.db
+        .prepare(`SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.present = 1 AND c.type IN (${types.map(() => "?").join(", ")}) ${attr} ORDER BY c.type, c.name LIMIT ?`)
+        .all(snapshot, ...types, limit) as unknown as ComponentRow[]
+    ).map(toComponent);
+  }
+
+  /** Components that name this host (its `host`, or one of its `calloutHosts` or `callbackHosts`), by type and name. */
+  withHost(snapshot: number, host: string, limit = 200): IndexedComponent[] {
+    const h = host.trim().toLowerCase();
+    if (!h) return [];
+    return (
+      this.db
+        .prepare(
+          `SELECT ${COLUMNS} FROM component c WHERE c.snapshot = ? AND c.present = 1 AND (json_extract(c.attrs, '$.host') = ?
+             OR EXISTS (SELECT 1 FROM json_each(c.attrs, '$.calloutHosts') WHERE value = ?)
+             OR EXISTS (SELECT 1 FROM json_each(c.attrs, '$.callbackHosts') WHERE value = ?))
+           ORDER BY c.type, c.name LIMIT ?`,
+        )
+        .all(snapshot, h, h, h, Math.min(Math.max(limit, 1), 1_000)) as unknown as ComponentRow[]
+    ).map(toComponent);
+  }
+
+  /**
    * Apex the index cannot follow (queries built from strings, classes named at run time,
    * describes: its `dynamic` attr) or could not read (too large), by name.
    */

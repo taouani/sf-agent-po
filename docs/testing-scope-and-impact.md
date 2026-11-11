@@ -10,8 +10,8 @@ The scope and impact tools are in the published pre-release `sf-agent-po@next` (
 | --- | --- |
 | `metadata_index` | Fills the index from an org or a project folder (same as the `index` command). |
 | `metadata_sources` | Lists what is indexed, and how far a run has got. |
-| `metadata_summary` | Gives the objects of a source and their size. |
-| `metadata_search` | Finds components by name or label. |
+| `metadata_summary` | Gives the objects of a source and their size, and where the org connects (hosts, connected apps, event channels). |
+| `metadata_search` | Finds components by name or label, or what calls a host. |
 | `metadata_component` | Shows one component and what links to it. |
 | `scope_propose` | Opens the approval page where you confirm the objects the work touches. |
 | `scope_show` | Shows the confirmed scope: objects, fields, rules, automation, code, access. |
@@ -94,6 +94,8 @@ Ask the model to analyse the impact of a change (`metadata_impact`). Each case b
 | Outside the scope | A change on an object you did not confirm | Its dependents flagged as outside the confirmed scope. |
 | Unknown name | A field that is not indexed | Close matches. |
 | Weak links (real org) | A field used by dynamic SOQL, or an object with an inactive flow | The Apex the index cannot follow, and the inactive flow that would break once activated. |
+| Reports (real org, next.7) | A field shown or filtered on in reports | The number of reports and dashboards, and the first ten named. |
+| Integrations (real org, next.7) | A field sent by an outbound message, or an object with change data capture on | A weak link naming the outbound message and its host, or the change data capture channel. |
 
 The sample project is small, so the weak links can only be seen on a real org. For each case, note anything missing that you know is there, and anything listed that is wrong.
 

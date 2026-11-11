@@ -56,6 +56,16 @@ function objectOf(type: string, name: string, c?: IndexedComponent): string | un
 /** Types whose change is about who sees what. */
 const ACCESS_TYPES = new Set(["PermissionSet", "Profile", "PermissionSetGroup", "MutingPermissionSet"]);
 
+/** Reports, dashboards and report types: often many on one field, so counted apart and listed briefly. */
+const ANALYTICS = new Set(["Report", "Dashboard", "ReportType"]);
+/** Reports and dashboards named for one change. */
+const MAX_ANALYTICS = 10;
+
+/** The change event object of an object, which change data capture publishes: AccountChangeEvent, Policy__ChangeEvent. */
+export function changeEventOf(object: string): string {
+  return /__c$/i.test(object) ? `${object.slice(0, -3)}__ChangeEvent` : `${object}ChangeEvent`;
+}
+
 const inactive = (c: IndexedComponent) => c.type === "Flow" && typeof c.attrs.status === "string" && c.attrs.status !== "Active";
 
 /** The scope's components (objects, children and members), by id, or undefined without a confirmed scope in this source. */
@@ -78,7 +88,8 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
       description:
         "For each component the work adds, changes or deletes (objects, fields, validation rules, flows, Apex...), lists what depends on it in the index, one or two links away, " +
         "and flags the weak links: Apex the index cannot follow (queries built from strings, classes named at run time), inactive flows that would break once activated, " +
-        "dependents outside the confirmed scope, and the automation that saves records a new rule or required field can stop. Use it for the design's impact section and before a backlog.",
+        "dependents outside the confirmed scope, the automation that saves records a new rule or required field can stop, the reports and dashboards that use it, " +
+          "and the outside systems that receive it (outbound messages, change data capture). Use it for the design's impact section and before a backlog.",
       inputSchema: {
         context: contextName,
         source: sourceArg,
@@ -155,7 +166,8 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         const isGrant = (d: Related) => d.depth === 1 && d.kinds.every((k) => k === "grants" || k === "includes");
         const grantedBy = new Map<string, number>();
         for (const g of dependents.filter(isGrant)) grantedBy.set(g.component.type, (grantedBy.get(g.component.type) ?? 0) + 1);
-        const rest = dependents.filter((d) => !isGrant(d));
+        const analytics = dependents.filter((d) => !isGrant(d) && ANALYTICS.has(d.component.type));
+        const rest = dependents.filter((d) => !isGrant(d) && !ANALYTICS.has(d.component.type));
         if (rest.length) {
           const shown = rest.slice(0, MAX_DEPENDENTS);
           const lines = await Promise.all(
@@ -166,7 +178,16 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
             }),
           );
           out.push(`Depends on it (${rest.length}${rest.length > shown.length ? `, first ${shown.length}` : ""}):\n${lines.join("\n")}${rest.length > shown.length ? "\n- and more: narrow with metadata_component" : ""}`);
-        } else if (c) out.push("Nothing in the index depends on it.");
+        } else if (c && !analytics.length) out.push("Nothing in the index depends on it.");
+        if (analytics.length) {
+          const n = (t: string) => analytics.filter((a) => a.component.type === t).length;
+          const counts = [["Report", "report(s)"], ["Dashboard", "dashboard(s)"], ["ReportType", "report type(s)"]].filter(([t]) => n(t!)).map(([t, w]) => `${n(t!)} ${w}`);
+          const named = await Promise.all(analytics.slice(0, MAX_ANALYTICS).map(async (a) => `${(await line(pieces, a.component)).slice(2)}${a.depth > 1 ? " (through a report)" : ""}`));
+          out.push(
+            `Reports and dashboards (${counts.join(", ")}) show, group or filter on it${ch.change === "delete" ? ": they lose the column or filter, and a report filtered on it can show more rows than before" : ": check their columns and filters still make sense"}. ` +
+              `First ${named.length}: ${named.join("; ")}${analytics.length > named.length ? "; ..." : ""}.`,
+          );
+        }
         if (grantedBy.size) {
           out.push(`Access to it is given by ${[...grantedBy].map(([t, n]) => `${n} ${t}`).join(", ")}${ch.change === "add" ? "" : ": check that the change keeps the right people in and out"}.`);
         } else if (c && ["CustomField", "CustomObject", "ApexClass", "Flow"].includes(c.type) && ch.change !== "delete") flags.push("No permission set or profile in the index gives access to it.");
@@ -179,6 +200,29 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         }
 
         // Weak links.
+        // Outside systems that receive it: an outbound message sends the field, change data
+        // capture or a platform event channel publishes the object's changes.
+        const sent = rest.filter((d) => d.depth === 1 && d.component.type === "WorkflowOutboundMessage");
+        if (sent.length && ch.change !== "add") {
+          const names = await Promise.all(sent.slice(0, 10).map(async (d) => `${d.component.name}${typeof d.component.attrs.host === "string" ? ` to ${await pieces.mask(d.component.attrs.host)}` : ""}`));
+          flags.push(`An outside system receives it through ${sent.length} outbound message(s) (${names.join("; ")}): the system on the other end must accept the change.`);
+        }
+        if (object && ch.change !== "add") {
+          const event = index.component(snap.id, "CustomObject", changeEventOf(object));
+          const channels = event ? index.related(event.id, { kinds: ["reads"] }).filter((r) => r.direction === "in" && r.component.type === "PlatformEventChannelMember") : [];
+          if (channels.length) {
+            const names = [...new Set(channels.map((r) => (typeof r.component.attrs.channel === "string" ? r.component.attrs.channel : r.component.name)))];
+            flags.push(`Change data capture publishes ${objectShown} changes (channel ${names.join(", ")}): subscribers outside Salesforce receive this change and may need to handle it.`);
+          }
+        }
+        // A remote site setting or named credential: the Apex that calls its host.
+        if (c && (c.type === "RemoteSiteSetting" || c.type === "NamedCredential") && typeof c.attrs.host === "string") {
+          const callers = index.withHost(snap.id, c.attrs.host).filter((h) => (h.type === "ApexClass" || h.type === "ApexTrigger") && Array.isArray(h.attrs.calloutHosts));
+          if (callers.length) {
+            const names = await Promise.all(callers.slice(0, 20).map(async (a) => (await line(pieces, a)).slice(2)));
+            flags.push(`${callers.length} Apex class(es) call ${await pieces.mask(c.attrs.host)} with an endpoint written in the code, not through a named credential: ${names.join("; ")}${callers.length > 20 ? "; ..." : ""}.`);
+          }
+        }
         const inactiveDeps = rest.filter((d) => inactive(d.component));
         if (inactiveDeps.length) flags.push(`${inactiveDeps.length} inactive flow(s) depend on it: they would break when activated, and are easy to forget.`);
         if (scope) {
@@ -218,7 +262,9 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
         sections.push(out.join("\n\n"));
       }
       await recordChecked(kit, context, changes);
-      sections.push("The index does not see dynamic Apex, SOQL built from strings, long formula chains, reports and list views on fields, or anything outside Salesforce (integrations, ETL): say so where a conclusion depends on them.");
+      sections.push(
+        "The index does not see dynamic Apex, SOQL built from strings, long formula chains, list views on fields, reports in private folders, endpoints built at run time, or what outside systems do with what they receive (middleware, ETL, API clients of connected apps): say so where a conclusion depends on them.",
+      );
       return text(sections.join("\n\n"));
     }),
   );
