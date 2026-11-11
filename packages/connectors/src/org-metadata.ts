@@ -332,21 +332,23 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     // An empty listing is a CLI or permission problem, not an empty org: it must not replace
     // a good index.
     if (!entries.length) throw new Error(`The metadata listing of ${targetOrg} is empty: check that the user can view setup and configuration.`);
-    const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
     progress(`Reading when each component of ${targetOrg} last changed`);
-    const dates = await listDates(sf, targetOrg, entries.filter((e) => !ALWAYS.has(e.type)), { cwd: work, timeoutMs: wait * 60_000, heartbeat });
+    const { dates, folders, undated } = await listDates(sf, targetOrg, entries.filter((e) => !ALWAYS.has(e.type)), { cwd: work, timeoutMs: wait * 60_000, heartbeat });
     // Past the cap, only the most recently changed reports are kept, and the rest are said.
     const warnings: string[] = [];
-    const capped = capReports(entries, dates.Report ?? {}, options.maxReports ?? MAX_REPORTS);
+    const max = options.maxReports ?? MAX_REPORTS;
+    const capped = capReports(entries, dates.Report ?? {}, max, folders.Report);
     if (capped.left) {
       entries = capped.entries;
-      warnings.push(`${capped.left} reports were left out: only the ${(options.maxReports ?? MAX_REPORTS).toLocaleString("en")} most recently changed are retrieved`);
+      warnings.push(`${capped.left} ${capped.left === 1 ? "report was" : "reports were"} left out: only the ${max.toLocaleString("en")} most recently changed are retrieved`);
     }
+    if (undated.length) warnings.push(`The dates of ${undated.length === 1 ? "one folder" : `${undated.length} folders`} could not be listed, so ${undated.length === 1 ? "its" : "their"} reports or dashboards are retrieved again: ${undated.slice(0, 5).join(", ")}${undated.length > 5 ? ", …" : ""}`);
+    const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
     // The last tree, which an incremental run starts from: gone (deleted, or quarantined by an
     // antivirus) means a full run, as does a profile it has no copy of to merge into.
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
     const baseProfiles = base ? await profilesIn(base) : undefined;
-    const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now() }) : undefined;
+    const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : undefined;
     const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     let n = 0;
@@ -495,7 +497,7 @@ function changesSince(
   dates: Record<string, Record<string, string>>,
   types: readonly string[],
   baseProfiles: Set<string>,
-  { full, now }: { full?: boolean; now: number },
+  { full, now, leftOut }: { full?: boolean; now: number; /** Reports the cap left out: their files go, but they were not deleted. */ leftOut?: ReadonlySet<string> },
 ): { changed: Set<string>; deleted: number } | undefined {
   if (full || !pointer || pointer.layout !== LAYOUT || !pointer.fullAt || !pointer.members || !pointer.dates) return undefined;
   // An unreadable date counts as old.
@@ -521,7 +523,7 @@ function changesSince(
   for (const [type, members] of Object.entries(pointer.members)) {
     for (const m of members) {
       if (now_.has(`${type}\0${m}`)) continue;
-      deleted++;
+      if (!(type === "Report" && leftOut?.has(m))) deleted++;
       changed.add(groupOf(type, m));
     }
   }
@@ -557,37 +559,111 @@ async function profilesIn(tree: string): Promise<Set<string> | undefined> {
 /** A folder name the CLI is given as one argument: what Salesforce allows in one, and its "/" and "$". */
 const FOLDER_ARG = /^[\w$]+(?:\/[\w$]+)*$/;
 
+/** What listDates found: each member's date by type, the folders of each folder type, and the folders whose dates could not be listed. */
+interface Listed {
+  dates: Record<string, Record<string, string>>;
+  folders: Record<string, Set<string>>;
+  undated: string[];
+}
+
 /**
- * When each member of the entries' types last changed, from sf org list metadata; a type (or,
- * for reports and dashboards, a folder) whose listing fails is left out, and its members count
- * as changed.
+ * When each member of the entries' types last changed, from sf org list metadata; a type
+ * whose listing fails is left out, and its members count as changed. Reports, dashboards and
+ * their folders come from three queries (one listing per folder would start the CLI hundreds
+ * of times), or, when a query fails, from one listing per folder.
  */
-async function listDates(sf: SfRunner, targetOrg: string, entries: readonly ManifestEntry[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Record<string, Record<string, string>>> {
+async function listDates(sf: SfRunner, targetOrg: string, entries: readonly ManifestEntry[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Listed> {
   const { heartbeat, ...run } = opts;
-  const out: Record<string, Record<string, string>> = {};
-  // Reports and dashboards are listed folder by folder: their manifest lists each folder by
-  // name alone, before what it holds.
-  const queue: [string, string | undefined][] = entries.flatMap((e): [string, string | undefined][] =>
-    IN_FOLDERS.has(e.type) ? [...foldersOf(e.members)].filter((f) => FOLDER_ARG.test(f)).map((f) => [e.type, f]) : [[e.type, undefined]],
-  );
+  const out: Listed = { dates: {}, folders: {}, undated: [] };
+  const inFolders = entries.filter((e) => IN_FOLDERS.has(e.type));
+  const queried = inFolders.length ? await queryFolderDates(sf, targetOrg, run).catch(() => undefined) : undefined;
+  heartbeat();
+  if (queried) Object.assign(out, { dates: queried.dates, folders: queried.folders });
+  const queue: [string, string | undefined][] = entries.flatMap((e): [string, string | undefined][] => {
+    if (!IN_FOLDERS.has(e.type)) return [[e.type, undefined]];
+    if (queried) return [];
+    // Reports and dashboards are listed folder by folder: their manifest lists each folder by
+    // name alone, before what it holds.
+    out.folders[e.type] = foldersOf(e.members);
+    return [...out.folders[e.type]!].filter((f) => FOLDER_ARG.test(f)).map((f) => [e.type, f]);
+  });
   const worker = async () => {
     for (let next = queue.shift(); next; next = queue.shift()) {
       const [type, folder] = next;
       try {
         const result: unknown = await sf(["org", "list", "metadata", "--metadata-type", type, ...(folder ? ["--folder", folder] : []), "--target-org", targetOrg], run);
         const rows = Array.isArray(result) ? result : result ? [result] : [];
-        const dates = (out[type] ??= {});
+        const dates = (out.dates[type] ??= {});
         for (const r of rows as { fullName?: unknown; lastModifiedDate?: unknown }[]) {
           if (typeof r?.fullName === "string" && typeof r.lastModifiedDate === "string") dates[r.fullName] = r.lastModifiedDate;
         }
       } catch {
         // Without dates, every member of the type (or folder) counts as changed.
+        if (folder) out.undated.push(folder);
       }
       heartbeat();
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
   return out;
+}
+
+/** The three queries for reports, dashboards and their folders: SOQL in files, so that no quote or space reaches a shell. */
+const FOLDER_QUERIES = {
+  folders: "SELECT Id, DeveloperName, NamespacePrefix, ParentId, Type, LastModifiedDate FROM Folder WHERE Type IN ('Report', 'Dashboard')",
+  reports: "SELECT DeveloperName, NamespacePrefix, OwnerId, LastModifiedDate FROM Report",
+  dashboards: "SELECT DeveloperName, NamespacePrefix, FolderId, LastModifiedDate FROM Dashboard",
+};
+
+type Row = Record<string, unknown>;
+
+/**
+ * Report and dashboard dates, by full name ("Sales/Q1/Pipeline"), and their folders' dates,
+ * from SOQL. A report in no folder of the list is in unfiled$public when the org owns it, and
+ * private (not retrievable, left out) when a user does.
+ */
+async function queryFolderDates(sf: SfRunner, targetOrg: string, run: { cwd: string; timeoutMs: number }): Promise<{ dates: Listed["dates"]; folders: Listed["folders"] }> {
+  const query = async (name: keyof typeof FOLDER_QUERIES): Promise<Row[]> => {
+    await writeFile(path.join(run.cwd, `${name}.soql`), FOLDER_QUERIES[name]);
+    const result = (await sf(["data", "query", "--file", `${name}.soql`, "--target-org", targetOrg], run)) as { records?: unknown } | undefined;
+    if (!Array.isArray(result?.records)) throw new Error(`sf data query gave no records for ${name}`);
+    return result.records as Row[];
+  };
+  const [folders, reports, dashboards] = [await query("folders"), await query("reports"), await query("dashboards")];
+  const apiName = (r: Row) => {
+    const dev = typeof r.DeveloperName === "string" ? r.DeveloperName : undefined;
+    const ns = typeof r.NamespacePrefix === "string" && r.NamespacePrefix ? `${r.NamespacePrefix}__` : "";
+    return dev ? `${ns}${dev}` : undefined;
+  };
+  const byId = new Map(folders.map((f) => [String(f.Id), f]));
+  const pathOf = (id: unknown, depth = 0): string | undefined => {
+    const f = typeof id === "string" ? byId.get(id) : undefined;
+    const name = f && apiName(f);
+    if (!f || !name || depth > 20) return undefined;
+    if (!f.ParentId) return name;
+    const parent = pathOf(f.ParentId, depth + 1);
+    return parent ? `${parent}/${name}` : undefined;
+  };
+  const dates: Listed["dates"] = { Report: {}, Dashboard: {} };
+  const found: Listed["folders"] = { Report: new Set(), Dashboard: new Set() };
+  for (const f of folders) {
+    const type = f.Type === "Dashboard" ? "Dashboard" : "Report";
+    const p = pathOf(f.Id);
+    if (!p) continue;
+    found[type]!.add(p);
+    if (typeof f.LastModifiedDate === "string") dates[type]![p] = f.LastModifiedDate;
+  }
+  const place = (type: "Report" | "Dashboard", rows: Row[], folderKey: string) => {
+    for (const r of rows) {
+      const name = apiName(r);
+      const owner = r[folderKey];
+      const folder = pathOf(owner) ?? (typeof owner === "string" && owner.startsWith("00D") ? "unfiled$public" : undefined);
+      if (name && folder && typeof r.LastModifiedDate === "string") dates[type]![`${folder}/${name}`] = r.LastModifiedDate;
+    }
+  };
+  place("Report", reports, "OwnerId");
+  place("Dashboard", dashboards, "FolderId");
+  return { dates, folders: found };
 }
 
 /**
@@ -602,17 +678,24 @@ function foldersOf(members: readonly string[]): Set<string> {
 
 /**
  * The entries with at most `max` reports: the most recently changed first, those without a
- * date last. Report folders all stay.
+ * date before them. Report folders (those the org listed, and those holding a member) all stay.
  */
-export function capReports(entries: readonly ManifestEntry[], dates: Record<string, string>, max: number): { entries: ManifestEntry[]; left: number } {
+export function capReports(
+  entries: readonly ManifestEntry[],
+  dates: Record<string, string>,
+  max: number,
+  knownFolders: ReadonlySet<string> = new Set(),
+): { entries: ManifestEntry[]; left: number; dropped: Set<string> } {
   const e = entries.find((x) => x.type === "Report");
-  const folders = foldersOf(e?.members ?? []);
+  const folders = new Set([...foldersOf(e?.members ?? []), ...knownFolders]);
   const reports = e?.members.filter((m) => m.includes("/") && !folders.has(m)) ?? [];
-  if (!e || reports.length <= max) return { entries: [...entries], left: 0 };
-  const newest = [...reports].sort((a, b) => (dates[b] ?? "").localeCompare(dates[a] ?? "") || (a < b ? -1 : 1)).slice(0, max);
+  if (!e || reports.length <= max) return { entries: [...entries], left: 0, dropped: new Set() };
+  // A report without a date (its folder's listing failed) may be the newest: it comes first.
+  const key = (m: string) => dates[m] ?? "\uffff";
+  const newest = [...reports].sort((a, b) => (key(a) > key(b) ? -1 : key(a) < key(b) ? 1 : a < b ? -1 : 1)).slice(0, max);
   const kept = new Set(newest);
   const members = e.members.filter((m) => folders.has(m) || !m.includes("/") || kept.has(m));
-  return { entries: entries.map((x) => (x === e ? { ...x, members } : x)), left: reports.length - max };
+  return { entries: entries.map((x) => (x === e ? { ...x, members } : x)), left: reports.length - max, dropped: new Set(reports.filter((m) => !kept.has(m))) };
 }
 
 /** The file naming an org's last complete retrieval. */

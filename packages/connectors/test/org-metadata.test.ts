@@ -27,6 +27,8 @@ function fakeSf(
     permissionSets?: Record<string, string[]>;
     /** Members the org lists but does not return, as `type:member`. */
     skip?: Set<string>;
+    /** What sf data query returns, by the queried object; without it, queries fail. */
+    soql?: Record<string, Record<string, unknown>[]>;
   } = {},
 ): SfRunner {
   return async (args, opts = {}) => {
@@ -39,6 +41,12 @@ function fakeSf(
       if (["Report", "Dashboard"].includes(type) && !folder) return [];
       const inFolder = (m: string) => !folder || (m.startsWith(`${folder}/`) && !m.slice(folder.length + 1).includes("/"));
       return (org[type] ?? []).filter(inFolder).map((m) => ({ fullName: m, type, lastModifiedDate: behaviour.dates![`${type}:${m}`] ?? "2026-11-01T00:00:00.000Z" }));
+    }
+    if (args[0] === "data" && args[1] === "query") {
+      const query = readFileSync(path.join(opts.cwd!, args[args.indexOf("--file") + 1]!), "utf8");
+      const from = /FROM (\w+)/.exec(query)![1]!;
+      if (!behaviour.soql?.[from]) throw new Error("sf data query failed: INVALID_TYPE");
+      return { records: behaviour.soql[from], totalSize: behaviour.soql[from].length, done: true };
     }
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
     // Like the real CLI, which refuses both commands outside a Salesforce project.
@@ -77,6 +85,10 @@ function fakeSf(
           if (e.type === "Report") {
             if (m.includes("/")) write(`reports/${m}.report`, `<?xml version="1.0"?><Report><columns><field>Policy__c$Premium__c</field></columns><name>${m}</name></Report>`);
             else write(`reports/${m}-meta.xml`, `<?xml version="1.0"?><ReportFolder><name>${m}</name></ReportFolder>`);
+          }
+          if (e.type === "Dashboard") {
+            if (m.includes("/")) write(`dashboards/${m}.dashboard`, `<?xml version="1.0"?><Dashboard><title>${m}</title></Dashboard>`);
+            else write(`dashboards/${m}-meta.xml`, `<?xml version="1.0"?><DashboardFolder><name>${m}</name></DashboardFolder>`);
           }
           if (e.type === "PermissionSet") {
             write(`permissionsets/${m}.permissionset`, `<?xml version="1.0"?><PermissionSet>${(behaviour.permissionSets?.[m] ?? []).map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<label>${m}</label></PermissionSet>`);
@@ -327,7 +339,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const sf = fakeSf(org, calls, { dates, asked });
     const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
     expect(calls.some((c) => c.args.includes("--folder") && c.args[c.args.indexOf("--folder") + 1] === "Sales")).toBe(true);
-    expect(first.warnings).toContain("1 reports were left out: only the 2 most recently changed are retrieved");
+    expect(first.warnings).toContain("1 report was left out: only the 2 most recently changed are retrieved");
     expect(readdirSync(path.join(first.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
     expect(existsSync(path.join(first.dir, "metadata", "reports", "Sales-meta.xml"))).toBe(true);
     // Nothing changed: the reports keep their dates and are not retrieved again.
@@ -336,15 +348,57 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     expect(second.incremental).toBeDefined();
     expect(asked.flat().find((e) => e.type === "Report")?.members ?? []).toEqual(["Sales"]);
     expect(readdirSync(path.join(second.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
+    // A report the cap leaves out is not counted as deleted.
+    dates["Report:Sales/A"] = "2026-11-10T00:00:00.000Z";
+    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    expect(third.incremental?.deleted).toBe(0);
+    expect(readdirSync(path.join(third.dir, "metadata", "reports", "Sales")).sort()).toEqual(["A.report", "B.report"]);
   });
 
-  it("caps reports, folders kept, undated ones last", () => {
+  it("reads report, dashboard and folder dates from three queries, not one listing per folder", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["X"], Report: ["Sales", "Sales/Q1", "Sales/Q1/A", "unfiled$public", "unfiled$public/U"], Dashboard: ["Board", "Board/D"] };
+    const soql = {
+      Folder: [
+        { Id: "00l1", DeveloperName: "Sales", ParentId: null, Type: "Report", LastModifiedDate: "2026-01-01T00:00:00.000+0000" },
+        { Id: "00l2", DeveloperName: "Q1", ParentId: "00l1", Type: "Report", LastModifiedDate: "2026-01-02T00:00:00.000+0000" },
+        { Id: "00l3", DeveloperName: "Board", ParentId: null, Type: "Dashboard", LastModifiedDate: "2026-01-03T00:00:00.000+0000" },
+      ],
+      Report: [
+        { DeveloperName: "A", OwnerId: "00l2", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { DeveloperName: "U", OwnerId: "00D000000000001", LastModifiedDate: "2026-02-02T00:00:00.000+0000" },
+        { DeveloperName: "Mine", OwnerId: "005000000000001", LastModifiedDate: "2026-02-03T00:00:00.000+0000" },
+      ],
+      Dashboard: [{ DeveloperName: "D", FolderId: "00l3", LastModifiedDate: "2026-02-04T00:00:00.000+0000" }],
+    };
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const asked: { type: string; members: string[] }[][] = [];
+    const sf = fakeSf(org, calls, { dates: {}, asked, soql });
+    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(calls.filter((c) => c.args.includes("--folder"))).toEqual([]);
+    expect(calls.filter((c) => c.args[0] === "data").length).toBe(3);
+    const pointer = JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { dates: Record<string, Record<string, string>> };
+    expect(pointer.dates.Report).toMatchObject({ "Sales/Q1/A": "2026-02-01T00:00:00.000+0000", "unfiled$public/U": "2026-02-02T00:00:00.000+0000" });
+    // Nothing changed: no report or dashboard, nor their folders, is retrieved again.
+    asked.length = 0;
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(second.incremental).toBeDefined();
+    expect(asked.flat().filter((e) => e.type === "Report" || e.type === "Dashboard")).toEqual(
+      // unfiled$public is no folder the query lists: it has no date, so it is asked again.
+      [{ type: "Report", members: ["unfiled$public"] }],
+    );
+  });
+
+  it("caps reports, folders kept, undated ones first", () => {
     const entries = [{ type: "Report", members: ["F", "F/G", "F/G/a", "F/b", "F/c"] }, { type: "ApexClass", members: ["X"] }];
     expect(capReports(entries, { "F/G/a": "2026-02-01", "F/c": "2026-03-01" }, 2)).toEqual({
-      entries: [{ type: "Report", members: ["F", "F/G", "F/G/a", "F/c"] }, { type: "ApexClass", members: ["X"] }],
+      entries: [{ type: "Report", members: ["F", "F/G", "F/b", "F/c"] }, { type: "ApexClass", members: ["X"] }],
       left: 1,
+      dropped: new Set(["F/G/a"]),
     });
     expect(capReports(entries, {}, 5).left).toBe(0);
+    // An empty folder the org listed is no report.
+    expect(capReports([{ type: "Report", members: ["F", "F/Empty", "F/a", "F/b"] }], {}, 2, new Set(["F", "F/Empty"])).left).toBe(0);
   });
 
   it("merges access: what was retrieved wins, the rest of the last copy stays, changed components lose theirs", () => {
