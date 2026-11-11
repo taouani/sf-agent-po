@@ -131,6 +131,69 @@ describe("cutting text for the model", () => {
   });
 });
 
+describe("running short pieces together", () => {
+  /** One token per word, every capitalised word a person; runBatch records each batch's size. */
+  const fakeRunner = (fail?: (encs: readonly unknown[]) => boolean) => {
+    const batches: number[] = [];
+    const single: number[] = [];
+    const logitsOf = (tokens: string[]) => Float32Array.from(tokens.flatMap((t) => (/^\p{Lu}/u.test(t) && !t.startsWith("[") ? [0, 5] : [5, 0])));
+    const runner: ModelRunner = {
+      id2label: { 0: "O", 1: "B-PER" },
+      encode: (text) => {
+        const tokens = ["[CLS]", ...text.split(/\s+/u).filter(Boolean), "[SEP]"];
+        const ids = tokens.map(() => 1);
+        return { ids, tokens, attention_mask: ids };
+      },
+      run: async (enc) => {
+        single.push(enc.ids.length);
+        return { logits: logitsOf(enc.tokens), seqLen: enc.tokens.length, numLabels: 2 };
+      },
+      runBatch: async (encs) => {
+        batches.push(encs.length);
+        if (fail?.(encs)) throw new Error("batch failed");
+        return encs.map((e) => ({ logits: logitsOf(e.tokens), seqLen: e.tokens.length, numLabels: 2 }));
+      },
+    };
+    return { runner, batches, single };
+  };
+
+  it("runs strings that come at once in batches of at most 32, with the same spans as one at a time", async () => {
+    const { runner, batches, single } = fakeRunner();
+    const detect = detectorFor(runner);
+    const texts = Array.from({ length: 70 }, (_, i) => `ticket ${i} for Sarah${i} and Tom`);
+    const one = [];
+    for (const t of texts.slice(0, 3)) one.push(await detect(t));
+    expect(batches).toEqual([1, 1, 1]);
+    batches.length = 0;
+    const all = await Promise.all(texts.map((t) => detect(t)));
+    expect(batches).toEqual([32, 32, 6]);
+    expect(all.slice(0, 3)).toEqual(one);
+    for (const [i, spans] of all.entries()) expect(spans.map((sp) => texts[i]!.slice(sp.start, sp.end))).toEqual([`Sarah${i}`, "Tom"]);
+    // A long piece runs alone.
+    expect(single).toEqual([]);
+    await detect(`${"word ".repeat(200)}Sarah`);
+    expect(single).toHaveLength(1);
+  });
+
+  it("answers in the order the pieces came, and a failed batch fails only its own callers", async () => {
+    const { runner } = fakeRunner((encs) => encs.length === 2);
+    const detect = detectorFor(runner);
+    const order: number[] = [];
+    const first = Promise.all([0, 1].map((i) => detect(`a ${i} Sarah`).then(() => order.push(i))));
+    await expect(first).rejects.toThrow("batch failed");
+    const later = await Promise.all([2, 3, 4].map((i) => detect(`b ${i} Tom`).then((r) => (order.push(i), r))));
+    expect(order).toEqual([2, 3, 4]);
+    expect(later.every((r) => r.length === 1)).toBe(true);
+  });
+
+  it("keeps a runner without batches as it was", async () => {
+    const { runner, single } = fakeRunner();
+    delete runner.runBatch;
+    await Promise.all(["Sarah came", "Tom left"].map((t) => detectorFor(runner)(t)));
+    expect(single).toHaveLength(2);
+  });
+});
+
 describe("running the model one call at a time", () => {
   it("starts each piece of work after the last one ends, in order, and a failure stops nothing", async () => {
     const queue = serialQueue();
@@ -311,6 +374,26 @@ describe.runIf(process.env.SF_AGENT_PO_MODEL_TEST === "1")("the detection model"
       // The same spans as a call made alone, and each text's own person.
       expect(all[0]).toEqual(alone);
       for (const [i, spans] of all.entries()) expect(spans.map((s) => texts[i]!.slice(s.start, s.end))).toContain(people[i % 4]);
+    } finally {
+      await model.release();
+    }
+  });
+
+  it("finds the same spans in short strings run together as one at a time, faster", { timeout: 600_000 }, async () => {
+    const model = await loadDetectionModel();
+    try {
+      // The samples, and short strings as metadata and Jira fields are.
+      const texts = [...SAMPLES.map((s) => s.text), ...SAMPLES.flatMap((s) => s.text.split(/(?<=[.!?])\s+/u)).filter((t) => t.trim())].slice(0, 200);
+      let t0 = performance.now();
+      const alone: Span[][] = [];
+      for (const t of texts) alone.push(await model.detect(t));
+      const oneAtATime = performance.now() - t0;
+      t0 = performance.now();
+      const together = await Promise.all(texts.map((t) => model.detect(t)));
+      const batched = performance.now() - t0;
+      console.log(`${texts.length} strings: one at a time ${Math.round(oneAtATime)} ms, together ${Math.round(batched)} ms (${(oneAtATime / batched).toFixed(1)}x)`);
+      expect(together).toEqual(alone);
+      expect(batched).toBeLessThan(oneAtATime);
     } finally {
       await model.release();
     }

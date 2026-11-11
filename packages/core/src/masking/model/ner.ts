@@ -44,9 +44,22 @@ export interface Encoded {
 export interface ModelRunner {
   encode(text: string): Encoded;
   /** Runs the model on one encoded piece; returns logits as [seqLen × numLabels]. */
-  run(enc: Encoded): Promise<{ logits: Float32Array; seqLen: number; numLabels: number }>;
+  run(enc: Encoded): Promise<Logits>;
+  /** Runs the model once on several pieces, padded to the longest; returns each piece's own logits. */
+  runBatch?(encs: readonly Encoded[]): Promise<Logits[]>;
   id2label: Readonly<Record<string, string>>;
 }
+
+export interface Logits {
+  logits: Float32Array;
+  seqLen: number;
+  numLabels: number;
+}
+
+/** Short pieces (metadata text, table cells, Jira fields) go to the model together, at most this many at once. */
+export const MAX_BATCH = 32;
+/** A piece of at most this many tokens is short enough to wait for others. */
+export const SHORT_TOKENS = 128;
 
 export interface DetectionModel {
   detect: EntityDetector;
@@ -96,8 +109,46 @@ export function splitText(text: string, max = MAX_CHARS): [number, number][] {
   return out;
 }
 
-/** The detector over a runner: pieces that are too long for the model are halved until they fit. */
+/**
+ * Collects short pieces that arrive while the model is busy (or within the same turn of the
+ * event loop) and runs them in one call, up to MAX_BATCH at a time, in the order they came.
+ */
+export function batcher(runBatch: NonNullable<ModelRunner["runBatch"]>, max = MAX_BATCH): (enc: Encoded) => Promise<Logits> {
+  const waiting: { enc: Encoded; resolve: (l: Logits) => void; reject: (e: unknown) => void }[] = [];
+  let busy = false;
+  let scheduled = false;
+  const pump = async () => {
+    scheduled = false;
+    if (busy || !waiting.length) return;
+    busy = true;
+    const group = waiting.splice(0, max);
+    try {
+      const out = await runBatch(group.map((w) => w.enc));
+      group.forEach((w, i) => w.resolve(out[i]!));
+    } catch (err) {
+      for (const w of group) w.reject(err);
+    } finally {
+      busy = false;
+      if (waiting.length) void pump();
+    }
+  };
+  return (enc) =>
+    new Promise<Logits>((resolve, reject) => {
+      waiting.push({ enc, resolve, reject });
+      // Callers that start together (Promise.all over many strings) all get in first.
+      if (!busy && !scheduled) {
+        scheduled = true;
+        setImmediate(() => void pump());
+      }
+    });
+}
+
+/**
+ * The detector over a runner: pieces that are too long for the model are halved until they
+ * fit; short ones are run together when the runner can (runBatch), long ones alone.
+ */
 export function detectorFor(runner: ModelRunner, stats: DecodeStats = { tokens: 0, unaligned: 0 }): EntityDetector {
+  const together = runner.runBatch ? batcher(runner.runBatch.bind(runner)) : undefined;
   const piece = async (text: string, offset: number): Promise<Span[]> => {
     if (!text.trim()) return [];
     const enc = runner.encode(text);
@@ -105,7 +156,7 @@ export function detectorFor(runner: ModelRunner, stats: DecodeStats = { tokens: 
       const [[, mid]] = splitText(text, Math.ceil(text.length / 2)) as [[number, number]];
       return [...(await piece(text.slice(0, mid), offset)), ...(await piece(text.slice(mid), offset + mid))];
     }
-    const { logits, seqLen, numLabels } = await runner.run(enc);
+    const { logits, seqLen, numLabels } = together && enc.ids.length <= SHORT_TOKENS ? await together(enc) : await runner.run(enc);
     return decodeSpans(text, enc.tokens, logits, seqLen, numLabels, runner.id2label, stats).map((s) => ({
       ...s,
       start: s.start + offset,
@@ -170,6 +221,8 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
   // The checked bytes go straight to the runtime: no second read, no copy.
   const session = await ort.InferenceSession.create(onnx, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
   const oneAtATime = queueFor(ort);
+  // Padding is never attended to, so any id would do; the model's own keeps it tidy.
+  const padId = typeof config.pad_token_id === "number" ? config.pad_token_id : 0;
   const runner: ModelRunner = {
     id2label: (config.id2label ?? {}) as Record<string, string>,
     encode: (text) => tokenizer.encode(text, { return_token_type_ids: true }) as Encoded,
@@ -187,6 +240,28 @@ export async function loadDetectionModel(opts: ModelOptions = {}): Promise<Detec
       const logits = out.logits ?? out[session.outputNames[0]!]!;
       const [, seqLen, numLabels] = logits.dims as number[];
       return { logits: logits.data as Float32Array, seqLen: seqLen!, numLabels: numLabels! };
+    },
+    async runBatch(encs) {
+      if (encs.length === 1) return [await this.run(encs[0]!)];
+      const width = Math.max(...encs.map((e) => e.ids.length));
+      const tensor = (pick: (e: Encoded) => readonly number[], pad: number) => {
+        const data = new BigInt64Array(encs.length * width).fill(BigInt(pad));
+        encs.forEach((e, b) => pick(e).forEach((v, i) => (data[b * width + i] = BigInt(v))));
+        return new ort.Tensor("int64", data, [encs.length, width]);
+      };
+      const feeds: Record<string, Ort.Tensor> = {};
+      for (const name of session.inputNames) {
+        if (name === "input_ids") feeds[name] = tensor((e) => e.ids, padId);
+        else if (name === "attention_mask") feeds[name] = tensor((e) => e.attention_mask, 0);
+        else if (name === "token_type_ids") feeds[name] = tensor((e) => e.token_type_ids ?? new Array<number>(e.ids.length).fill(0), 0);
+        else throw new Error(`Unexpected model input ${name}`);
+      }
+      const out = await oneAtATime(() => session.run(feeds));
+      const logits = out.logits ?? out[session.outputNames[0]!]!;
+      const [, rows, numLabels] = logits.dims as number[];
+      const data = logits.data as Float32Array;
+      // Each piece's own rows, without its padding.
+      return encs.map((e, b) => ({ logits: data.slice(b * rows! * numLabels!, (b * rows! + e.ids.length) * numLabels!), seqLen: e.ids.length, numLabels: numLabels! }));
     },
   };
   const stats: DecodeStats = { tokens: 0, unaligned: 0 };

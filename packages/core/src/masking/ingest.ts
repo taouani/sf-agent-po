@@ -392,24 +392,51 @@ export class Masker {
    * phone or card number may be stored as one) and becomes a string only when masked.
    * Items are masked one after another, so pseudonyms are numbered the same way each time.
    */
-  private async maskValue(context: string, value: unknown, dictionary: readonly DictionaryEntry[], report: MaskReport): Promise<unknown> {
-    if (typeof value === "string") return this.maskInto(context, value, dictionary, report);
-    if (typeof value === "number" || typeof value === "bigint") {
-      const text = String(value);
-      const masked = await this.maskInto(context, text, dictionary, report);
-      return masked === text ? value : masked;
-    }
-    if (Array.isArray(value)) {
-      const out: unknown[] = [];
-      for (const v of value) out.push(await this.maskValue(context, v, dictionary, report));
-      return out;
-    }
-    if (value && typeof value === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value)) out[await this.maskInto(context, k, dictionary, report)] = await this.maskValue(context, v, dictionary, report);
-      return out;
-    }
-    return value;
+  /**
+   * Masks every string in a value (keys and values; numbers as text). The detection runs on
+   * all of them at once, so the model takes the short ones together; pseudonyms are then given
+   * in the order the strings come, as one at a time would.
+   */
+  private async maskValue(context: string, value: unknown, dictionary: readonly DictionaryEntry[], report: MaskReport, extra: readonly string[] = []): Promise<{ value: unknown; extra: string[] }> {
+    const strings: string[] = [...extra];
+    const collect = (v: unknown): void => {
+      if (typeof v === "string") strings.push(v);
+      else if (typeof v === "number" || typeof v === "bigint") strings.push(String(v));
+      else if (Array.isArray(v)) v.forEach(collect);
+      else if (v && typeof v === "object")
+        for (const [k, x] of Object.entries(v)) {
+          strings.push(k);
+          collect(x);
+        }
+    };
+    collect(value);
+    const spans = await Promise.all(strings.map((t) => this.spansFor(context, t, dictionary, report)));
+    let i = 0;
+    // Called even with no spans: the vault also hides text that looks like a pseudonym.
+    const next = () => {
+      const t = strings[i]!;
+      const found = spans[i++]!;
+      return t.trim() ? this.opts.vault.mask(context, t, found) : t;
+    };
+    const masked = extra.map(() => next());
+    const build = (v: unknown): unknown => {
+      if (typeof v === "string") return next();
+      if (typeof v === "number" || typeof v === "bigint") {
+        const out = next();
+        return out === String(v) ? v : out;
+      }
+      if (Array.isArray(v)) return v.map(build);
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [, x] of Object.entries(v)) {
+          const k = next();
+          out[k] = build(x);
+        }
+        return out;
+      }
+      return v;
+    };
+    return { value: build(value), extra: masked };
   }
 
   /** The pseudonym that stands for a document's source in the store, such as "[SOURCE_3]". */
@@ -431,9 +458,10 @@ export class Masker {
   async maskDocument(context: string, doc: NewDocument, dictionary: readonly DictionaryEntry[] = []): Promise<NewDocument & { masked: true }> {
     if (doc.masked) throw new Error(`The document ${this.maskSource(context, doc.source)} is already masked.`);
     const report: MaskReport = { counts: {}, model: Boolean(this.opts.model) };
-    const title = await this.maskInto(context, doc.title, dictionary, report);
-    const content = await this.maskInto(context, doc.content, dictionary, report);
-    const metadata = (await this.maskValue(context, doc.metadata ?? {}, dictionary, report)) as Record<string, unknown>;
+    // The title, the content and every metadata string in one go, masked in that order.
+    const out = await this.maskValue(context, doc.metadata ?? {}, dictionary, report, [doc.title, doc.content]);
+    const [title, content] = out.extra as [string, string];
+    const metadata = out.value as Record<string, unknown>;
     return { ...doc, source: this.maskSource(context, doc.source), title, content, metadata: { ...metadata, masking: report }, masked: true };
   }
 

@@ -88,6 +88,24 @@ describe("masking inputs", () => {
     await expect(masker.maskDocument("acme", { ...doc })).rejects.toThrow(/already masked/);
   });
 
+  it("asks the model about all of a document's strings at once, and numbers pseudonyms in their order", async () => {
+    let running = 0;
+    let most = 0;
+    const names = ["Ann Lee", "Bo Chen", "Cy Diaz"];
+    // Answers later strings first, as a batch might.
+    const slow: EntityDetector = async (text) => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, names.findIndex((n) => text.includes(n)) >= 0 ? 30 - 10 * names.findIndex((n) => text.includes(n)) : 0));
+      running--;
+      return fakeModel(names)(text);
+    };
+    const { masker } = setup(slow);
+    const doc = await masker.maskDocument("acme", { kind: "other", title: "From Ann Lee", source: "x", content: "Bo Chen replied.", metadata: { cc: ["Cy Diaz"] } });
+    expect(most).toBeGreaterThan(1);
+    expect([doc.title, doc.content, (doc.metadata as { cc: string[] }).cc[0]]).toEqual(["From [PERSON_1]", "[PERSON_2] replied.", "[PERSON_3]"]);
+  });
+
   it("stores added documents masked, with no original in clear", async () => {
     const { db, contexts, masker } = setup(fakeModel(["Sarah Whitfield"]));
     const [doc] = await masker.addDocuments(contexts, "acme", [{ kind: "email", title: "Re: VIP", source: "mail-1", content: "From Sarah Whitfield <sarah@example.com>" }]);
