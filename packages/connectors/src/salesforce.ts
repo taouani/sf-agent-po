@@ -20,8 +20,8 @@ export interface SObjectDescribe {
 /** Runs `sf` with these arguments (and --json) and returns its `result` payload. */
 export type SfRunner = (args: string[], opts?: { cwd?: string; timeoutMs?: number }) => Promise<any>;
 
-/** Characters allowed in org aliases, usernames and object names passed to the CLI. */
-const SAFE_ARG = /^[\w.@+-]+$/;
+/** Characters allowed in org aliases, usernames, object and folder names passed to the CLI: none cmd.exe reads ("/" and "$" it does not). */
+const SAFE_ARG = /^[\w.@+$\/-]+$/;
 
 /** Runs the Salesforce CLI with --json and returns its `result` payload. */
 export const defaultSfRunner: SfRunner = async (args, opts = {}) => {

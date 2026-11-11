@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ReportType xmlns="http://soap.sforce.com/2006/04/metadata">
+    <baseObject>Policy__c</baseObject>
+    <category>other</category>
+    <deployed>true</deployed>
+    <description>Policies and their claims</description>
+    <join><outerJoin>true</outerJoin><relationship>Claims__r</relationship></join>
+    <label>Policies with Claims</label>
+    <sections>
+        <columns><checkedByDefault>true</checkedByDefault><field>Premium__c</field><table>Policy__c</table></columns>
+        <columns><checkedByDefault>false</checkedByDefault><field>Amount__c</field><table>Policy__c.Claims__r</table></columns>
+        <masterLabel>Policies</masterLabel>
+    </sections>
+</ReportType>

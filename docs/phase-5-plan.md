@@ -104,7 +104,7 @@ Each line says pass, warn or fail, with the fix. The output never shows a token 
 
 - **Readers.** Reports give their report type, columns, groupings and filter fields. Custom report types give their base object, joins and fields. Dashboards give their components and source reports. All become links, so `metadata_impact` on a field shows the reports and dashboards that use it.
 - **What is kept.** Filter values are never kept, since they can name people; only the field a filter is on. Report and dashboard names and descriptions are masked on the way out, like all metadata text.
-- **Org retrieval.** Reports sit in folders, so the run lists report and dashboard folders first, then their members. Private folders cannot be retrieved and are reported as skipped. Whether reports are retrieved by default is D3.
+- **Org retrieval.** Reports sit in folders, so the run lists report and dashboard dates one folder at a time. Salesforce does not list private folders, so their reports are not indexed. Per D3 (answer A), reports are retrieved by default, at most 5,000 per run, the most recently changed first; the rest are reported.
 
 **Integrations (RM1).**
 

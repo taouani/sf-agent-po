@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 /** The modules whose code decides what a file's components are. */
-const READERS = ["scan", "model", "objects", "flows", "apex", "markup", "access", "xml", "registry", "registry-data"];
+const READERS = ["scan", "model", "objects", "flows", "apex", "markup", "access", "reports", "xml", "registry", "registry-data"];
 
 /** The version of a package this module loads, from its package.json. */
 function packageVersion(name: string): string | undefined {

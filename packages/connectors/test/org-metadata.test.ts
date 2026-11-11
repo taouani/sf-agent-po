@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
 import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
-import { mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
+import { capReports, mergeAccess, readManifest, retrieveOrgMetadata, splitManifest, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
@@ -34,7 +34,11 @@ function fakeSf(
     if (args[0] === "org" && args[1] === "list" && args[2] === "metadata") {
       if (!behaviour.dates) throw new Error("sf org list failed: not in this fake");
       const type = args[args.indexOf("--metadata-type") + 1]!;
-      return (org[type] ?? []).map((m) => ({ fullName: m, type, lastModifiedDate: behaviour.dates![`${type}:${m}`] ?? "2026-11-01T00:00:00.000Z" }));
+      // Reports and dashboards are listed one folder at a time, like the real API.
+      const folder = args.includes("--folder") ? args[args.indexOf("--folder") + 1]! : undefined;
+      if (["Report", "Dashboard"].includes(type) && !folder) return [];
+      const inFolder = (m: string) => !folder || (m.startsWith(`${folder}/`) && !m.slice(folder.length + 1).includes("/"));
+      return (org[type] ?? []).filter(inFolder).map((m) => ({ fullName: m, type, lastModifiedDate: behaviour.dates![`${type}:${m}`] ?? "2026-11-01T00:00:00.000Z" }));
     }
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
     // Like the real CLI, which refuses both commands outside a Salesforce project.
@@ -70,6 +74,10 @@ function fakeSf(
       for (const e of wanted) {
         for (const m of e.members) {
           if (behaviour.skip?.has(`${e.type}:${m}`)) continue;
+          if (e.type === "Report") {
+            if (m.includes("/")) write(`reports/${m}.report`, `<?xml version="1.0"?><Report><columns><field>Policy__c$Premium__c</field></columns><name>${m}</name></Report>`);
+            else write(`reports/${m}-meta.xml`, `<?xml version="1.0"?><ReportFolder><name>${m}</name></ReportFolder>`);
+          }
           if (e.type === "PermissionSet") {
             write(`permissionsets/${m}.permissionset`, `<?xml version="1.0"?><PermissionSet>${(behaviour.permissionSets?.[m] ?? []).map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<label>${m}</label></PermissionSet>`);
           }
@@ -308,6 +316,35 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const sixth = await run();
     expect(sixth.incremental).toBeUndefined();
     expect(readdirSync(path.join(tree(sixth), "classes")).sort()).toEqual(["A.cls", "A.cls-meta.xml", "B.cls", "B.cls-meta.xml"]);
+  });
+
+  it("lists reports folder by folder, and keeps the most recently changed past the cap", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["X"], Report: ["Sales", "Sales/A", "Sales/B", "Sales/C"] };
+    const dates: Record<string, string> = { "Report:Sales/A": "2026-01-01T00:00:00.000Z", "Report:Sales/B": "2026-11-01T00:00:00.000Z", "Report:Sales/C": "2026-06-01T00:00:00.000Z" };
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const asked: { type: string; members: string[] }[][] = [];
+    const sf = fakeSf(org, calls, { dates, asked });
+    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    expect(calls.some((c) => c.args.includes("--folder") && c.args[c.args.indexOf("--folder") + 1] === "Sales")).toBe(true);
+    expect(first.warnings).toContain("1 reports were left out: only the 2 most recently changed are retrieved");
+    expect(readdirSync(path.join(first.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
+    expect(existsSync(path.join(first.dir, "metadata", "reports", "Sales-meta.xml"))).toBe(true);
+    // Nothing changed: the reports keep their dates and are not retrieved again.
+    asked.length = 0;
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    expect(second.incremental).toBeDefined();
+    expect(asked.flat().find((e) => e.type === "Report")?.members ?? []).toEqual(["Sales"]);
+    expect(readdirSync(path.join(second.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
+  });
+
+  it("caps reports, folders kept, undated ones last", () => {
+    const entries = [{ type: "Report", members: ["F", "F/G", "F/G/a", "F/b", "F/c"] }, { type: "ApexClass", members: ["X"] }];
+    expect(capReports(entries, { "F/G/a": "2026-02-01", "F/c": "2026-03-01" }, 2)).toEqual({
+      entries: [{ type: "Report", members: ["F", "F/G", "F/G/a", "F/c"] }, { type: "ApexClass", members: ["X"] }],
+      left: 1,
+    });
+    expect(capReports(entries, {}, 5).left).toBe(0);
   });
 
   it("merges access: what was retrieved wins, the rest of the last copy stays, changed components lose theirs", () => {

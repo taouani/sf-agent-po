@@ -9,16 +9,22 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
 /**
  * What is retrieved by default: what the index reads in detail, and what flows, Apex and
  * layouts point at. Email templates are retrieved for their merge fields; the index keeps
- * none of their text. Left out: types whose content is records or people's text
- * (documents, reports, custom metadata records) and large binaries (static resources).
+ * none of their text. Reports and dashboards are retrieved for the fields and reports they
+ * use; the index keeps no filter value. Left out: types whose content is records or people's
+ * text (documents, custom metadata records) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
   "CustomObject", "CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink",
   "BusinessProcess", "Flow", "ApexClass", "ApexTrigger", "ApexPage", "ApexComponent", "PermissionSet",
   "PermissionSetGroup", "Profile", "Layout", "LightningComponentBundle", "AuraDefinitionBundle", "QuickAction",
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
-  "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate",
+  "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
 ] as const;
+
+/** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */
+export const MAX_REPORTS = 5_000;
+/** Types kept in folders: their dates are listed one folder at a time. */
+const IN_FOLDERS = new Set(["Report", "Dashboard"]);
 
 /** Child types of an object: retrieved with their object, in its file. */
 const OBJECT_CHILDREN = new Set(["CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink", "BusinessProcess", "SharingReason", "Index"]);
@@ -42,7 +48,7 @@ const PROFILE_LISTS = [
 const MERGED = new Set(["Profile"]);
 const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate"]);
 /** Files of these types go when their type is retrieved again: an email folder with its templates. */
-const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate" };
+const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate", ReportFolder: "Report", DashboardFolder: "Dashboard" };
 
 /** A retrieval older than this is redone in full: dates can miss a change (access on a profile). */
 export const FULL_RETRIEVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -245,6 +251,8 @@ export interface RetrieveOptions {
   waitMinutes?: number;
   /** Retrieve everything, not only what changed since the last retrieval. */
   full?: boolean;
+  /** Reports retrieved at most (MAX_REPORTS by default), the most recently changed first. */
+  maxReports?: number;
 }
 
 /** The org id from `sf org display`, checked. */
@@ -318,13 +326,22 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     });
     heartbeat();
     const types = options.types ?? DEFAULT_ORG_TYPES;
-    const { entries, version } = readManifest(await readFile(path.join(work, "package.xml"), "utf8"), types);
+    const listed = readManifest(await readFile(path.join(work, "package.xml"), "utf8"), types);
+    const { version } = listed;
+    let { entries } = listed;
     // An empty listing is a CLI or permission problem, not an empty org: it must not replace
     // a good index.
     if (!entries.length) throw new Error(`The metadata listing of ${targetOrg} is empty: check that the user can view setup and configuration.`);
     const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
     progress(`Reading when each component of ${targetOrg} last changed`);
-    const dates = await listDates(sf, targetOrg, entries.map((e) => e.type).filter((t) => !ALWAYS.has(t)), { cwd: work, timeoutMs: wait * 60_000, heartbeat });
+    const dates = await listDates(sf, targetOrg, entries.filter((e) => !ALWAYS.has(e.type)), { cwd: work, timeoutMs: wait * 60_000, heartbeat });
+    // Past the cap, only the most recently changed reports are kept, and the rest are said.
+    const warnings: string[] = [];
+    const capped = capReports(entries, dates.Report ?? {}, options.maxReports ?? MAX_REPORTS);
+    if (capped.left) {
+      entries = capped.entries;
+      warnings.push(`${capped.left} reports were left out: only the ${(options.maxReports ?? MAX_REPORTS).toLocaleString("en")} most recently changed are retrieved`);
+    }
     // The last tree, which an incremental run starts from: gone (deleted, or quarantined by an
     // antivirus) means a full run, as does a profile it has no copy of to merge into.
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
@@ -332,7 +349,6 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now() }) : undefined;
     const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
-    const warnings: string[] = [];
     let n = 0;
     while (queue.length) {
       const part = queue.shift()!;
@@ -538,29 +554,65 @@ async function profilesIn(tree: string): Promise<Set<string> | undefined> {
   return names;
 }
 
-/** When each member of `types` last changed, from sf org list metadata; a type whose listing fails is left out. */
-async function listDates(sf: SfRunner, targetOrg: string, types: readonly string[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Record<string, Record<string, string>>> {
+/** A folder name the CLI is given as one argument: what Salesforce allows in one, and its "/" and "$". */
+const FOLDER_ARG = /^[\w$]+(?:\/[\w$]+)*$/;
+
+/**
+ * When each member of the entries' types last changed, from sf org list metadata; a type (or,
+ * for reports and dashboards, a folder) whose listing fails is left out, and its members count
+ * as changed.
+ */
+async function listDates(sf: SfRunner, targetOrg: string, entries: readonly ManifestEntry[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Record<string, Record<string, string>>> {
   const { heartbeat, ...run } = opts;
   const out: Record<string, Record<string, string>> = {};
-  const queue = [...types];
+  // Reports and dashboards are listed folder by folder: their manifest lists each folder by
+  // name alone, before what it holds.
+  const queue: [string, string | undefined][] = entries.flatMap((e): [string, string | undefined][] =>
+    IN_FOLDERS.has(e.type) ? [...foldersOf(e.members)].filter((f) => FOLDER_ARG.test(f)).map((f) => [e.type, f]) : [[e.type, undefined]],
+  );
   const worker = async () => {
-    for (let type = queue.shift(); type; type = queue.shift()) {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const [type, folder] = next;
       try {
-        const result: unknown = await sf(["org", "list", "metadata", "--metadata-type", type, "--target-org", targetOrg], run);
+        const result: unknown = await sf(["org", "list", "metadata", "--metadata-type", type, ...(folder ? ["--folder", folder] : []), "--target-org", targetOrg], run);
         const rows = Array.isArray(result) ? result : result ? [result] : [];
-        const dates: Record<string, string> = {};
+        const dates = (out[type] ??= {});
         for (const r of rows as { fullName?: unknown; lastModifiedDate?: unknown }[]) {
           if (typeof r?.fullName === "string" && typeof r.lastModifiedDate === "string") dates[r.fullName] = r.lastModifiedDate;
         }
-        out[type] = dates;
       } catch {
-        // Without dates, every member of the type counts as changed.
+        // Without dates, every member of the type (or folder) counts as changed.
       }
       heartbeat();
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, types.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
   return out;
+}
+
+/**
+ * The folders among a folder type's members: those another member sits in ("Sales" and
+ * "Sales/Q1" for "Sales/Q1/Pipeline"). A folder alone, holding nothing, is not listed.
+ */
+function foldersOf(members: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const m of members) for (let i = m.indexOf("/"); i > 0; i = m.indexOf("/", i + 1)) out.add(m.slice(0, i));
+  return out;
+}
+
+/**
+ * The entries with at most `max` reports: the most recently changed first, those without a
+ * date last. Report folders all stay.
+ */
+export function capReports(entries: readonly ManifestEntry[], dates: Record<string, string>, max: number): { entries: ManifestEntry[]; left: number } {
+  const e = entries.find((x) => x.type === "Report");
+  const folders = foldersOf(e?.members ?? []);
+  const reports = e?.members.filter((m) => m.includes("/") && !folders.has(m)) ?? [];
+  if (!e || reports.length <= max) return { entries: [...entries], left: 0 };
+  const newest = [...reports].sort((a, b) => (dates[b] ?? "").localeCompare(dates[a] ?? "") || (a < b ? -1 : 1)).slice(0, max);
+  const kept = new Set(newest);
+  const members = e.members.filter((m) => folders.has(m) || !m.includes("/") || kept.has(m));
+  return { entries: entries.map((x) => (x === e ? { ...x, members } : x)), left: reports.length - max };
 }
 
 /** The file naming an org's last complete retrieval. */

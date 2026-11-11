@@ -9,4 +9,5 @@ export { REGISTRY_VERSION } from "./registry-data.js";
 export { apexCode, MAX_APEX_LENGTH, readApex, soqlFields } from "./apex.js";
 export { MARKUP_SUFFIX, MAX_MARKUP_LENGTH, readMarkup } from "./markup.js";
 export { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
+export { readDashboard, readReport, readReportType, reportColumnRef } from "./reports.js";
 export { readerVersion, readerVersionComplete } from "./reader-version.js";
