@@ -289,25 +289,49 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 12,
     name: "feedback",
     sql: `
-      -- Feedback (phase 5): whether published stories and designs were accepted. One row per
-      -- artifact, item (a story id or a design section), kind and role, replaced when it is
-      -- recorded again. kind jira_diff is the server's guess from Jira (role ''), verdict a
-      -- person's (po, sa or dev), rating a design section's 1 to 5. comment is masked; model is
-      -- the context's model label when it was recorded; workflow the guided workflow that wrote
-      -- the artifact, if any. details is JSON: numbers and keys, never Jira's text.
+      -- Feedback (phase 5): whether published stories and designs were accepted.
+      --
+      -- published_story is each story as jira_publish last sent it, masked, for the Jira diff
+      -- to compare Jira with: its summary, its description as text and how many acceptance
+      -- criteria it had. artifact_version is the backlog version it was sent from.
+      CREATE TABLE published_story (
+        context           TEXT NOT NULL,
+        artifact          TEXT NOT NULL,
+        item              TEXT NOT NULL,
+        artifact_version  INTEGER NOT NULL,
+        issue_key         TEXT NOT NULL,
+        summary           TEXT NOT NULL,
+        text              TEXT NOT NULL,
+        truncated         INTEGER NOT NULL DEFAULT 0,
+        criteria          INTEGER NOT NULL,
+        points            REAL,
+        points_field      TEXT,
+        sent_at           TEXT NOT NULL,
+        PRIMARY KEY (context, artifact, item),
+        FOREIGN KEY (context, artifact) REFERENCES document(context, id) ON DELETE CASCADE
+      );
+      -- feedback: one row per artifact, published version, item (a story id or a design
+      -- section id), kind and role, replaced when recorded again for the same version, so the
+      -- feedback on earlier versions stays. kind jira_diff is the server's guess from Jira
+      -- (role ''), verdict a person's (po, sa or dev), rating a design section's 1 to 5.
+      -- comment is masked; model is the context's model label when it was recorded; workflow
+      -- the guided workflow that wrote the artifact, if any. details is JSON: numbers, keys
+      -- and fixed values, never Jira's text.
       CREATE TABLE feedback (
-        context      TEXT NOT NULL REFERENCES context(name) ON DELETE CASCADE,
-        artifact     TEXT NOT NULL,
-        item         TEXT NOT NULL,
-        kind         TEXT NOT NULL CHECK (kind IN ('jira_diff', 'verdict', 'rating')),
-        role         TEXT NOT NULL DEFAULT '' CHECK (role IN ('', 'po', 'sa', 'dev')),
-        value        TEXT NOT NULL,
-        comment      TEXT,
-        model        TEXT,
-        workflow     TEXT,
-        details      TEXT NOT NULL DEFAULT '{}',
-        recorded_at  TEXT NOT NULL,
-        PRIMARY KEY (context, artifact, item, kind, role)
+        context           TEXT NOT NULL,
+        artifact          TEXT NOT NULL,
+        artifact_version  INTEGER NOT NULL,
+        item              TEXT NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('jira_diff', 'verdict', 'rating')),
+        role              TEXT NOT NULL DEFAULT '' CHECK (role IN ('', 'po', 'sa', 'dev')),
+        value             TEXT NOT NULL,
+        comment           TEXT,
+        model             TEXT,
+        workflow          TEXT,
+        details           TEXT NOT NULL DEFAULT '{}',
+        recorded_at       TEXT NOT NULL,
+        PRIMARY KEY (context, artifact, artifact_version, item, kind, role),
+        FOREIGN KEY (context, artifact) REFERENCES document(context, id) ON DELETE CASCADE
       );
     `,
   },

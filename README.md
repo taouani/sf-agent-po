@@ -326,12 +326,14 @@ The new code lives in npm workspaces under `packages/`:
   values go into their text nodes. Each issue is recorded as soon as it is written, so a
   failure part-way never duplicates issues on the next publish, and the model is told only
   Jira's status code and what was done, with pseudonyms. It keeps each story as it was sent,
-  masked, for `feedback_jira_diff`, which reads the published stories back from Jira once the
-  team has worked on them and compares them in memory: unchanged, minor edit, major edit (more
-  than 30% of the words of the summary and description changed, or an acceptance criterion added
-  or removed; the share is the context's `majorEditShare` setting) or deleted. Only the result
-  and how much changed are stored (the `feedback` table, migration 12) and returned, never Jira's
-  text; the model label passed with it (`model`) is kept as a context setting for the report. The four agent workflows
+  masked, in the `published_story` table (migration 12, deleted with the backlog), for
+  `feedback_jira_diff`, which first checks that the login can see the project, then reads the
+  published stories back from Jira in bulk once the team has worked on them and compares them in
+  memory: unchanged, minor edit, major edit (by default more than 30% of the words of the summary
+  and description changed, or an acceptance criterion added or removed; the share is the
+  context's `majorEditShare` setting) or deleted. Only the result, how much changed and the
+  status category are stored (the `feedback` table, per published version) and returned, never
+  Jira's text; the model label passed with it (`model`) is kept as a context setting for the report. The four agent workflows
   (`sa_high_level_design`, `sa_detailed_design`, `po_backlog`, `po_review_stories`) are MCP
   prompts and, for hosts with agent files, the `agent_workflow` tool; they tell the agents to
   keep pseudonyms as written and that each publish waits for the user's approval in the

@@ -162,6 +162,22 @@ describe("AtlassianClient", () => {
     });
   });
 
+  it("reads stories in bulk, 100 per call, with only the status category", async () => {
+    const issues = Array.from({ length: 150 }, (_, i) => ({
+      key: `LUX-${i + 1}`,
+      fields: { summary: `S${i + 1}`, status: { name: "Waiting for the CFO", statusCategory: { key: i ? "indeterminate" : "unknown" } }, updated: "u", customfield_10016: i === 1 ? 5 : null },
+    }));
+    const { client, calls } = site({ "POST /rest/api/3/issue/bulkfetch": { body: { issues: issues.slice(0, 2) } } });
+    const keys = issues.map((i) => i.key);
+    const got = await client.getStories(keys, "customfield_10016");
+    expect(calls.map((c) => c.body.issueIdsOrKeys.length)).toEqual([100, 50]);
+    expect(calls[0]!.body.fields).toEqual(["summary", "description", "status", "updated", "customfield_10016"]);
+    // The status name is the team's text: only its category comes back.
+    expect(got.get("LUX-1")).toEqual({ summary: "S1", updated: "u" });
+    expect(got.get("LUX-2")).toEqual({ summary: "S2", status: "indeterminate", updated: "u", points: 5 });
+    await expect(client.getStories(["LUX-1"], "summary")).rejects.toThrow(/Not a custom field id/);
+  });
+
   it("creates pages and updates them only from the version the user saw", async () => {
     const { client, calls } = site({
       "GET /wiki/api/v2/spaces?keys=SA": { body: { results: [{ id: 7 }] } },

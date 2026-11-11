@@ -33,20 +33,10 @@ export interface JiraMapping {
    * so a label removed here is removed in Jira while labels added in Jira stay; `updated` is
    * Jira's timestamp right after our last write, to spot edits made in Jira since.
    */
-  items: Record<string, { key: string; url: string; hash?: string; labels?: string[]; updated?: string; sent?: SentStory }>;
-  /** The story points field last published to, so the Jira diff reads the same one. */
-  storyPointsField?: string;
+  items: Record<string, { key: string; url: string; hash?: string; labels?: string[]; updated?: string }>;
   /** Dependency links already created, as "BLOCKER>BLOCKED" issue keys. */
   links: string[];
   publishedVersion?: number;
-}
-
-/** What a story was published as, masked: what the Jira diff compares Jira with. */
-export interface SentStory {
-  summary: string;
-  /** The description as plain text. */
-  text: string;
-  points?: number;
 }
 
 export type Artifact = SourceDocument & { metadata: ArtifactMeta };

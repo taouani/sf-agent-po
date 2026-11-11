@@ -37,7 +37,8 @@ export interface JiraStory {
   summary: string;
   /** Atlassian Document Format. */
   description?: unknown;
-  status?: string;
+  /** Jira's status category (to do, in progress, done), not the status name, which a team writes. */
+  status?: "new" | "indeterminate" | "done";
   updated: string;
   points?: number;
 }
@@ -133,28 +134,30 @@ export class AtlassianClient {
   }
 
   /**
-   * A story as Jira holds it now, to compare with what was published: its summary, description
-   * (ADF), status and, given its field, story points. Undefined when the issue was deleted (404).
+   * Stories as Jira holds them now, to compare with what was published, 100 per call: summary,
+   * description (ADF), status category and, given its field, story points. A key Jira does not
+   * return (deleted, or not visible to this login) is left out of the map.
    */
-  async getStory(key: string, pointsField?: string): Promise<JiraStory | undefined> {
+  async getStories(keys: readonly string[], pointsField?: string): Promise<Map<string, JiraStory>> {
     if (pointsField !== undefined && !/^customfield_\d+$/.test(pointsField)) throw new Error(`Not a custom field id: ${pointsField}`);
     const fields = ["summary", "description", "status", "updated", ...(pointsField ? [pointsField] : [])];
-    let r;
-    try {
-      r = await this.request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`);
-    } catch (err) {
-      if (err instanceof AtlassianError && err.status === 404) return undefined;
-      throw err;
+    const out = new Map<string, JiraStory>();
+    for (let i = 0; i < keys.length; i += 100) {
+      const r = await this.request("/rest/api/3/issue/bulkfetch", { method: "POST", body: JSON.stringify({ issueIdsOrKeys: keys.slice(i, i + 100), fields }) });
+      for (const issue of r?.issues ?? []) {
+        const f = issue.fields ?? {};
+        const points = pointsField ? f[pointsField] : undefined;
+        const category = f.status?.statusCategory?.key;
+        out.set(String(issue.key), {
+          summary: String(f.summary ?? ""),
+          description: f.description ?? undefined,
+          ...(["new", "indeterminate", "done"].includes(category) && { status: category as JiraStory["status"] }),
+          updated: String(f.updated ?? ""),
+          ...(typeof points === "number" && { points }),
+        });
+      }
     }
-    const f = r.fields ?? {};
-    const points = pointsField ? f[pointsField] : undefined;
-    return {
-      summary: String(f.summary ?? ""),
-      description: f.description ?? undefined,
-      status: f.status?.name ? String(f.status.name) : undefined,
-      updated: String(f.updated ?? ""),
-      ...(typeof points === "number" && { points }),
-    };
+    return out;
   }
 
   async updateIssue(key: string, fields: Record<string, unknown>): Promise<{ key: string; url: string }> {

@@ -9,6 +9,7 @@ import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
 import { type Artifact, type ArtifactMeta, getArtifact, hash, type JiraMapping, updateArtifactMeta } from "./artifacts.js";
 import {
+  allStories,
   type AdfNode,
   type Backlog,
   backlogSchema,
@@ -96,12 +97,25 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
-/** How much of a story's description is kept for the Jira diff. */
-const MAX_SENT_TEXT = 20_000;
+/** The labels publishing sets on an epic or story. */
+export const labelsFor = (item: Epic | Story, extra: string[] = []) => [...new Set(["sf-agent-po", ...(item.labels ?? []), ...(item.priority ? [`moscow-${item.priority}`] : []), ...extra])];
+
+/** A story's fields as publishing sends them, masked. */
+export function storyFields(story: Story, backlog: Backlog, titles: Map<string, string>, storyPointsField?: string): PlannedItem["fields"] {
+  return {
+    summary: story.summary,
+    description: storyDescription(story, backlog, titles),
+    // Points are only ever set, never cleared, so an estimate made in Jira survives a backlog without one.
+    ...(storyPointsField && story.storyPoints ? { [storyPointsField]: story.storyPoints } : {}),
+  };
+}
+
+/** What publishing records of what it sent, to see whether an item changed since. */
+export const itemHash = (fields: PlannedItem["fields"], labels: string[]) => hash(JSON.stringify({ ...fields, labels }));
 
 /** Jira's limit on a summary, which a real value can take the summary past. */
 const SUMMARY_MAX = 255;
-const oneLine = (s: string) => {
+export const oneLine = (s: string) => {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length <= SUMMARY_MAX ? flat : flat.slice(0, SUMMARY_MAX).replace(/[\uD800-\uDBFF]$/, "");
 };
@@ -216,8 +230,6 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
 
     const titles = new Map(maskedDocs(args.context).map((d) => [d.id, d.title]));
     const mapping: JiraMapping = structuredClone(meta.jira) ?? { projectKey: args.projectKey, items: {}, links: [] };
-    const labelsFor = (item: Epic | Story, extra: string[] = []) =>
-      [...new Set(["sf-agent-po", ...(item.labels ?? []), ...(item.priority ? [`moscow-${item.priority}`] : []), ...extra])];
 
     const items: PlannedItem[] = [];
     const add = (item: Epic | Story, level: PlannedItem["level"], skipReason: string | undefined, fields: PlannedItem["fields"], labels: string[], epicId?: string) => {
@@ -230,7 +242,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         action: skipReason ? "skip" : "create",
         skipReason,
         key: known?.key ?? item.jiraKey,
-        hash: hash(JSON.stringify({ ...fields, labels })),
+        hash: itemHash(fields, labels),
         fields,
         labels,
         epicId,
@@ -241,12 +253,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       add(epic, "epic", epicSkipped ? "won't have" : undefined, { summary: epic.summary, description: epicDescription(epic, backlog, titles) }, labelsFor(epic));
       for (const story of epic.stories) {
         const skipReason = epicSkipped ? `its epic ${epic.id} is won't have` : story.priority === "wont" ? "won't have" : undefined;
-        const fields = {
-          summary: story.summary,
-          description: storyDescription(story, backlog, titles),
-          // Points are only ever set, never cleared, so an estimate made in Jira survives a backlog without one.
-          ...(args.storyPointsField && story.storyPoints ? { [args.storyPointsField]: story.storyPoints } : {}),
-        };
+        const fields = storyFields(story, backlog, titles, args.storyPointsField);
         add(story, "story", skipReason, fields, labelsFor(story, story.type === "spike" ? ["spike"] : []), epic.id);
       }
     }
@@ -439,6 +446,35 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
             jira: { ...mapping, publishedVersion: version },
           }));
 
+        // A story as sent, masked, for the Jira diff to compare with.
+        const sentStories = kit.feedback ? new Map(allStories(backlog).map(({ story }) => [story.id, story])) : undefined;
+        const keepSent = (planned: PlannedItem[]) => {
+          const stories = planned.flatMap((item) => {
+            const story = item.level === "story" ? sentStories?.get(item.id) : undefined;
+            const key = mapping.items[item.id]?.key;
+            if (!story || !key) return [];
+            const points = args.storyPointsField ? item.fields[args.storyPointsField] : undefined;
+            return [
+              {
+                context,
+                artifact: doc.id,
+                item: item.id,
+                artifactVersion: version,
+                issueKey: key,
+                summary: item.fields.summary,
+                text: adfToText(item.fields.description),
+                criteria: story.acceptanceCriteria.length,
+                ...(typeof points === "number" && args.storyPointsField && { points, pointsField: args.storyPointsField }),
+              },
+            ];
+          });
+          kit.feedback?.saveSent(stories);
+        };
+        // Stories left unchanged are as they were sent (their hash matches): kept too, when they were not before.
+        const keepUnchanged = () => {
+          const keptBefore = kit.feedback?.sent(context, doc.id);
+          keepSent(items.filter((i) => i.action === "unchanged" && !keptBefore?.has(i.id)));
+        };
         const count = (a: PlannedItem["action"]) => items.filter((i) => i.action === a).length;
         const skipped = count("skip");
         const skippedItems = items.filter((i) => i.action === "skip" && i.level !== "subtask").length;
@@ -449,7 +485,10 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
             : "";
         if (!count("create") && !count("update") && !links.length) {
           // Nothing of it was ever in Jira (all won't have): nothing is recorded either.
-          if (Object.keys(mapping.items).length) markPublished();
+          if (Object.keys(mapping.items).length) {
+            keepUnchanged();
+            markPublished();
+          }
           return text(`Nothing to publish: Jira project ${args.projectKey} is already up to date.${skippedNote}${noteText}`);
         }
 
@@ -551,10 +590,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         };
         // The mapping is saved right after every write, so a failure part-way never leads to duplicates on the next run.
         const record = async (item: PlannedItem, key: string, url: string) => {
-          // A story's fields as sent, masked, for the Jira diff to compare with.
-          const points = args.storyPointsField ? item.fields[args.storyPointsField] : undefined;
-          const sent = item.level === "story" ? { summary: item.fields.summary, text: adfToText(item.fields.description).slice(0, MAX_SENT_TEXT), ...(typeof points === "number" && { points }) } : undefined;
-          mapping.items[item.id] = { key, url, hash: item.hash, labels: item.labels, ...(sent && { sent }) };
+          mapping.items[item.id] = { key, url, hash: item.hash, labels: item.labels };
+          keepSent([item]);
           save();
           await refreshUpdated(item.id);
         };
@@ -602,7 +639,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           await refreshUpdated(link.blocked);
         }
 
-        if (args.storyPointsField) mapping.storyPointsField = args.storyPointsField;
+        keepUnchanged();
         markPublished();
         return text(`Published to Jira project ${args.projectKey}:\n${done.map((d) => `- ${d}`).join("\n")}${skippedNote}${noteText}${await comment()}`);
       }),
