@@ -38,9 +38,11 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
  *   record type, app, custom permission or layout (how much is in its attrs);
  * - includes: a permission set group holds a permission set;
  * - shows: a layout puts a field, button, related list, page or action in front of users; a
- *   field set lists a field.
+ *   field set lists a field;
+ * - may_read: Apex builds a query in strings that reads an object or field (a weaker link than
+ *   reads: the query is pieced together from the strings and string constants the code holds).
  */
-export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls", "grants", "includes", "shows"] as const;
+export const EDGE_KINDS = ["part_of", "references", "reads", "writes", "triggers_on", "calls", "grants", "includes", "shows", "may_read"] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
 
 /**

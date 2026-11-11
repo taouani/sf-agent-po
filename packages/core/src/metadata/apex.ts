@@ -268,6 +268,59 @@ class Declarations {
   }
 }
 
+/** How much of a query built in strings is read: the rest is most likely not the query. */
+const MAX_BUILT_QUERY = 20_000;
+const MODIFIERS = /^(?:(?:final|static|private|public|protected|global|transient|override|virtual)\s+)*/i;
+
+/**
+ * The SOQL queries a class builds in strings, as far as its strings and string variables show
+ * them: `'SELECT Id, ' + fieldList + ' FROM ' + OBJECT_NAME + ' WHERE ...'`, a constant
+ * (`static final String OBJECT_NAME = 'Account'`), a variable built over several statements
+ * (`q += ' WHERE ...'`). What the strings do not show (a list of fields joined at run time) is
+ * left out. `blanked` is the code with comments and strings blanked; `literals` holds the text
+ * of each string by where its opening quote is.
+ */
+function builtQueries(blanked: string, literals: ReadonlyMap<number, string>): string[] {
+  if (!literals.size) return [];
+  const values = new Map<string, string>();
+  const texts: string[] = [];
+  const pieces = (from: number, text: string) => {
+    const out: string[] = [];
+    for (const m of text.matchAll(/'( *)'|(?<![\w.])([A-Za-z_]\w*)(?![\w(])/g)) {
+      if (m[1] !== undefined) out.push(literals.get(from + m.index) ?? "");
+      else {
+        const value = values.get(m[2]!.toLowerCase());
+        if (value !== undefined) out.push(value);
+      }
+    }
+    return out.join(" ").slice(0, MAX_BUILT_QUERY);
+  };
+  let at = 0;
+  for (const statement of blanked.split(/[;{}]/)) {
+    const start = at;
+    at += statement.length + 1;
+    if (!statement.includes("'") && !values.size) continue;
+    const lead = statement.length - statement.trimStart().length;
+    const body = statement.slice(lead).replace(MODIFIERS, "");
+    const offset = start + statement.length - body.length;
+    const assign = /^(?:String\s+)?([A-Za-z_]\w*)\s*(\+?=)(?!=)/i.exec(body);
+    if (assign) {
+      const name = assign[1]!.toLowerCase();
+      const value = pieces(offset + assign[0].length, body.slice(assign[0].length));
+      const previous = values.get(name);
+      if (assign[2] === "=" && previous !== undefined) texts.push(previous);
+      values.set(name, assign[2] === "+=" && previous !== undefined ? `${previous} ${value}`.slice(0, MAX_BUILT_QUERY) : value);
+    } else if (statement.includes("'")) texts.push(pieces(start, statement));
+  }
+  texts.push(...values.values());
+  const queries = new Set<string>();
+  for (const t of texts) {
+    const m = /\bselect\s[\s\S]*?\bfrom\s+[A-Za-z_]\w*/i.exec(t);
+    if (m) queries.add(t.slice(m.index).replace(/\s+/g, " ").trim());
+  }
+  return [...queries];
+}
+
 /** Apex the index cannot follow, by what it does. */
 const DYNAMIC: readonly (readonly [string, RegExp])[] = [
   ["query built from a string", /\bdatabase ?\. ?(?:query|querywithbinds|countquery|countquerywithbinds|getquerylocator|getquerylocatorwithbinds|getcursor|getcursorwithbinds) ?\((?! ?\[)/i],
@@ -478,6 +531,20 @@ export function readApex(type: "ApexClass" | "ApexTrigger", name: string, source
     if (host) hosts.add(host);
   }
   if (hosts.size) attrs.calloutHosts = [...hosts].sort();
+
+  // Queries built in strings: what they probably read, as weaker links (may_read).
+  const built = builtQueries(blanked, literals);
+  for (const query of built) {
+    const { object, fields, joins } = soqlFields(query);
+    for (const j of joins) {
+      objectRef("may_read", j.object);
+      for (const f of j.fields) objectRef("may_read", j.object, f);
+    }
+    if (!object) continue;
+    objectRef("may_read", object);
+    for (const f of fields) objectRef("may_read", object, f);
+  }
+  if (built.length) attrs.builtQueries = built.length;
   // Platform events it publishes: EventBus.publish of a new Foo__e. Events are most often built
   // into a list and published later, so every Foo__e the class creates counts once it publishes.
   if (/\bEventBus ?\. ?publish ?\(/i.test(code)) {

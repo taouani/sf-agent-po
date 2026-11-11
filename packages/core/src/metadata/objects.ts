@@ -301,7 +301,7 @@ export function linkObjects(components: readonly ParsedComponent[]): {
         const fields = formulaFields(ref.path, objectNamed(ref.object) ?? ref.object, fieldsOf, objectNamed);
         // A path through relationships reads each lookup; the field at its end is what the
         // reference is about (written, granted, shown); a write writes a record of its object.
-        fields.forEach((field, i) => readsField(from, field, i === fields.length - 1 ? ref.kind : "reads"));
+        fields.forEach((field, i) => readsField(from, field, i === fields.length - 1 || ref.kind === "may_read" ? ref.kind : "reads"));
         const last = fields.at(-1);
         if (ref.kind === "writes" && last && last.lastIndexOf(".") > 0) edges.push({ from, to: need("CustomObject", last.slice(0, last.lastIndexOf("."))), kind: "writes" });
       }
@@ -339,6 +339,8 @@ export function linkObjects(components: readonly ParsedComponent[]): {
   }
   // The same dependency found twice (a lookup on the way and the field itself) is one edge.
   const unique = new Map(edges.map((e) => [`${componentKey(e.from.type, e.from.name)}>${e.kind}>${componentKey(e.to.type, e.to.name)}`, e]));
+  // A link that may be there is dropped where the same link is certain.
+  for (const [key, e] of unique) if (e.kind === "may_read" && unique.has(key.replace(">may_read>", ">reads>"))) unique.delete(key);
   return { edges: [...unique.values()], missing: [...missing.values()] };
 }
 

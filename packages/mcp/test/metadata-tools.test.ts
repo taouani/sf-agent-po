@@ -240,6 +240,17 @@ describe("metadata tools", () => {
     expect(r.text).toMatch(/lines 1-\d+ of 104, .* More from line \d+\./);
   });
 
+  it("show what a query built in strings may read", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    writeFileSync(path.join(root, "classes/Finder.cls"), "public class Finder { static final String OBJ = 'Policy__c'; List<SObject> f() { return Database.query('SELECT Premium__c FROM ' + OBJ); } }");
+    await indexProject(index, root);
+    const field = await call("metadata_component", { context: "acme", type: "CustomField", name: "Policy__c.Premium__c" });
+    expect(field.text).toContain("may be read by (a query built in strings): ApexClass Finder");
+    const impact = await call("metadata_impact", { context: "acme", changes: [{ action: "delete", type: "CustomField", name: "Policy__c.Premium__c" }] });
+    expect(impact.text).toContain("ApexClass Finder (may read it: a query built in strings)");
+  });
+
   it("say why there is no code to show", async () => {
     const { call, index, db } = await connect();
     const root = project();

@@ -43,6 +43,7 @@ const VERB_IN: Record<string, string> = {
   includes: "includes it",
   shows: "shows it",
   part_of: "belongs to it",
+  may_read: "may read it: a query built in strings",
 };
 
 /** The object a component belongs to: itself for an object, its parent for a field or rule, or the object of "Object.Name". */

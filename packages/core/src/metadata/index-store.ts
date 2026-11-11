@@ -66,7 +66,7 @@ export interface IndexedComponent {
 }
 
 /** Which link to name first when there are several: what changes data before what reads it. */
-const KIND_ORDER: readonly EdgeKind[] = ["writes", "triggers_on", "calls", "reads", "grants", "shows", "references", "includes", "part_of"];
+const KIND_ORDER: readonly EdgeKind[] = ["writes", "triggers_on", "calls", "reads", "may_read", "grants", "shows", "references", "includes", "part_of"];
 
 export interface Related {
   component: IndexedComponent;
@@ -579,9 +579,9 @@ export class MetadataIndex {
            WHERE e.dst IN (SELECT value FROM json_each(?)) AND e.kind IN (${kinds}) GROUP BY e.src`,
         )
         .all(JSON.stringify(targets)) as unknown as { id: number; kinds: string }[];
-    const first = incoming(ids, "'references', 'reads', 'writes', 'triggers_on', 'calls', 'grants', 'includes', 'shows'").filter((r) => !own.has(r.id));
+    const first = incoming(ids, "'references', 'reads', 'may_read', 'writes', 'triggers_on', 'calls', 'grants', 'includes', 'shows'").filter((r) => !own.has(r.id));
     const seen = new Set([...own, ...first.map((r) => r.id)]);
-    const second = depth === 2 ? incoming(first.filter((r) => r.kinds.split(",").some((k) => k !== "grants" && k !== "includes")).map((r) => r.id), "'references', 'reads', 'writes', 'triggers_on', 'calls', 'shows'").filter((r) => !seen.has(r.id)) : [];
+    const second = depth === 2 ? incoming(first.filter((r) => r.kinds.split(",").some((k) => k !== "grants" && k !== "includes")).map((r) => r.id), "'references', 'reads', 'may_read', 'writes', 'triggers_on', 'calls', 'shows'").filter((r) => !seen.has(r.id)) : [];
     const components = this.byIds([...first, ...second].map((r) => r.id));
     const out: Related[] = [];
     for (const [rows, d] of [[first, 1], [second, 2]] as const)
@@ -714,7 +714,7 @@ export class MetadataIndex {
             note(other, 2, e.kind);
             local.set(other, c);
           }
-        } else if (wantNeighbours && from === e.src && (e.kind === "reads" || e.kind === "writes" || e.kind === "triggers_on")) touch(outsideObject(c), from, e.kind);
+        } else if (wantNeighbours && from === e.src && (e.kind === "reads" || e.kind === "may_read" || e.kind === "writes" || e.kind === "triggers_on")) touch(outsideObject(c), from, e.kind);
       }
     }
 

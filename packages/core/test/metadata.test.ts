@@ -837,8 +837,17 @@ describe("scanProject on awkward projects", () => {
       edges.filter((e) => e.from.type === type && e.from.name === name && e.kind !== "part_of").map((e) => `${e.kind} ${e.to.type}:${e.to.name}`).sort();
 
     expect(from("FieldSet", "Account.Card")).toEqual(["reads CustomField:Account.OwnerId", "shows CustomField:Account.LifetimeSpent__pc", "shows CustomField:User.Email"]);
-    // Policy__c after FROM and Policy__c.SObjectType are the object, not Claim__c's lookup; Status__c is on two objects.
-    expect(from("ApexClass", "Untyped")).toEqual(["reads CustomField:Account.LifetimeSpent__pc", "reads CustomObject:Policy__c", "reads FieldSet:Account.Card"]);
+    // Policy__c after FROM and Policy__c.SObjectType are the object, not Claim__c's lookup; Status__c,
+    // on two objects, is Policy__c's in the query built in a string, which is a weaker link.
+    expect(from("ApexClass", "Untyped")).toEqual([
+      "may_read CustomField:Invoice__c.Id",
+      "may_read CustomField:Policy__c.Id",
+      "may_read CustomField:Policy__c.Status__c",
+      "may_read CustomObject:Invoice__c",
+      "reads CustomField:Account.LifetimeSpent__pc",
+      "reads CustomObject:Policy__c",
+      "reads FieldSet:Account.Card",
+    ]);
     // Words in strings, child relationships and $User properties are not fields.
     expect(from("ApexPage", "ClientCard")).toEqual([
       "calls ApexClass:Untyped",
@@ -984,5 +993,57 @@ describe("Apex code in the index", () => {
     expect(index.body(mapper.id)).toBeUndefined();
     expect(index.body(index.component(second.id, "ApexClass", "Mapper")!.id)).toBe(src);
     expect(db.db.prepare("SELECT count(*) AS n FROM component_body").get()).toEqual({ n: 1 });
+  });
+});
+
+describe("queries built in strings", () => {
+  const link = (src: string, others: ParsedComponent[] = []) =>
+    linkObjects([readApex("ApexClass", "Q", src, "classes/Q.cls"), ...others])
+      .edges.filter((e) => e.from.name === "Q" && e.to.type !== "ApexClass")
+      .map((e) => `${e.kind} ${e.to.name}`)
+      .sort();
+  const field = (object: string, name: string): ParsedComponent => ({ type: "CustomField", name: `${object}.${name}`, parent: object, file: "f", attrs: {}, text: "" });
+
+  it("reads them as weaker links, with constants and variables put back", () => {
+    const src = [
+      "public class Q {",
+      "  private static final String OBJECT_NAME = 'Account';",
+      "  static final String FIELDS = 'Id, Name, Segment__c';",
+      "  public List<SObject> run(String status, List<String> extra) {",
+      "    String q = 'SELECT ' + FIELDS + ', ' + String.join(extra, ',') + ' FROM ' + OBJECT_NAME;",
+      "    q += ' WHERE Status__c = :status';",
+      "    List<SObject> a = Database.query(q);",
+      "    return Database.query('SELECT Id FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Industry = \\'x\\')');",
+      "  }",
+      "}",
+    ].join("\n");
+    const c = readApex("ApexClass", "Q", src, "classes/Q.cls");
+    expect(c.attrs).toMatchObject({ builtQueries: 2, dynamic: ["query built from a string"] });
+    expect(link(src, [field("Account", "Segment__c"), field("Account", "Status__c")])).toEqual([
+      "may_read Account",
+      "may_read Account.Id",
+      "may_read Account.Industry",
+      "may_read Account.Name",
+      "may_read Account.Segment__c",
+      "may_read Account.Status__c",
+      "may_read Contact",
+      "may_read Contact.AccountId",
+      "may_read Contact.Id",
+    ]);
+  });
+
+  it("keeps a certain read over a weaker one, and reads nothing from strings that are not queries", () => {
+    const src = "public class Q { void m() { Account a = [SELECT Name FROM Account LIMIT 1]; String q = 'SELECT Name, Phone FROM Account'; String s = 'select the best from the list'; String t = 'Hello'; } }";
+    expect(link(src)).toEqual(["may_read Account.Phone", "reads Account", "reads Account.Name"]);
+    expect(readApex("ApexClass", "Q", "public class Q { String t = 'Hello'; }", "x").attrs.builtQueries).toBeUndefined();
+  });
+
+  it("reads a query rebuilt after a reassignment, and stays linear on long code", () => {
+    const src = "String q = 'SELECT Id FROM Lead'; q = 'SELECT Id FROM Case';";
+    expect(link(src)).toEqual(["may_read Case", "may_read Case.Id", "may_read Lead", "may_read Lead.Id"]);
+    const start = performance.now();
+    readApex("ApexClass", "Q", "q += 'SELECT a FROM b ' + x;\n".repeat(30_000), "x");
+    readApex("ApexClass", "Q", "String c" + "x".repeat(10) + " = 'v';\n".repeat(30_000) + "q = " + "c + ".repeat(50_000) + "'';", "x");
+    expect(performance.now() - start).toBeLessThan(5_000);
   });
 });
