@@ -52,7 +52,7 @@ export const PROVIDERS = {
 
 export type Provider = keyof typeof PROVIDERS;
 
-/** A guided v1 run submits each step and may be sent back, so it takes more turns than 0.x. */
+/** A guided run submits each step and may be sent back, so it takes many turns. */
 const DEFAULT_MAX_TURNS = 80;
 const MAX_TOKENS = 32_000;
 

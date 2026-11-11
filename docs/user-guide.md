@@ -1,5 +1,7 @@
 # sf-agent-po user guide
 
+> **This guide is for the 0.x server, which was removed in phase 5** (its last version is the tag `v0-final`). A guide for version 1 replaces it next; until then, the [package README](../packages/mcp/README.md) covers installing and using `sf-agent-po@next`.
+
 This guide takes you from installation to your first design and backlog, then covers day-to-day use. If you only have five minutes, do [Check that it works](#check-that-it-works). If you have half an hour, continue with [Your first test run](#your-first-test-run-the-insurance-sample).
 
 - [How it works](#how-it-works)

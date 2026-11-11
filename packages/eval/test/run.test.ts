@@ -1,33 +1,42 @@
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
-import { documentId } from "../../core/src/index.js";
+import { afterAll, describe, expect, it } from "vitest";
+import { BackgroundIndexer } from "../../connectors/src/index.js";
+import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, Vault } from "../../core/src/index.js";
+import { ApprovalServer, createServer } from "../../mcp/src/index.js";
+import { databaseFile } from "../../mcp/src/startup.js";
+import { insurance, referenceBacklog } from "./reference.js";
 import { listScenarios, parseVerdicts, reportMarkdown, runScenario, UNATTENDED, withLanguage, type CallTool, type Connect, type Model, type ToolSpec } from "../src/index.js";
 
-// Today's server, in process, as the baseline run uses it over stdio. It is imported by path so the
-// package's strict type check does not cover 0.x code, which compiles with its own settings.
-const legacyServer = "../../../src/server.js";
-const { createServer } = (await import(legacyServer)) as { createServer: (opts: { workspaceDir: string }) => { connect(t: unknown): Promise<void> } };
-
+/** The server in process, without workflows or input review: the agent saves with the save tools, as in a revision. */
 const inProcess: Connect = async (workspaceDir) => {
-  const server = createServer({ workspaceDir });
+  const db = new Database(databaseFile(workspaceDir));
+  const metadata = new MetadataIndex(db);
+  const approval = new ApprovalServer();
+  const server = createServer({
+    contexts: new ContextRepository(db),
+    masker: new Masker({ vault: new Vault(db, newVaultKey()) }),
+    approval,
+    recognizer: async () => Promise.reject(new Error("no OCR")),
+    // A release, so input review is off by default and no page opens.
+    version: "1.0.0",
+    metadata: { index: metadata, indexer: new BackgroundIndexer(metadata, { workspace: workspaceDir }) },
+  });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "eval-test", version: "0" });
   await Promise.all([server.connect(a), client.connect(b)]);
+  const close = client.close.bind(client);
+  client.close = async () => {
+    await close();
+    await approval.close();
+    db.close();
+  };
   return client;
 };
-
-const insurance = listScenarios().find((s) => s.id === "insurance-renewal")!;
-
-/** The hand-written reference backlog, with its input placeholders turned into document ids. */
-function referenceBacklog(): unknown {
-  const text = readFileSync(join(insurance.dir, "reference-backlog.json"), "utf8").replace(/\{\{inputs\/([^}]+)\}\}/g, (_, f: string) =>
-    documentId(resolve(insurance.inputsDir, f)),
-  );
-  return JSON.parse(text);
-}
 
 /** A model that follows a script instead of calling an API: it saves a fixed design and the reference backlog. */
 class ScriptedModel implements Model {
@@ -37,8 +46,8 @@ class ScriptedModel implements Model {
   async runAgent(prompt: string, tools: ToolSpec[], callTool: CallTool) {
     this.prompts.push(prompt);
     this.offered = tools.map((t) => t.name);
+    const shown = await callTool("context_show", { context: "eval" });
     const calls: { name: string; args: Record<string, unknown> }[] = [
-      { name: "context_show", args: { context: "eval" } },
       // Tools that are not offered are refused even when called by name.
       { name: "context_add_file", args: { context: "eval", path: join(insurance.dir, "rubric.md") } },
     ];
@@ -48,11 +57,11 @@ class ScriptedModel implements Model {
         args: { context: "eval", title: "Renewal portal: high-level design", designType: "high-level", content: "# Renewal portal\n\nThe PAS stays the system of record." },
       });
     } else {
-      calls.push({ name: "jira_publish", args: { context: "eval" } }, { name: "backlog_save", args: { context: "eval", backlog: referenceBacklog() } });
+      calls.push({ name: "jira_publish", args: { context: "eval" } }, { name: "backlog_save", args: { context: "eval", backlog: referenceBacklog(shown.text) } });
     }
-    const toolCalls = [];
+    const toolCalls: { name: string; args: Record<string, unknown>; isError: boolean }[] = [{ name: "context_show", args: { context: "eval" }, isError: shown.isError }];
     for (const c of calls) toolCalls.push({ ...c, isError: (await callTool(c.name, c.args)).isError });
-    return { finalText: "Done.", toolCalls, turns: calls.length + 1, inputTokens: 100, outputTokens: 50, stop: "done" as const };
+    return { finalText: "Done.", toolCalls, turns: calls.length + 2, inputTokens: 100, outputTokens: 50, stop: "done" as const };
   }
   async complete(): Promise<string> {
     throw new Error("not a judge");
@@ -136,16 +145,17 @@ describe("runScenario", () => {
     const model: Model = {
       id: "fake:drafts",
       async runAgent(prompt, _tools, callTool) {
+        const shown = (await callTool("context_show", { context: "eval" })).text;
         const calls: [string, Record<string, unknown>][] = /Your task: build a \*\*backlog/.test(prompt)
           ? [
-              ["backlog_save", { context: "eval", backlog: referenceBacklog() }],
+              ["backlog_save", { context: "eval", backlog: referenceBacklog(shown) }],
               ["backlog_save", { context: "eval", backlog: { title: "Broken" } }],
             ]
           : [
               ["design_save", design("Draft design ALPHA")],
               ["design_save", design("Final design BETA")],
               // Saved by the wrong task: must not count as this scenario's backlog.
-              ["backlog_save", { context: "eval", backlog: { ...(referenceBacklog() as object), title: "SA backlog GAMMA" } }],
+              ["backlog_save", { context: "eval", backlog: { ...referenceBacklog(shown), title: "SA backlog GAMMA" } }],
             ];
         const toolCalls = [];
         for (const [name, args] of calls) toolCalls.push({ name, args, isError: (await callTool(name, args)).isError });
@@ -195,6 +205,50 @@ describe("runScenario", () => {
   });
 });
 
+describe("sample scenarios", () => {
+  const dirs: string[] = [];
+  afterAll(() => Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))));
+  const workspace = () => {
+    const d = mkdtempSync(join(tmpdir(), "sf-agent-eval-test-"));
+    dirs.push(d);
+    return d;
+  };
+  const text = (r: unknown) => ((r as { content: { text: string }[] }).content[0]?.text ?? "");
+
+  it("accepts the insurance reference backlog with every security input traced", async () => {
+    const client = await inProcess(workspace());
+    try {
+      expect(text(await client.callTool({ name: "context_add_file", arguments: { context: "ins", path: insurance.inputsDir } }))).toContain("Added 4 input(s)");
+      const shown = text(await client.callTool({ name: "context_show", arguments: { context: "ins" } }));
+      const backlog = referenceBacklog(shown);
+      const saved = await client.callTool({ name: "backlog_save", arguments: { context: "ins", backlog } });
+      expect(saved.isError).toBeFalsy();
+      expect(text(saved)).toContain("Quality check: no issues found.");
+
+      // Each of the six InfoSec requirements is covered by a story that cites the security email.
+      const securityId = /\[(doc-[0-9a-f]{10})\] email: Security requirements/.exec(shown)![1]!;
+      const citing = JSON.stringify(backlog.epics.flatMap((e) => e.stories).filter((st) => st.sourceIds?.includes(securityId)));
+      for (const requirement of [/multi-factor/i, /only their own policies/i, /no card data/i, /encrypted at rest/i, /logs? in.*7 years|logins.*7 years/i, /penetration/i]) {
+        expect(citing).toMatch(requirement);
+      }
+    } finally {
+      await client.close();
+    }
+  }, 30_000);
+
+  it("loads the banking scenario", async () => {
+    const client = await inProcess(workspace());
+    try {
+      const banking = listScenarios().find((s) => s.id === "banking-onboarding")!;
+      const added = text(await client.callTool({ name: "context_add_file", arguments: { context: "bank", path: banking.inputsDir } }));
+      expect(added).toContain("Added 3 input(s)");
+      expect(added).toContain("Non-negotiables for the onboarding redesign");
+    } finally {
+      await client.close();
+    }
+  }, 30_000);
+});
+
 describe("judging and reporting", () => {
   it("reads verdicts by number or by order, and refuses incomplete answers", () => {
     expect(parseVerdicts('[{"n":2,"pass":false,"reason":"b"},{"n":1,"pass":true}]', ["x", "y"])).toEqual([
@@ -215,7 +269,7 @@ describe("judging and reporting", () => {
 
   it("summarises scores against the target and lists missed criteria", async () => {
     const r = await runScenario(insurance, new ScriptedModel(), new FakeJudge(), inProcess);
-    const md = reportMarkdown([r], { server: "0.x", judge: "fake:judge", date: "2026-11-07" });
+    const md = reportMarkdown([r], { server: "v1", judge: "fake:judge", date: "2026-11-07" });
     expect(md).toContain("| fake:scripted | 7.5 | n/a | design 10, backlog 5 |");
     expect(md).toContain("### Backlog: 5/10");
     expect(md).toContain("- Missed: ");
@@ -223,6 +277,6 @@ describe("judging and reporting", () => {
     // What the input owed to the cache, when the provider says.
     r.sections[0]!.agent!.cachedInputTokens = 80;
     r.sections[0]!.agent!.cacheWriteTokens = 15;
-    expect(reportMarkdown([r], { server: "0.x", judge: "j", date: "d" })).toContain("100 input (80 read from the cache, 15 written to it) and 50 output tokens");
+    expect(reportMarkdown([r], { server: "v1", judge: "j", date: "d" })).toContain("100 input (80 read from the cache, 15 written to it) and 50 output tokens");
   }, 30_000);
 });

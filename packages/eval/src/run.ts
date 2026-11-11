@@ -15,8 +15,7 @@ import { TASKS, type RubricSection, type Scenario, type Task } from "./scenario.
 export type Connect = (workspaceDir: string) => Promise<Client>;
 
 /**
- * Starts the server under test as hosts do, over stdio: by default the v1 server, or today's 0.x
- * server for the baseline. Each run gets its own home folder inside its throwaway workspace, so
+ * Starts the server under test as hosts do, over stdio. Each run gets its own home folder inside its throwaway workspace, so
  * the masking key the server creates goes there (a key file) and not into the user's keychain;
  * the detection model stays in the usual cache, so it is downloaded once.
  */
@@ -58,7 +57,7 @@ export function stdioServer(command: string, args: string[], env: Record<string,
  * key of a throwaway workspace is removed with it. Elsewhere the key file is in the workspace.
  */
 export function forgetVaultKey(workspaceDir: string, platform: NodeJS.Platform = process.platform): void {
-  // The v1 server's database (startup.ts databaseFile); 0.x has none.
+  // The server's database (startup.ts databaseFile).
   const file = join(workspaceDir, "sf-agent.db");
   if (platform !== "darwin" || !existsSync(file)) return;
   let keyId: string | undefined;
@@ -165,9 +164,7 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
     const offered = new Set(tools.map((t) => t.name));
     await mustCall(raw, "context_add_file", { context: CONTEXT, path: scenario.inputsDir });
     if (scenario.metadataDir) {
-      // 0.x adds the metadata to the context; v1 indexes it.
-      if (offered.has("context_add_metadata")) await mustCall(raw, "context_add_metadata", { context: CONTEXT, provider: "local", location: scenario.metadataDir });
-      else await indexMetadata(raw, scenario.metadataDir);
+      await indexMetadata(raw, scenario.metadataDir);
     }
     const inputs = (await mustCall(raw, "context_read", { context: CONTEXT })).text;
     if (opts.approver) result.approvals = opts.approver.records.slice(approvalsAtStart);
@@ -206,7 +203,7 @@ export async function runScenario(scenario: Scenario, model: Model, judge: Model
 
 /**
  * Runs one task and judges what it saved. The judged artifact is the last one this task saved:
- * with its workflow's last step (v1), or with its own save tool (0.x, or a revision), so an
+ * with its workflow's last step, or with its own save tool (a revision, or an unguided run), so an
  * earlier draft, or something saved by another task, is never scored in its place. A failure
  * here costs this section only.
  */
@@ -318,8 +315,8 @@ async function indexMetadata(call: CallTool, dir: string, timeoutMs = 10 * 60_00
 }
 
 /**
- * The run has no user to answer questions, and 0.x tells the agent to ask when,
- * for example, it does not know the industry. Without this the agent could stop
+ * The run has no user to answer questions, and the agents are told to ask when,
+ * for example, they do not know the industry. Without this the agent could stop
  * and save nothing, which would measure the missing user rather than the output.
  */
 export const UNATTENDED =
@@ -330,7 +327,7 @@ export const UNATTENDED_PAGES = "A page that opens in the browser for the user t
 
 /**
  * For a scenario in another language the runner says which language to write in, the way a
- * user would. 0.x has no language setting; with v1 the agent is told to pass it to
+ * user would. The agent is told to pass it to
  * workflow_start when the user names the language, and the rubrics check the output's language.
  */
 export function withLanguage(prompt: string, language: string): string {

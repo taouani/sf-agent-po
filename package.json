@@ -1,14 +1,12 @@
 {
   "name": "sf-agent-po",
-  "version": "0.1.0",
-  "description": "MCP server providing Salesforce Solution Architect and Product Owner agent workflows",
-  "main": "dist/index.js",
+  "private": true,
+  "description": "Workspace root of sf-agent-po: the published package is built from packages/ by scripts/pack-next.mjs",
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build --workspaces --if-present",
-    "start": "node dist/index.js",
+    "build": "npm run build --workspaces --if-present",
     "pretest": "npm run vendor -w @sf-agent-po/core",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "repository": {
     "type": "git",
@@ -19,13 +17,6 @@
     "url": "https://github.com/taouani/sf-agent-po/issues"
   },
   "homepage": "https://github.com/taouani/sf-agent-po#readme",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "fast-xml-parser": "^5.11.2",
-    "marked": "^18.1.1",
-    "postal-mime": "^4.1.4",
-    "zod": "^4.6.7"
-  },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "playwright-core": "1.63.0",
@@ -33,16 +24,8 @@
     "vitest": "^5.0.5"
   },
   "type": "module",
-  "bin": {
-    "sf-agent-po": "dist/index.js"
-  },
-  "files": [
-    "dist",
-    "docs",
-    "examples"
-  ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "workspaces": [
     "packages/core",
