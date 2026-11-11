@@ -238,9 +238,69 @@ describe("an OpenAI-compatible endpoint (LiteLLM, a local server)", () => {
     expect(calls[0]!.body).toMatchObject({ model: "qwen3:32b", max_tokens: 8192 });
   });
 
+  it("runs a streamed tool call, and keeps a query string in the address", async () => {
+    const urls: string[] = [];
+    const answers = [
+      "data: " + JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "design_save", arguments: '{"title":"HLD"}' } }] }, finish_reason: null }] }) + "\n\n" +
+        "data: " + JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) + "\n\ndata: [DONE]\n\n",
+    ];
+    const fakeFetch = (async (url: string) => {
+      urls.push(String(url));
+      const next = answers.shift();
+      return next ? new Response(next, { headers: { "content-type": "text/event-stream" } }) : done("Done.");
+    }) as typeof fetch;
+    const run = await createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "https://proxy.example/v1?api-version=1" }, fakeFetch).runAgent("Draft.", tools, callTool);
+    expect(run).toMatchObject({ finalText: "Done.", turns: 2, stop: "done" });
+    expect(run.toolCalls).toEqual([{ name: "design_save", args: { title: "HLD" }, isError: false }]);
+    expect(urls[0]).toBe("https://proxy.example/v1/chat/completions?api-version=1");
+  });
+
+  it("asks for whole answers when streaming is off", async () => {
+    const bodies: any[] = [];
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, message: { role: "assistant", content: "Fine." }, finish_reason: "stop" }] }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const model = createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:8000/v1", OPENAI_COMPATIBLE_STREAM: "0" }, fakeFetch);
+    expect(await model.complete("Judge.", "Score this.")).toBe("Fine.");
+    expect(bodies[0].stream).toBeUndefined();
+    expect(bodies[0].max_tokens).toBe(32_000);
+  });
+
+  it("sends none of OpenAI's own key, organization or project to another endpoint", async () => {
+    const saved = { org: process.env.OPENAI_ORG_ID, project: process.env.OPENAI_PROJECT_ID, key: process.env.OPENAI_API_KEY };
+    process.env.OPENAI_ORG_ID = "org-test";
+    process.env.OPENAI_PROJECT_ID = "proj-test";
+    process.env.OPENAI_API_KEY = ["sk", "openai", "test"].join("-");
+    try {
+      const { calls, fakeFetch } = recorder();
+      await createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000" }, fakeFetch).complete("Judge.", "Score this.");
+      await createModel("openrouter:x-ai/grok", { OPENROUTER_API_KEY: "k" }, fakeFetch).complete("Judge.", "Score this.");
+      for (const { headers } of calls) {
+        expect(headers.get("openai-organization")).toBeNull();
+        expect(headers.get("openai-project")).toBeNull();
+        expect(headers.get("authorization")).not.toContain("openai");
+      }
+      expect(calls[0]!.headers.get("authorization")).toBe("Bearer none");
+    } finally {
+      for (const [name, value] of [["OPENAI_ORG_ID", saved.org], ["OPENAI_PROJECT_ID", saved.project], ["OPENAI_API_KEY", saved.key]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   it("refuses a missing or unusable address and a bad limit, without repeating the address", () => {
     expect(() => createModel("compatible:m", {})).toThrow(/OPENAI_COMPATIBLE_BASE_URL/);
-    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "localhost:4000x y" })).toThrow(/is not a web address|must start with http/);
+    let unparsed = "";
+    try {
+      createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://" + "private-host x" });
+    } catch (err) {
+      unparsed = (err as Error).message;
+    }
+    expect(unparsed).toBe("OPENAI_COMPATIBLE_BASE_URL is not a web address.");
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "localhost:4000" })).toThrow(/must start with http/);
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000/v1#x" })).toThrow(/must not end with a # part/);
     expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "ftp://proxy.example" })).toThrow(/must start with http/);
     const withLogin = "https://" + ["me", "secret"].join(":") + "@proxy.example";
     let message = "";
@@ -251,7 +311,10 @@ describe("an OpenAI-compatible endpoint (LiteLLM, a local server)", () => {
     }
     expect(message).toMatch(/must not hold a user name or password/);
     expect(message).not.toContain("secret");
-    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000", OPENAI_COMPATIBLE_MAX_TOKENS: "lots" })).toThrow(/OPENAI_COMPATIBLE_MAX_TOKENS/);
+    for (const bad of ["lots", "1e3", "0x10", "0", "1e30", "2000000"]) {
+      expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000", OPENAI_COMPATIBLE_MAX_TOKENS: bad })).toThrow(/OPENAI_COMPATIBLE_MAX_TOKENS/);
+    }
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000", OPENAI_COMPATIBLE_STREAM: "no" })).toThrow(/OPENAI_COMPATIBLE_STREAM must be 0 or 1/);
     expect(() => createModel("compatible:", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000" })).toThrow(/Use provider:model/);
   });
 });

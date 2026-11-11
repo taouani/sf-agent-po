@@ -37,13 +37,15 @@ proxy with your own provider keys behind it, or a local server (vLLM, Ollama, ll
 the model as the endpoint lists it (its `/models`):
 
 ```bash
-export OPENAI_COMPATIBLE_BASE_URL=http://localhost:4000   # Ollama: http://localhost:11434/v1
+export OPENAI_COMPATIBLE_BASE_URL=http://localhost:4000   # vLLM: http://localhost:8000/v1, Ollama: http://localhost:11434/v1
 export OPENAI_COMPATIBLE_API_KEY=...                      # only if the endpoint asks for one
 node packages/eval/dist/cli.js --models compatible:<model> --judge compatible:<judge model>
 ```
 
 The runner streams and sends `max_tokens` (32,000). A local model with a short context may
-refuse that: set `OPENAI_COMPATIBLE_MAX_TOKENS` lower. Prompt caching is up to the endpoint:
+refuse that (vLLM refuses any request whose prompt plus `max_tokens` is over the model's
+context): set `OPENAI_COMPATIBLE_MAX_TOKENS` lower. If a local server's streamed answers fail
+(for example "missing finish_reason"), set `OPENAI_COMPATIBLE_STREAM=0` for whole answers. Prompt caching is up to the endpoint:
 the runner marks nothing, so with Anthropic's models behind LiteLLM, set up prompt caching in
 LiteLLM (see its prompt caching docs) to keep the cost down. The address must not hold a user name or password; put
 the key in `OPENAI_COMPATIBLE_API_KEY`. A local model costs nothing, which makes it a free way
@@ -66,7 +68,8 @@ listed in the report.
 On GitHub, the **Eval** workflow does the same by hand (Actions, Eval, Run workflow), using the
 repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `OPENROUTER_API_KEY`, and for
 `compatible:` models `OPENAI_COMPATIBLE_BASE_URL` (an endpoint GitHub can reach, not `localhost`) and
-`OPENAI_COMPATIBLE_API_KEY`. The report appears
+`OPENAI_COMPATIBLE_API_KEY`, with the repository variables (not secrets) `OPENAI_COMPATIBLE_MAX_TOKENS`
+and `OPENAI_COMPATIBLE_STREAM` if you need them. The report appears
 in the run's summary.
 
 ## Scenarios

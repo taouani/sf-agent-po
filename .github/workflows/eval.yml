@@ -6,7 +6,8 @@ name: Eval
 # (one key for many vendors: openrouter:anthropic/<model>); a model whose key is missing
 # fails with a clear message. compatible:<model> calls the OpenAI-compatible endpoint in the
 # secret OPENAI_COMPATIBLE_BASE_URL (a LiteLLM proxy GitHub can reach), with the secret
-# OPENAI_COMPATIBLE_API_KEY.
+# OPENAI_COMPATIBLE_API_KEY (repository variables OPENAI_COMPATIBLE_MAX_TOKENS and
+# OPENAI_COMPATIBLE_STREAM tune it).
 
 on:
   workflow_dispatch:
@@ -51,6 +52,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_COMPATIBLE_BASE_URL: ${{ secrets.OPENAI_COMPATIBLE_BASE_URL }}
           OPENAI_COMPATIBLE_API_KEY: ${{ secrets.OPENAI_COMPATIBLE_API_KEY }}
+          OPENAI_COMPATIBLE_MAX_TOKENS: ${{ vars.OPENAI_COMPATIBLE_MAX_TOKENS }}
+          OPENAI_COMPATIBLE_STREAM: ${{ vars.OPENAI_COMPATIBLE_STREAM }}
           MODELS: ${{ inputs.models }}
           JUDGE: ${{ inputs.judge }}
           SCENARIOS: ${{ inputs.scenarios }}

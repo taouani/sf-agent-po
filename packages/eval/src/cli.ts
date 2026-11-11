@@ -30,7 +30,8 @@ the output against each scenario's rubric, and writes report.md and results.json
 Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY.
 compatible: models call OPENAI_COMPATIBLE_BASE_URL (e.g. http://localhost:4000), with
 OPENAI_COMPATIBLE_API_KEY if the endpoint wants one, and OPENAI_COMPATIBLE_MAX_TOKENS to
-lower the output limit (default 32000) for a model with a short context.
+lower the output limit (default 32000) for a model with a short context;
+OPENAI_COMPATIBLE_STREAM=0 asks for whole answers from a server whose streams fail.
 The runner answers the approval pages a v1 server opens (input review, requirements,
 scope) as a user would, approving what they propose; run "npm run build" first.`;
 

@@ -53,7 +53,7 @@ export const PROVIDERS = {
    * llama.cpp. The model is named as the endpoint lists it: "compatible:claude-opus-5-5".
    * The address comes from OPENAI_COMPATIBLE_BASE_URL; the key is optional (a local server needs none).
    */
-  compatible: { env: "OPENAI_COMPATIBLE_API_KEY", urlEnv: "OPENAI_COMPATIBLE_BASE_URL", maxTokensEnv: "OPENAI_COMPATIBLE_MAX_TOKENS" },
+  compatible: { env: "OPENAI_COMPATIBLE_API_KEY", urlEnv: "OPENAI_COMPATIBLE_BASE_URL", maxTokensEnv: "OPENAI_COMPATIBLE_MAX_TOKENS", streamEnv: "OPENAI_COMPATIBLE_STREAM" },
 } as const;
 
 export type Provider = keyof typeof PROVIDERS;
@@ -78,7 +78,12 @@ export function createModel(spec: string, env: NodeJS.ProcessEnv = process.env, 
   return new OpenAICompatibleModel(
     spec,
     model,
-    new OpenAI({ apiKey, baseURL: "baseURL" in p ? p.baseURL : undefined, fetch: fetchImpl }),
+    new OpenAI({
+      apiKey,
+      fetch: fetchImpl,
+      // The SDK reads OPENAI_ORG_ID and OPENAI_PROJECT_ID itself: they are OpenAI's, not another vendor's.
+      ...("baseURL" in p ? { baseURL: p.baseURL, organization: null, project: null } : {}),
+    }),
     // OpenRouter passes max_tokens on to every vendor (max_completion_tokens is OpenAI's own
     // name), and streams, so that a long answer from any vendor stays under HTTP timeouts.
     provider === "openrouter" ? { maxTokensParam: "max_tokens", stream: true, autoCache: /^~?anthropic\//.test(model) } : {},
@@ -89,6 +94,8 @@ export function createModel(spec: string, env: NodeJS.ProcessEnv = process.env, 
  * A model behind an OpenAI-compatible endpoint. It streams (long answers stay under HTTP
  * timeouts) and sends max_tokens, the name LiteLLM and local servers all take. A local model
  * with a short context may refuse 32,000 output tokens: OPENAI_COMPATIBLE_MAX_TOKENS lowers it.
+ * Some local servers stream chunks the SDK cannot put together (no finish reason, tool calls
+ * without an index): OPENAI_COMPATIBLE_STREAM=0 asks for whole answers instead.
  */
 function compatibleModel(spec: string, model: string, env: NodeJS.ProcessEnv, fetchImpl?: typeof fetch): Model {
   const p = PROVIDERS.compatible;
@@ -103,15 +110,20 @@ function compatibleModel(spec: string, model: string, env: NodeJS.ProcessEnv, fe
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`${p.urlEnv} must start with http:// or https://.`);
   if (url.username || url.password) throw new Error(`${p.urlEnv} must not hold a user name or password: put the key in ${p.env}.`);
+  // The SDK adds /chat/completions after the address, so a fragment would hide it from the request.
+  if (url.hash) throw new Error(`${p.urlEnv} must not end with a # part.`);
   const limit = env[p.maxTokensEnv]?.trim();
+  if (limit && !(/^\d+$/.test(limit) && Number(limit) > 0 && Number(limit) <= 1_000_000)) throw new Error(`${p.maxTokensEnv} must be a whole number from 1 to 1000000.`);
   const maxTokens = limit ? Number(limit) : MAX_TOKENS;
-  if (!Number.isInteger(maxTokens) || maxTokens <= 0) throw new Error(`${p.maxTokensEnv} must be a positive whole number.`);
+  const stream = env[p.streamEnv]?.trim();
+  if (stream && stream !== "0" && stream !== "1") throw new Error(`${p.streamEnv} must be 0 or 1.`);
   return new OpenAICompatibleModel(
     spec,
     model,
     // The SDK needs a key; a server that asks for none ignores this one.
-    new OpenAI({ apiKey: env[p.env] || "none", baseURL: url.href.replace(/\/+$/, ""), fetch: fetchImpl }),
-    { maxTokensParam: "max_tokens", stream: true, maxTokens },
+    // OpenAI's own organization and project ids, which the SDK would read from the environment, stay out.
+    new OpenAI({ apiKey: env[p.env] || "none", baseURL: url.href.replace(/\/+$/, ""), organization: null, project: null, fetch: fetchImpl }),
+    { maxTokensParam: "max_tokens", stream: stream !== "0", maxTokens },
   );
 }
 
