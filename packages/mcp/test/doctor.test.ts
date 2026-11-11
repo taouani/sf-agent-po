@@ -103,7 +103,8 @@ describe("doctor", () => {
     expect(text).toMatch(/\d+ passed, \d+ warning\(s\), 0 failed\.$/);
   });
 
-  it("checks a set-up workspace: key, model, host files, index age, and the Atlassian calls", async () => {
+  // It writes a key, a database and the host files: 0.6 s here, but 6.5 s once on a busy Windows runner (11 Nov).
+  it("checks a set-up workspace: key, model, host files, index age, and the Atlassian calls", { timeout: 30_000 }, async () => {
     const home = tempDir();
     const project = path.join(home, "proj");
     const workspace = path.join(project, ".sf-agent");
