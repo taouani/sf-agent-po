@@ -192,6 +192,70 @@ describe("OpenAI-compatible agent loop", () => {
   });
 });
 
+describe("an OpenAI-compatible endpoint (LiteLLM, a local server)", () => {
+  /** A streamed answer with usage, as LiteLLM sends it. */
+  const done = (content: string) => {
+    const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices, ...extra })}\n\n`;
+    return new Response(
+      chunk([{ index: 0, delta: { role: "assistant", content }, finish_reason: null }]) +
+        chunk([{ index: 0, delta: {}, finish_reason: "stop" }]) +
+        chunk([], { usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } }) +
+        "data: [DONE]\n\n",
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  const recorder = () => {
+    const calls: { url: string; headers: Headers; body: any }[] = [];
+    const fakeFetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), headers: new Headers(init.headers), body: JSON.parse(init.body as string) });
+      return done("Done.");
+    }) as typeof fetch;
+    return { calls, fakeFetch };
+  };
+
+  it("calls the endpoint's address with the model as it lists it, streaming, with max_tokens", async () => {
+    const { calls, fakeFetch } = recorder();
+    const key = ["sk", "litellm", "test"].join("-");
+    const model = createModel("compatible:claude-opus-5-5", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000/", OPENAI_COMPATIBLE_API_KEY: key }, fakeFetch);
+    expect(model.id).toBe("compatible:claude-opus-5-5");
+    const run = await model.runAgent("Draft.", tools, callTool);
+    expect(run).toMatchObject({ finalText: "Done.", turns: 1, stop: "done", inputTokens: 7, outputTokens: 3 });
+    expect(await model.complete("Judge.", "Score this.")).toBe("Done.");
+
+    expect(calls[0]!.url).toBe("http://localhost:4000/chat/completions");
+    expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${key}`);
+    expect(calls[0]!.body).toMatchObject({ model: "claude-opus-5-5", max_tokens: 32_000, stream: true, stream_options: { include_usage: true } });
+    expect(calls[0]!.body.max_completion_tokens).toBeUndefined();
+    expect(calls[0]!.body.cache_control).toBeUndefined();
+    expect(calls[1]!.body.messages[0]).toEqual({ role: "system", content: "Judge." });
+  });
+
+  it("needs no key for a local server, and takes a lower output limit", async () => {
+    const { calls, fakeFetch } = recorder();
+    const model = createModel("compatible:qwen3:32b", { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:11434/v1", OPENAI_COMPATIBLE_MAX_TOKENS: "8192" }, fakeFetch);
+    await model.complete("Judge.", "Score this.");
+    expect(calls[0]!.url).toBe("http://127.0.0.1:11434/v1/chat/completions");
+    expect(calls[0]!.body).toMatchObject({ model: "qwen3:32b", max_tokens: 8192 });
+  });
+
+  it("refuses a missing or unusable address and a bad limit, without repeating the address", () => {
+    expect(() => createModel("compatible:m", {})).toThrow(/OPENAI_COMPATIBLE_BASE_URL/);
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "localhost:4000x y" })).toThrow(/is not a web address|must start with http/);
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "ftp://proxy.example" })).toThrow(/must start with http/);
+    const withLogin = "https://" + ["me", "secret"].join(":") + "@proxy.example";
+    let message = "";
+    try {
+      createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: withLogin });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/must not hold a user name or password/);
+    expect(message).not.toContain("secret");
+    expect(() => createModel("compatible:m", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000", OPENAI_COMPATIBLE_MAX_TOKENS: "lots" })).toThrow(/OPENAI_COMPATIBLE_MAX_TOKENS/);
+    expect(() => createModel("compatible:", { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:4000" })).toThrow(/Use provider:model/);
+  });
+});
+
 describe("checkOpenRouterModels", () => {
   const list = (async () =>
     new Response(

@@ -30,9 +30,28 @@ With one OpenRouter key, name models as OpenRouter lists them:
 `--models openrouter:anthropic/<model>,openrouter:openai/<model>,openrouter:x-ai/<model>`. An id
 OpenRouter does not list stops the run at once, with that vendor's ids to choose from.
 
+### Through LiteLLM or a local model
+
+`compatible:<model>` calls any OpenAI-compatible endpoint: a [LiteLLM](https://docs.litellm.ai)
+proxy with your own provider keys behind it, or a local server (vLLM, Ollama, llama.cpp). Name
+the model as the endpoint lists it (its `/models`):
+
+```bash
+export OPENAI_COMPATIBLE_BASE_URL=http://localhost:4000   # Ollama: http://localhost:11434/v1
+export OPENAI_COMPATIBLE_API_KEY=...                      # only if the endpoint asks for one
+node packages/eval/dist/cli.js --models compatible:<model> --judge compatible:<judge model>
+```
+
+The runner streams and sends `max_tokens` (32,000). A local model with a short context may
+refuse that: set `OPENAI_COMPATIBLE_MAX_TOKENS` lower. Prompt caching is up to the endpoint:
+the runner marks nothing, so with Anthropic's models behind LiteLLM, set up prompt caching in
+LiteLLM (see its prompt caching docs) to keep the cost down. The address must not hold a user name or password; put
+the key in `OPENAI_COMPATIBLE_API_KEY`. A local model costs nothing, which makes it a free way
+to check a change to a scenario or to the runner before a paid run.
+
 Options: `--judge` (default: the first model), `--scenarios` (ids, default: all), `--server`
 (a command that starts another MCP server, for example an installed release; split on spaces, or a JSON array
-when a path has spaces), `--out` (default `eval-results/<date>`), `--max-turns` (default 40),
+when a path has spaces), `--out` (default `eval-results/<date>`), `--max-turns` (default 80),
 `--list`.
 
 By default the first model also judges, so it scores its own output. For a comparison between
@@ -45,7 +64,9 @@ saves with its own save tool is judged. A task or judging failure scores that ta
 listed in the report.
 
 On GitHub, the **Eval** workflow does the same by hand (Actions, Eval, Run workflow), using the
-repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `OPENROUTER_API_KEY`. The report appears
+repository secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `OPENROUTER_API_KEY`, and for
+`compatible:` models `OPENAI_COMPATIBLE_BASE_URL` (an endpoint GitHub can reach, not `localhost`) and
+`OPENAI_COMPATIBLE_API_KEY`. The report appears
 in the run's summary.
 
 ## Scenarios

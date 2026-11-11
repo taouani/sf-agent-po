@@ -15,7 +15,9 @@ Runs every scenario with every model against the server, has a judge model score
 the output against each scenario's rubric, and writes report.md and results.json.
 
   --models     Models to evaluate, e.g. anthropic:claude-opus-5-5,openai:<model>,xai:<model>,
-               or through OpenRouter: openrouter:anthropic/<model>,openrouter:x-ai/<model>
+               or through OpenRouter: openrouter:anthropic/<model>,openrouter:x-ai/<model>,
+               or through any OpenAI-compatible endpoint (a LiteLLM proxy, a local
+               server): compatible:<model as the endpoint names it>
   --judge      Judge model (default: the first model)
   --scenarios  Scenario ids, comma-separated (default: all)
   --server     Command that starts the MCP server, split on spaces, or a JSON array
@@ -26,6 +28,9 @@ the output against each scenario's rubric, and writes report.md and results.json
   --list       List the scenarios and exit
 
 Keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY and OPENROUTER_API_KEY.
+compatible: models call OPENAI_COMPATIBLE_BASE_URL (e.g. http://localhost:4000), with
+OPENAI_COMPATIBLE_API_KEY if the endpoint wants one, and OPENAI_COMPATIBLE_MAX_TOKENS to
+lower the output limit (default 32000) for a model with a short context.
 The runner answers the approval pages a v1 server opens (input review, requirements,
 scope) as a user would, approving what they propose; run "npm run build" first.`;
 
