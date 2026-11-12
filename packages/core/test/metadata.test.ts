@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { apexCode, classify, detectWithRules, isNameValue, readCustomMetadataRecord, HIDDEN_SECRET, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
+import { apexCode, classify, detectWithRules, isNameValue, readCustomMetadataRecord, HIDDEN_SECRET, hideCodeSecrets, classifyFile, Database, formulaCode, formulaFields, linkObjects, MAX_APEX_LENGTH, MAX_MARKUP_LENGTH, MetadataIndex, packagePath, parseMetadataXml, readApex, readFlow, readMarkup, MAX_OUTLINE_LENGTH, reportColumnRef, scanProject, soqlFields, type ParsedComponent } from "../src/index.js";
 
 const fixtures = join(import.meta.dirname, "fixtures", "metadata");
 const open: Database[] = [];
@@ -340,13 +340,13 @@ describe("flow logic", () => {
     const lines = f.body!.split("\n");
     expect(lines[0]).toBe('FLOW Case_Sharing "Case Sharing" (AutoLaunchedFlow, Active, API 62.0)');
     expect(f.body).toContain("START after save on Case, when a record is created or updated");
-    expect(f.body).toContain("only when 1 AND (2 OR 3) where 1: RecordTypeId EqualTo {!Care_RT}; 2: CareZone__c IsChanged true; 3: Store__c IsNull false");
-    expect(f.body).toContain("outcome Is_EU: {!$Record.CareZone__c} EqualTo 'EU' AND {!$Record.Owner:User.Email} NotEqualTo 'it\\'s karim.benali@example.com'");
+    expect(f.body).toContain("  only when 1 AND (2 OR 3):\n    1: RecordTypeId EqualTo {!Care_RT}\n    2: CareZone__c IsChanged true\n    3: Store__c IsNull false\n");
+    expect(f.body).toContain("  outcome Is_EU when all of:\n    {!$Record.CareZone__c} EqualTo 'EU'\n    {!$Record.Owner:User.Email} NotEqualTo 'it\\'s karim.benali@example.com'\n    -> Get_Group");
     expect(f.body).toContain('otherwise "Other zones" -> (end)');
-    expect(f.body).toContain("where DeveloperName EqualTo 'Care_CentralTeam_EU'");
-    expect(f.body).toContain("caseIds <- {!$Record.Id}");
+    expect(f.body).toContain("  where:\n    DeveloperName EqualTo 'Care_CentralTeam_EU'");
+    expect(f.body).toContain("input caseIds = {!$Record.Id}");
     expect(f.body).toContain("on error -> Log_Error");
-    expect(f.body).toContain("formula Zone: String = TEXT( {!$Record.CareZone__c})");
+    expect(f.body).toContain("formula Zone = TEXT( {!$Record.CareZone__c}) (String)");
     // In the order the flow runs: the start, the decision, the lookup, the action, its fault path.
     const at = (s: string) => lines.findIndex((l) => l.startsWith(s));
     const order = ["START", "DECISION Check_Zone", "GET RECORDS Get_Group", "ACTION Share", "CREATE RECORDS Log_Error", "-- Not reached", "UPDATE RECORDS Unreached"].map(at);
@@ -355,6 +355,48 @@ describe("flow logic", () => {
     expect(f.body).toContain("constant apiKey = 'HIDDEN_SECRET'");
     expect(f.body).not.toContain("k_9f8e7d6c");
     expect(f.attrs.lines).toBe(lines.length);
+  });
+
+  it("hides secrets wherever a flow holds a value, and keeps every name maskable", () => {
+    const f = flow(`
+      <start><object>Case</object><triggerType>RecordAfterSave</triggerType>
+        <scheduledPaths><pathType>AsyncAfterCommit</pathType><connector><targetReference>Call</targetReference></connector></scheduledPaths>
+        <connector><targetReference>Check</targetReference></connector></start>
+      <decisions><name>Check</name><rules><name>R</name><label>Owner's rule</label>
+        <conditions><leftValueReference>x</leftValueReference><operator>EqualTo</operator><rightValue><stringValue>apikey=supersecret123</stringValue></rightValue></conditions>
+        <connector><targetReference>Get_Acc</targetReference></connector></rules></decisions>
+      <recordLookups><name>Get_Acc</name><object>Account</object>
+        <outputAssignments><assignToReference>acctName</assignToReference><field>Name</field></outputAssignments>
+        <connector><targetReference>Call</targetReference></connector></recordLookups>
+      <actionCalls><name>Call</name><actionName>Pricing.price</actionName><actionType>externalService</actionType>
+        <inputParameters><name>apiKey</name><value><stringValue>k_9f8e7d6c5b4a</stringValue></value></inputParameters>
+        <inputParameters><name>amount</name><value><formulaDataType>Number</formulaDataType><formulaExpression>{!x} * 2</formulaExpression></value></inputParameters>
+        <connector><targetReference>Sub</targetReference></connector></actionCalls>
+      <subflows><name>Sub</name><flowName>Child</flowName>
+        <inputAssignments><name>password</name><value><stringValue>hunter2hunter2</stringValue></value></inputAssignments>
+        <outputAssignments><assignToReference>result</assignToReference><name>out</name></outputAssignments></subflows>
+      <variables><name>authToken</name><dataType>String</dataType><value><stringValue>tok_abcdef123456</stringValue></value></variables>
+      <formulas><name>Url</name><dataType>String</dataType><expression>"https://api.example.com/v1?apikey=formulasecret123" &amp; {!x}</expression></formulas>
+      <textTemplates><name>Mail</name><text>Regards,
+Karim Benali</text></textTemplates>`);
+    for (const secret of ["supersecret123", "k_9f8e7d6c5b4a", "hunter2hunter2", "tok_abcdef123456", "formulasecret123"]) expect(f.body, secret).not.toContain(secret);
+    expect(f.body).toContain('outcome R "Owner’s rule" when:');
+    expect(f.body).toContain("{!acctName} = field Name");
+    expect(f.body).toContain("input amount = formula {!x} * 2");
+    expect(f.body).toContain("{!result} = output out");
+    expect(f.body).toContain("path (unnamed): runs asynchronously, after the save -> Call");
+    // A template keeps one literal per line: a name at the start of a line stays a word of its own.
+    expect(f.body).toContain("text template Mail =\n    'Regards,'\n    'Karim Benali'");
+    expect(flow("<textTemplates><name>T</name><text>Hi</text></textTemplates><constants><name>C</name><value><stringValue>a\nBenali</stringValue></value></constants>").body).toContain("constant C = 'a\\n Benali'");
+  });
+
+  it("is cut, not dropped, when a flow is too large", () => {
+    const rules = Array.from({ length: 30 }, (_, i) => `<conditions><leftValueReference>v${i}</leftValueReference><operator>EqualTo</operator><rightValue><stringValue>${"x".repeat(100)}</stringValue></rightValue></conditions>`).join("");
+    const decisions = Array.from({ length: 400 }, (_, i) => `<decisions><name>D${i}</name><rules><name>R</name>${rules}</rules></decisions>`).join("");
+    const f = flow(decisions);
+    expect(f.body!.length).toBeLessThanOrEqual(MAX_OUTLINE_LENGTH + 100);
+    expect(f.body).toMatch(/\n\n-- The outline stops here: the flow is too large to keep all of it\.$/);
+    expect(f.attrs.tooLarge).toBeUndefined();
   });
 
   it("follows loops and waits, and keeps flows with no start element", () => {
@@ -370,7 +412,7 @@ describe("flow logic", () => {
     expect(f.body).toContain("{!Ids} Add {!Each.Id}");
     expect(f.body).toContain("WAIT Wait_Day\n  event Tomorrow -> Done\n  otherwise -> (end)");
     expect(f.body).toContain("DELETE RECORDS Done\n  on {!Cases}");
-    expect(f.body).toContain("variable Cases: Case (collection, input)");
+    expect(f.body).toContain("variable Cases (Case, collection, input)");
     expect(f.body).not.toContain("Not reached");
   });
 });

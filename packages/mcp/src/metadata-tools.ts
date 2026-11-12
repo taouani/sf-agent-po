@@ -333,13 +333,15 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         const c = index.component(snap.id, type, name);
         if (!c || c.missing) return text(`No ${type} named ${name} in ${snap.source}.`);
         const body = index.body(c.id);
+        const what = type === "Flow" ? "logic" : "code";
         if (body === undefined) {
           return text(
             c.attrs.tooLarge
-              ? `${name} is too large for the index to keep its ${type === "Flow" ? "logic" : "code"}.`
-              : c.attrs.lines === undefined && type !== "Flow"
-                ? `${name} could not be read when ${snap.source} was indexed, so the index has no code for it.`
-                : `The index of ${snap.source} has no code for ${name}: it was built by an earlier version. Index the source again (npx sf-agent-po@next index) and ask again.`,
+              ? `${name} is too large for the index to keep its code.`
+              : // A file the scan could not read has no details; a flow an earlier version read has some, but no lines.
+                (type === "Flow" ? Object.keys(c.attrs).length === 0 : c.attrs.lines === undefined)
+                ? `${name} could not be read when ${snap.source} was indexed, so the index has no ${what} for it.`
+                : `The index of ${snap.source} has no ${what} for ${name}: it was built by an earlier version. Index the source again (npx sf-agent-po@next index) and ask again.`,
           );
         }
         const all = body.replace(/\r\n?/g, "\n").split("\n");

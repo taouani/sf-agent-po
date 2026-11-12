@@ -236,10 +236,22 @@ describe("metadata tools", () => {
     const logic = await call("metadata_code", { context: "acme", type: "Flow", name: "Lapse" });
     expect(logic.text).toMatch(/^Flow Lapse, lines 1-\d+ of \d+/);
     expect(logic.text).toContain("START after save on Policy__c, when a record is updated");
-    expect(logic.text).toMatch(/outcome Yes: \{!\$Record\.Status__c\} EqualTo 'Lapsed by \[PERSON_\d+\]'/);
+    expect(logic.text).toMatch(/outcome Yes when:\n +\d+ +\{!\$Record\.Status__c\} EqualTo 'Lapsed by \[PERSON_\d+\]'/);
     expect(logic.text).toContain("Premium__c = 0");
     expect(logic.text).not.toContain("Karim");
     expect((await call("metadata_code", { context: "acme", type: "Flow", name: "Lapse", find: "premium" })).text).toContain('Flow Lapse: 1 line(s) contain "premium"');
+  });
+
+  it("say why there is no flow logic to show", async () => {
+    const { call, index, db } = await connect();
+    await indexProject(index, project());
+    db.db.prepare("DELETE FROM component_body").run();
+    // A flow an earlier version indexed has its details, but no logic.
+    const old = await call("metadata_code", { context: "acme", type: "Flow", name: "Policy_Update" });
+    expect(old.text).toContain("has no logic for Policy_Update: it was built by an earlier version");
+    // A flow file the scan could not read has no details at all: indexing again would not help.
+    db.db.prepare("UPDATE component SET attrs = '{}' WHERE name = 'Policy_Update'").run();
+    expect((await call("metadata_code", { context: "acme", type: "Flow", name: "Policy_Update" })).text).toContain("could not be read when");
   });
 
   it("show code with its secrets hidden, and long lines cut", async () => {
