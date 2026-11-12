@@ -9,6 +9,7 @@ import { DOCTOR_USAGE } from "./doctor.js";
 import { INDEX_USAGE } from "./index-command.js";
 import { keyExportHint, keyImportHint, KEY_USAGE } from "./key-command.js";
 import { REPORT_USAGE } from "./report-command.js";
+import { SCHEDULE_USAGE } from "./schedule-command.js";
 
 async function main(): Promise<void> {
   // Loaded here, so that init, which only writes files, does not load the store.
@@ -182,14 +183,37 @@ async function report(argv: string[]): Promise<void> {
   }
 }
 
+/** `schedule` refreshes an org's index every day with the computer's scheduler. */
+async function schedule(argv: string[]): Promise<void> {
+  try {
+    const { parseScheduleArgs, runSchedule } = await import("./schedule-command.js");
+    const opts = parseScheduleArgs(argv);
+    if ("help" in opts) return console.log(opts.help);
+    const os = await import("node:os");
+    const { run } = await import("@sf-agent-po/connectors");
+    process.exitCode = await runSchedule(opts, {
+      platform: process.platform,
+      home: os.homedir(),
+      cwd: process.cwd(),
+      pathEnv: process.env.PATH ?? "",
+      run: (cmd, args) => run(cmd, args, { timeoutMs: 30_000 }),
+      out: (t) => console.log(t),
+    });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  }
+}
+
 const command = process.argv[2];
 if (command === "init") await init(process.argv.slice(3));
 else if (command === "index") await index(process.argv.slice(3));
 else if (command === "key") await key(process.argv.slice(3));
 else if (command === "doctor") await doctor(process.argv.slice(3));
 else if (command === "report") await report(process.argv.slice(3));
+else if (command === "schedule") await schedule(process.argv.slice(3));
 else if (command !== undefined) {
   // Hosts start the MCP server with no arguments; anything else is most likely a mistyped command.
-  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}\n\n${DOCTOR_USAGE}\n\n${REPORT_USAGE}`);
+  console.error(`Unknown command "${command}". Run npx sf-agent-po@next with no arguments to start the MCP server.\n\n${USAGE}\n\n${INDEX_USAGE}\n\n${KEY_USAGE}\n\n${DOCTOR_USAGE}\n\n${REPORT_USAGE}\n\n${SCHEDULE_USAGE}`);
   process.exitCode = 1;
 } else await main();
