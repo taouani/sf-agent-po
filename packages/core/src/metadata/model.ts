@@ -10,14 +10,17 @@ export const COMPONENT_TYPES = [
   "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "ExternalServiceRegistration",
   "PlatformEventChannel", "PlatformEventChannelMember", "Workflow", "WorkflowOutboundMessage", "CustomMetadata",
+  "SharingRules", "Role", "Group", "Queue",
 ] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
 
 /**
  * How one component depends on another:
- * - part_of: a field, record type or rule belongs to its object;
- * - references: a lookup or master-detail field points at an object, a flow variable is of
+ * - part_of: a field, record type or rule belongs to its object, and so do its sharing rules;
+ * - references: a sharing rule shares to or from a group, role or queue; a role sits under its
+ *   parent role; a queue owns records of an object and holds roles and groups; a lookup or
+ *   master-detail field points at an object, a flow variable is of
  *   an Apex-defined type, or a person account field (Account.Foo__pc) stands for its contact
  *   field (Contact.Foo__c); a named credential uses an external credential (or, the legacy
  *   kind, an auth provider), an external credential uses an auth provider, and an external

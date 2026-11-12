@@ -220,6 +220,14 @@ describe("retrieveOrgMetadata", () => {
     expect(withoutSecrets("Workflow", "<Workflow><outboundMessages><integrationUser>a@b.c</integrationUser><name>N</name></outboundMessages><alerts><recipients><recipient>a@b.c</recipient><type>user</type></recipients></alerts></Workflow>"))
       .toBe("<Workflow><outboundMessages><name>N</name></outboundMessages><alerts><recipients><type>user</type></recipients></alerts></Workflow>");
     expect(withoutSecrets("Dashboard", "<Dashboard><runningUser/><title>T</title></Dashboard>")).toBe("<Dashboard><title>T</title></Dashboard>");
+    // A sharing rule keeps who it shares with, but not a user's username.
+    expect(withoutSecrets("SharingRules", "<SharingRules><sharingCriteriaRules><sharedTo><managers>jane@acme.example.com</managers></sharedTo></sharingCriteriaRules><sharingOwnerRules><sharedTo><guestUser>guest@site.example.com</guestUser><group>G</group></sharedTo></sharingOwnerRules></SharingRules>")).toBe(
+      "<SharingRules><sharingCriteriaRules><sharedTo><managers/></sharedTo></sharingCriteriaRules><sharingOwnerRules><sharedTo><guestUser/><group>G</group></sharedTo></sharingOwnerRules></SharingRules>",
+    );
+    // A queue keeps its objects, roles and groups; its users and its email go.
+    expect(withoutSecrets("Queue", "<Queue><email>care@example.com</email><name>Q</name><queueMembers><roles><role>CEO</role></roles><users><user>a@b.c</user><user>d@e.f</user></users></queueMembers></Queue>")).toBe(
+      "<Queue><name>Q</name><queueMembers><roles><role>CEO</role></roles></queueMembers></Queue>",
+    );
     expect(withoutSecrets("ApexClass", "<x><username>u</username></x>")).toBe("<x><username>u</username></x>");
   });
 
