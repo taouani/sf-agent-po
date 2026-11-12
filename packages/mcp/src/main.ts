@@ -196,6 +196,7 @@ async function schedule(argv: string[]): Promise<void> {
       home: os.homedir(),
       cwd: process.cwd(),
       pathEnv: process.env.PATH ?? "",
+      env: process.env,
       run: (cmd, args) => run(cmd, args, { timeoutMs: 30_000 }),
       out: (t) => console.log(t),
     });

@@ -147,7 +147,7 @@ npx -y sf-agent-po@next schedule --list                                  # the s
 npx -y sf-agent-po@next schedule --remove --org <alias or username>
 ```
 
-It uses Task Scheduler on Windows, launchd on macOS and cron on Linux. On Windows and macOS a run missed while the computer was off or asleep starts when it is back. Each run writes its output to `.sf-agent/schedule/<org>.log`. A scheduled run that starts while another run indexes the same org stops at once and says so in its log, so nothing is indexed twice at the same time.
+It uses Task Scheduler on Windows, launchd on macOS and cron on Linux, and runs as you, with your `sf` login. On Windows it runs while you are logged in, in a console window (closing the window stops the run), and a run missed while the computer was off starts once you log on. On macOS a run missed while the Mac slept starts when it wakes; if the project is under Documents or Desktop, macOS may refuse the run access, which it says in `~/Library/Logs/sf-agent-po`. Each run writes its output to a log in `.sf-agent/schedule`, and `--list` shows how the last run went. The run gets your PATH and a company CA file (`NODE_EXTRA_CA_CERTS`) as they were when you scheduled it; a proxy with a password in it is not written down, so set it in your system settings instead. A scheduled run that starts while another run indexes the same org stops at once and says so in its log, so nothing is indexed twice at the same time.
 
 Ask questions in plain words: "summarise the uat org", "search the metadata for renewal", "what depends on Policy__c.Premium__c?".
 
