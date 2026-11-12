@@ -4,13 +4,45 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type ParseCache, type SnapshotInfo } from "@sf-agent-po/core";
+import { MAX_SKIPPED_LISTED, scanProject, type MetadataIndex, type ParseCache, type SnapshotInfo, type SnapshotTarget } from "@sf-agent-po/core";
 import { run } from "./exec.js";
 import { parseRepoSpec, redactLocation, repoSource, resolveMetadataSource, type MetadataSourceSpec } from "./metadata-source.js";
 import { checkOrgArg, orgIdOf, retrieveOrgMetadata, type RetrieveOptions } from "./org-metadata.js";
 import { defaultSfRunner } from "./salesforce.js";
 
-export type IndexTarget = { kind: "project"; dir: string } | { kind: "org"; targetOrg: string } | { kind: "remote"; repo: string | MetadataSourceSpec };
+/** A named set of a repository's package folders, indexed as its own source, and the org it is deployed to. */
+export interface FolderSet {
+  name: string;
+  /** Package names or folder paths, as in sfdx-project.json. */
+  packages: string[];
+  /** The org's alias or username, or its source ("org:00D..."). */
+  forOrg?: string;
+}
+
+export type IndexTarget =
+  | { kind: "project"; dir: string; set?: FolderSet }
+  | { kind: "org"; targetOrg: string }
+  | { kind: "remote"; repo: string | MetadataSourceSpec; set?: FolderSet };
+
+/** A folder set's name: short, and safe in a source name and a file name. */
+export const SET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
+
+/** Checks a folder set before a run, so that a typo fails at once. */
+export function checkFolderSet(set: FolderSet): void {
+  if (!SET_NAME.test(set.name)) throw new Error(`A folder set's name has letters, digits, ".", "_" or "-", up to 40 (not "${set.name}").`);
+  if (!set.packages.length || set.packages.some((p) => !p.trim())) throw new Error("Name at least one package folder.");
+  if (set.forOrg && !/^org:00D[0-9A-Za-z]{12,15}$/.test(set.forOrg)) checkOrgArg(set.forOrg);
+}
+
+/**
+ * The source of a folder set: the repository's source with the set's name, and a hash of both,
+ * so that two sets of one repository, or one set name in two repositories, stay apart.
+ */
+export function setSource(repo: string, name: string): string {
+  const [, base, hash] = /^(repo:.*)#([0-9a-f]{8})$/.exec(repo) ?? [];
+  if (!base || !hash) throw new Error(`Not a repository source: ${repo}`);
+  return `${base}:${name}#${createHash("sha256").update(`${hash}\0${name}`).digest("hex").slice(0, 8)}`;
+}
 
 export interface IndexOptions {
   /** The workspace: retrieved org metadata is kept under `<workspace>/orgs`. */
@@ -164,18 +196,38 @@ export class StepTimer {
   }
 }
 
-/** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */
-export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force" | "full"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
+/** What a folder set's snapshot records: its packages, and its org by id (never the alias or username). */
+async function setTarget(set: FolderSet, sf: RetrieveOptions["sf"] = defaultSfRunner): Promise<SnapshotTarget> {
+  let org: string | undefined;
+  if (set.forOrg?.startsWith("org:")) org = set.forOrg;
+  else if (set.forOrg) {
+    const id = orgIdOf(await sf(["org", "display", "--target-org", set.forOrg]));
+    if (!id) throw new Error(`sf org display gave no org id for ${set.forOrg}.`);
+    org = `org:${id}`;
+  }
+  return { name: set.name, packages: [...set.packages], ...(org ? { org } : {}) };
+}
+
+/** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive), or a set of its package folders. */
+export async function indexProject(
+  index: MetadataIndex,
+  dir: string,
+  options: Pick<IndexOptions, "progress" | "force" | "full" | "sf"> & { workspace?: string; set?: FolderSet } = {},
+): Promise<SnapshotInfo> {
+  const set = options.set;
+  if (set) checkFolderSet(set);
   const revision = await gitRevision(dir);
-  options.progress?.(`Reading ${path.basename(path.resolve(dir))}`);
   try {
+    const target = set ? await setTarget(set, options.sf) : undefined;
+    options.progress?.(`Reading ${path.basename(path.resolve(dir))}${set ? ` (${set.name}: ${set.packages.join(", ")})` : ""}`);
     const read = (_lease: unknown, cache: ParseCache) =>
       scrubbing(options.workspace, async () => {
-        const parsed = await scanProject(dir, { exclude: options.workspace ? [options.workspace] : [], cache });
+        const parsed = await scanProject(dir, { exclude: options.workspace ? [options.workspace] : [], cache, ...(set ? { packages: set.packages } : {}) });
         options.progress?.("Writing the index");
         return parsed;
       });
-    return await index.build({ source: projectSource(dir), kind: "repo", ...(revision ? { revision } : {}) }, read, {
+    const source = set ? setSource(projectSource(dir), set.name) : projectSource(dir);
+    return await index.build({ source, kind: "repo", ...(revision ? { revision } : {}), ...(target ? { target } : {}) }, read, {
       force: options.force,
       full: options.full,
     });
@@ -189,20 +241,23 @@ export async function indexProject(index: MetadataIndex, dir: string, options: P
  * `<workspace>/repos` the first time, brought up to date on later runs, so that the parse
  * cache finds the files that did not change.
  */
-export async function indexRemote(index: MetadataIndex, spec: string | MetadataSourceSpec, options: IndexOptions): Promise<SnapshotInfo> {
+export async function indexRemote(index: MetadataIndex, spec: string | MetadataSourceSpec, options: IndexOptions & { set?: FolderSet }): Promise<SnapshotInfo> {
   const repo = typeof spec === "string" ? parseRepoSpec(spec) : spec;
   if (repo.provider === "local") return indexProject(index, repo.location, options);
+  const set = options.set;
+  if (set) checkFolderSet(set);
   try {
+    const target = set ? await setTarget(set, options.sf) : undefined;
     return await index.build(
-      { source: repoSource(repo), kind: "repo" },
+      { source: set ? setSource(repoSource(repo), set.name) : repoSource(repo), kind: "repo", ...(target ? { target } : {}) },
       // Fetched under the lease, so that two runs of one repository never share a checkout.
       (lease, cache) => scrubbing(options.workspace, async () => {
         const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress, interactive: options.interactive });
         lease.renew();
         const revision = await gitRevision(dir);
         if (revision) lease.setRevision(revision);
-        options.progress?.(`Reading ${redactLocation(repo.location)}${repo.ref ? ` at ${repo.ref}` : ""}`);
-        const parsed = await scanProject(dir, { cache });
+        options.progress?.(`Reading ${redactLocation(repo.location)}${repo.ref ? ` at ${repo.ref}` : ""}${set ? ` (${set.name}: ${set.packages.join(", ")})` : ""}`);
+        const parsed = await scanProject(dir, { cache, ...(set ? { packages: set.packages } : {}) });
         options.progress?.("Writing the index");
         return parsed;
       }),
@@ -257,8 +312,8 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
 }
 
 export function indexTarget(index: MetadataIndex, target: IndexTarget, options: IndexOptions): Promise<SnapshotInfo> {
-  if (target.kind === "project") return indexProject(index, target.dir, options);
-  if (target.kind === "remote") return indexRemote(index, target.repo, options);
+  if (target.kind === "project") return indexProject(index, target.dir, { ...options, ...(target.set ? { set: target.set } : {}) });
+  if (target.kind === "remote") return indexRemote(index, target.repo, { ...options, ...(target.set ? { set: target.set } : {}) });
   return indexOrg(index, target.targetOrg, options);
 }
 
@@ -289,10 +344,15 @@ export class BackgroundIndexer {
 
   /** Starts indexing a target, or returns the run already going for it. */
   start(target: IndexTarget): { job: IndexJob; done: Promise<IndexJob> } {
-    const key = target.kind === "project" ? `project:${path.resolve(target.dir)}` : target.kind === "remote" ? repoSource(typeof target.repo === "string" ? parseRepoSpec(target.repo) : target.repo) : `org:${target.targetOrg}`;
+    const repo = target.kind === "remote" ? (typeof target.repo === "string" ? parseRepoSpec(target.repo) : target.repo) : undefined;
+    const base = target.kind === "project" ? projectSource(target.dir) : target.kind === "org" ? `org:${target.targetOrg}` : repoSource(repo!);
+    const set = target.kind === "org" ? undefined : target.set;
+    if (set) checkFolderSet(set);
+    const name = set ? setSource(base, set.name) : base;
+    const key = target.kind === "project" ? `project:${path.resolve(target.dir)}${set ? `:${set.name}` : ""}` : name;
     const running = this.jobs.get(key);
     if (running?.job.state === "running") return running;
-    const job: IndexJob = { target: target.kind === "project" ? projectSource(target.dir) : key, state: "running", startedAt: new Date().toISOString() };
+    const job: IndexJob = { target: name, state: "running", startedAt: new Date().toISOString() };
     const timer = new StepTimer();
     const progress = (m: string) => {
       timer.mark(m);

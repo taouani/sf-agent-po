@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex, scanProject } from "@sf-agent-po/core";
-import { BackgroundIndexer, formatDuration, indexOrg, indexProject, projectSource, StepTimer, summarizeWarnings } from "../src/indexing.js";
+import { BackgroundIndexer, formatDuration, indexOrg, indexProject, projectSource, setSource, StepTimer, summarizeWarnings } from "../src/indexing.js";
 import { capReports, mergeAccess, readManifest, recordNamesOnly, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
@@ -774,6 +774,50 @@ describe("indexing", () => {
     expect(p.source).toBe(projectSource(project));
     expect(p.source).toMatch(/^repo:my project#[0-9a-f]{8}$/);
     expect(p.source).not.toContain(tmpdir());
+  });
+
+  it("indexes a set of package folders as its own source, linked to its org by id", async () => {
+    const project = path.join(tmp(), "monorepo");
+    const write = (rel: string, body: string) => {
+      mkdirSync(path.dirname(path.join(project, rel)), { recursive: true });
+      writeFileSync(path.join(project, rel), body);
+    };
+    write("sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "common-app/force-app" }, { path: "row-app/force-app" }, { path: "sfoa-app/force-app" }] }));
+    write("common-app/force-app/classes/Common.cls", "public class Common {}");
+    write("row-app/force-app/classes/Row.cls", "public class Row {}");
+    write("sfoa-app/force-app/classes/Sfoa.cls", "public class Sfoa {}");
+    const idx = index();
+    const calls: { args: string[] }[] = [];
+    const sf = fakeSf({}, calls);
+    const whole = await indexProject(idx, project);
+    const row = await indexProject(idx, project, { sf, set: { name: "row", packages: ["common-app", "row-app"], forOrg: "dev" } });
+    const sfoa = await indexProject(idx, project, { sf, set: { name: "sfoa", packages: ["common-app", "sfoa-app"], forOrg: `org:${ORG_ID}` } });
+    expect(row.source).toBe(setSource(projectSource(project), "row"));
+    expect(row.source).toMatch(/^repo:monorepo:row#[0-9a-f]{8}$/);
+    expect(new Set([whole.source, row.source, sfoa.source]).size).toBe(3);
+    expect(setSource("repo:other#12345678", "row")).not.toBe(row.source);
+    // The org is kept by its id, never by the alias or username it was given as.
+    expect(row.stats.target).toEqual({ name: "row", packages: ["common-app", "row-app"], org: `org:${ORG_ID}` });
+    expect(JSON.stringify(row.stats)).not.toContain("dev");
+    expect(calls.filter((c) => c.args[1] === "display")).toHaveLength(1);
+    expect(sfoa.stats.target?.org).toBe(`org:${ORG_ID}`);
+    expect(idx.component(row.id, "ApexClass", "Row")).toBeDefined();
+    expect(idx.component(row.id, "ApexClass", "Sfoa")).toBeUndefined();
+    expect(idx.component(sfoa.id, "ApexClass", "Common")).toBeDefined();
+    expect(whole.stats.target).toBeUndefined();
+    // Indexing the whole repository again leaves the sets alone.
+    await indexProject(idx, project);
+    expect(idx.latest(row.source)?.status).toBe("ready");
+
+    await expect(indexProject(idx, project, { set: { name: "bad name", packages: ["row-app"] } })).rejects.toThrow("A folder set's name");
+    await expect(indexProject(idx, project, { set: { name: "x", packages: [] } })).rejects.toThrow("at least one package folder");
+    await expect(indexProject(idx, project, { set: { name: "x", packages: ["row-app"], forOrg: "-bad" } })).rejects.toThrow();
+    // In the background, the job names the set's source.
+    const indexer = new BackgroundIndexer(idx, { workspace: tmp(), sf });
+    const { job, done } = indexer.start({ kind: "project", dir: project, set: { name: "row", packages: ["row-app"] } });
+    expect(job.target).toBe(row.source);
+    expect((await done).state).toBe("ready");
+    expect(() => indexer.start({ kind: "project", dir: project, set: { name: "", packages: ["row-app"] } })).toThrow("A folder set's name");
   });
 
   it("leaves the workspace out of a project, and its path out of errors", async () => {

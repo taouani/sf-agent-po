@@ -149,6 +149,19 @@ npx -y sf-agent-po@next schedule --remove --org <alias or username>
 
 It uses Task Scheduler on Windows, launchd on macOS and cron on Linux, and runs as you, with your `sf` login. On Windows it runs while you are logged in, in a console window (closing the window stops the run), and a run missed while the computer was off starts once you log on. On macOS a run missed while the Mac slept starts when it wakes; if the project is under Documents or Desktop, macOS may refuse the run access, which it says in `~/Library/Logs/sf-agent-po`. Each run writes its output to a log in `.sf-agent/schedule`, and `--list` shows how the last run went. The run gets your PATH and a company CA file (`NODE_EXTRA_CA_CERTS`) as they were when you scheduled it; a proxy with a password in it is not written down, so set it in your system settings instead. A scheduled run that starts while another run indexes the same org stops at once and says so in its log, so nothing is indexed twice at the same time.
 
+### One repository, several orgs
+
+When one repository is deployed to several orgs, each from some of its package folders, index each org's folders as a **folder set**, linked to that org:
+
+```bash
+npx -y sf-agent-po@next index --org prod-row                     # the org itself
+npx -y sf-agent-po@next index --project <repo> --packages common-app,row-app,sdg-app --name row --for-org prod-row
+```
+
+`--packages` takes the folders as your deployment script lists them: a package folder of `sfdx-project.json` (`row-app/care-app`), a package name, or a folder that holds package folders (`row-app` picks `row-app/force-app`, `row-app/care-app` and every other one under it, in the file's order). A folder with its own `sfdx-project.json` is read through it. The set is a source of its own (`repo:<name>:row#<hash>`), next to the whole repository's, and each set is indexed apart, so a component two sets define differently is no clash. When two folders of one set define the same component, the first in `sfdx-project.json` is kept and the other is reported.
+
+`--for-org` links the set to its org, kept by the org's id. `metadata_sources` then shows the pairs; opening a component in the org says where it is in the repository, or that it is not there (made in the org, or from another repository or a package), and opening one in the set says whether the org has it (if not: not deployed yet, or deleted in the org and still in git). A scope confirmed on one side also applies on the other, matched by name. Every other question, impact analysis included, works on one source at a time: the org, by default the safer one, since it has what was made by hand. `--repo` takes the same options for a remote repository, and the assistant can index a set too (the `metadata_index` tool, with `packages`, `set` and `forOrg`). Folder sets come with 1.0.0-next.12.
+
 Ask questions in plain words: "summarise the uat org", "search the metadata for renewal", "what depends on Policy__c.Premium__c?".
 
 ## A first run on the insurance sample
@@ -251,7 +264,7 @@ Export prints only to a terminal, so an AI agent running commands cannot read th
 | --- | --- |
 | `npx -y sf-agent-po@next` | Starts the MCP server (your tool runs this) |
 | `init` | Writes the agent files for your tool into a project |
-| `index` | Fills the metadata index from an org, a project folder or a repository |
+| `index` | Fills the metadata index from an org, a project folder or a repository, or a set of its package folders |
 | `schedule` | Refreshes an org's metadata index every day with your computer's scheduler |
 | `doctor` | Checks the set-up and gives the fix for each problem |
 | `key export`, `key import` | Back up and restore the masking key |

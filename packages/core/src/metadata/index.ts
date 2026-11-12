@@ -1,7 +1,7 @@
 export { COMPONENT_TYPES, EDGE_KINDS, type ComponentType, type EdgeKind, type ParseCache, type ParsedComponent, type ParsedEdge, type ParsedMetadata, type Ref } from "./model.js";
 export { componentKey, formulaCode, formulaFields, isCustomName, isMappingValue, isNameValue, linkObjects, MAX_FORMULA_LENGTH, readCustomMetadataRecord, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
 export { classify, MAX_FILE_BYTES, MAX_FILES, MAX_SKIPPED_LISTED, packagePath, scanProject } from "./scan.js";
-export { BUILD_LEASE_MS, FULL_RUN_AFTER_MS, MetadataIndex, type BuildLease, type IndexedComponent, type MetadataScope, type ObjectSummary, type ScopeMember, type ScopeNeighbour, type Related, type SnapshotInfo, type SnapshotSource, type SnapshotStats } from "./index-store.js";
+export { BUILD_LEASE_MS, FULL_RUN_AFTER_MS, MetadataIndex, type BuildLease, type IndexedComponent, type MetadataScope, type ObjectSummary, type ScopeMember, type ScopeNeighbour, type Related, type SnapshotInfo, type SnapshotSource, type SnapshotStats, type SnapshotTarget } from "./index-store.js";
 export { outsideCdataAndComments, parseMetadataXml } from "./xml.js";
 export { flowOutline, MAX_OUTLINE_LENGTH, readFlow } from "./flows.js";
 export { classifyFile, registryTypeCount, type RegistryMatch, type RegistryType } from "./registry.js";

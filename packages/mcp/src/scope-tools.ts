@@ -8,7 +8,7 @@ import type { ContextRepository, EdgeKind, IndexedComponent, Masker, MetadataInd
 import { z } from "zod";
 import type { ScopeChoice } from "./approval/server.js";
 import type { Reviewer } from "./inputs.js";
-import { line, pick, Pieces, readySources, sourceArg } from "./metadata-tools.js";
+import { line, pairedSources, pick, Pieces, readySources, sourceArg } from "./metadata-tools.js";
 import type { CallContext } from "./review.js";
 
 type Text = { content: { type: "text"; text: string }[] };
@@ -232,7 +232,9 @@ export function registerScopeTools(server: McpServer, kit: ScopeKit): void {
       const snap = readySources(index).find((s) => s.source === stored.source);
       if (!snap) throw new Error(`The scope of "${context}" is in ${stored.source}, which is not indexed any more. Index it again with metadata_index, or propose a scope in another source.`);
       const scope = index.scope(snap.id, stored.objects, { hops: 2 });
-      return text(await describeScope(new Pieces(kit.masker, context), snap, scope, `Scope of "${context}", confirmed by the user ${stored.confirmedAt}.`));
+      const paired = pairedSources(index, snap).map((p) => p.source);
+      const also = paired.length ? ` It also applies, by name, in ${paired.join(", ")} (the other side of its org and folder set pair).` : "";
+      return text(await describeScope(new Pieces(kit.masker, context), snap, scope, `Scope of "${context}", confirmed by the user ${stored.confirmedAt}.${also}`));
     }),
   );
 }

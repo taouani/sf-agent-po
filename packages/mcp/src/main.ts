@@ -102,7 +102,7 @@ async function index(argv: string[]): Promise<void> {
     const { indexTarget, parseRepoSpec, StepTimer } = await import("@sf-agent-po/connectors");
     timer = new StepTimer();
     // A repository is checked before the workspace is made for it.
-    if (opts.target.kind === "remote" && typeof opts.target.repo === "string") opts.target = { kind: "remote", repo: parseRepoSpec(opts.target.repo) };
+    if (opts.target.kind === "remote" && typeof opts.target.repo === "string") opts.target = { ...opts.target, repo: parseRepoSpec(opts.target.repo) };
     const { databaseFile, ensureWorkspace } = await import("./startup.js");
     ensureWorkspace(opts.workspace);
     database = new Database(databaseFile(opts.workspace));

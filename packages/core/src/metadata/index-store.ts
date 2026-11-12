@@ -21,6 +21,17 @@ export interface SnapshotSource {
   kind: "repo" | "org";
   /** A commit, or the retrieve time of an org. */
   revision?: string;
+  /** For a set of a repository's package folders indexed as its own source: the set, and its org. */
+  target?: SnapshotTarget;
+}
+
+/** A named set of a repository's package folders, such as the ones one org is deployed from. */
+export interface SnapshotTarget {
+  name: string;
+  /** The package folders (names or paths), as they were given. */
+  packages: string[];
+  /** The org the set is deployed to, as its source ("org:00D..."). */
+  org?: string;
 }
 
 export interface SnapshotInfo extends SnapshotSource {
@@ -44,6 +55,8 @@ export interface SnapshotStats {
   full?: boolean;
   /** The files read in detail, and how many came unchanged from the parse cache. */
   files?: { read: number; reused: number };
+  /** The folder set this source is, when it is one. */
+  target?: SnapshotTarget;
   error?: string;
 }
 
@@ -234,7 +247,7 @@ export class MetadataIndex {
       const cache = this.parseCache(source.source, options.full);
       const parsed = await read(lease, cache);
       return this.database.write(() => {
-        this.store(id, source.source, parsed, cache.full);
+        this.store(id, source.source, parsed, cache.full, source.target);
         cache.save();
         return this.snapshotById(id)!;
       });
@@ -306,7 +319,7 @@ export class MetadataIndex {
     this.building.clear();
   }
 
-  private store(id: number, source: string, parsed: ParsedMetadata, full: boolean): void {
+  private store(id: number, source: string, parsed: ParsedMetadata, full: boolean, target?: SnapshotTarget): void {
     const insert = this.db.prepare(
       "INSERT INTO component (snapshot, type, name, parent, parent_type, label, file, present, attrs, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     );
@@ -337,6 +350,7 @@ export class MetadataIndex {
       ...(parsed.skippedCount ? { skippedCount: parsed.skippedCount } : {}),
       full: full || !parsed.files?.reused,
       ...(parsed.files ? { files: parsed.files } : {}),
+      ...(target ? { target } : {}),
     };
     this.db.prepare("UPDATE metadata_snapshot SET status = 'ready', finished_at = ?, stats = ? WHERE id = ?").run(new Date().toISOString(), JSON.stringify(stats), id);
     // The run that finishes last holds the newest reading of the source, whichever started

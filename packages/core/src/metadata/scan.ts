@@ -166,26 +166,60 @@ export function packagePath(p: string): string | undefined {
   return norm.replace(/^\.\//, "");
 }
 
-/** The package folders an sfdx-project.json names, or the whole root without one. */
-async function packageDirs(root: string): Promise<string[]> {
+/** The package folders of a project's sfdx-project.json, with their package names; undefined without one. */
+async function projectPackages(root: string): Promise<{ path: string; name?: string }[] | undefined> {
   let text: string;
   try {
     text = await readFile(path.join(root, "sfdx-project.json"), "utf8");
   } catch {
-    return [""]; // not an sfdx project: read the whole folder
+    return undefined;
   }
-  let project: { packageDirectories?: { path?: unknown }[] };
+  let project: { packageDirectories?: { path?: unknown; package?: unknown }[] };
   try {
     project = JSON.parse(text) as typeof project;
   } catch {
     throw new Error("sfdx-project.json is not valid JSON");
   }
-  const dirs = (Array.isArray(project.packageDirectories) ? project.packageDirectories : [])
-    .map((d) => (typeof d?.path === "string" ? packagePath(d.path) : undefined))
-    .filter((d): d is string => d !== undefined);
-  if (!dirs.length) return [""];
-  // A folder inside another is read once, with the outer one.
-  return dirs.filter((d) => !dirs.some((o) => o !== d && (o === "" || d.startsWith(`${o}/`))));
+  return (Array.isArray(project.packageDirectories) ? project.packageDirectories : []).flatMap((d) => {
+    const at = typeof d?.path === "string" ? packagePath(d.path) : undefined;
+    return at === undefined ? [] : [{ path: at, ...(typeof d.package === "string" ? { name: d.package } : {}) }];
+  });
+}
+
+/** Folders with one inside another read once, with the outer one. */
+const outermost = (dirs: string[]) => [...new Set(dirs)].filter((d, _, all) => !all.some((o) => o !== d && (o === "" || d.startsWith(`${o}/`))));
+
+/**
+ * The package folders to read: those an sfdx-project.json names, or the whole root without
+ * one. With `only`, just those, each given by its package name, its path, or a folder that
+ * holds package folders (row-app for row-app/force-app and row-app/care-app), and read in the
+ * file's order; a folder the file does not name is read through its own sfdx-project.json,
+ * or whole.
+ */
+async function packageDirs(root: string, only?: readonly string[]): Promise<string[]> {
+  const listed = (await projectPackages(root)) ?? [];
+  if (!only?.length) {
+    const dirs = listed.map((d) => d.path);
+    return dirs.length ? outermost(dirs) : [""];
+  }
+  const picked = new Set<string>();
+  const others: string[] = [];
+  for (const asked of only) {
+    const named = listed.find((d) => d.name === asked);
+    const at = named?.path ?? packagePath(asked);
+    if (at === undefined || at === "") throw new Error(`"${asked}" is not a folder inside the project.`);
+    const under = listed.filter((d) => d.path === at || d.path.startsWith(`${at}/`));
+    if (under.length) {
+      for (const d of under) picked.add(d.path);
+      continue;
+    }
+    const isDir = await stat(path.join(root, at)).then((s) => s.isDirectory(), () => false);
+    if (!isDir) throw new Error(`"${asked}" is neither a package of sfdx-project.json nor a folder of the project.`);
+    // A sub-folder with its own sfdx-project.json: its package folders, else the whole sub-folder.
+    const own = (await projectPackages(path.join(root, at)))?.map((d) => (d.path ? `${at}/${d.path}` : at));
+    others.push(...(own?.length ? own : [at]));
+  }
+  return outermost([...listed.map((d) => d.path).filter((d) => picked.has(d)), ...others]);
 }
 
 /**
@@ -195,7 +229,7 @@ async function packageDirs(root: string): Promise<string[]> {
  * project folder or one of its package folders cannot be read at all, this throws: an
  * empty result would otherwise replace a good index.
  */
-export async function scanProject(root: string, options: { exclude?: readonly string[]; cache?: ParseCache } = {}): Promise<ParsedMetadata> {
+export async function scanProject(root: string, options: { exclude?: readonly string[]; cache?: ParseCache; packages?: readonly string[] } = {}): Promise<ParsedMetadata> {
   // Folders not to read, such as the workspace when it sits in the project.
   const excludedDirs = new Set((options.exclude ?? []).map((d) => path.resolve(d)));
   const excluded = (rel: string) => excludedDirs.size > 0 && excludedDirs.has(path.resolve(root, rel));
@@ -237,7 +271,7 @@ export async function scanProject(root: string, options: { exclude?: readonly st
   /** The links custom metadata records give their type, by type. */
   const mappings = new Map<string, { refs: Ref[]; records: number }>();
   const files = new Set<string>();
-  for (const dir of await packageDirs(root)) {
+  for (const dir of await packageDirs(root, options.packages)) {
     try {
       await walk(root, dir, files, (f, err) => skip(f, reason(err)), excluded);
     } catch (err) {

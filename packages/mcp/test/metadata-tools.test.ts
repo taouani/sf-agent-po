@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, MAX_APEX_LENGTH, MetadataIndex, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
+import { ContextRepository, Database, Masker, MAX_APEX_LENGTH, MetadataIndex, newVaultKey, scanProject, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer } from "../src/index.js";
 import { trimDetails } from "../src/metadata-tools.js";
@@ -118,6 +118,55 @@ describe("metadata tools", () => {
     // How long each step took.
     expect(sources.text).toMatch(/\n  Time per step:\n  {3}Reading sf-agent-meta-\w+: .+\n  {3}Writing the index: .+\n  {3}In all: /);
     expect(sources.text).not.toContain(root);
+  });
+
+  it("index a folder set for an org, and show each side of the pair from the other", async () => {
+    const { call, index, indexer } = await connect();
+    const root = mkdtempSync(path.join(tmpdir(), "sf-agent-mono-"));
+    dirs.push(root);
+    const w = (rel: string, c: string) => {
+      mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      writeFileSync(path.join(root, rel), c);
+    };
+    w("sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "common-app/force-app" }, { path: "row-app/force-app" }, { path: "sfoa-app/force-app" }] }));
+    w("common-app/force-app/classes/PolicyService.cls", "public class PolicyService {}");
+    w("row-app/force-app/classes/Karim_Tools.cls", "public class Karim_Tools {}");
+    w("row-app/force-app/classes/NotDeployed.cls", "public class NotDeployed {}");
+    w("sfoa-app/force-app/classes/SfoaOnly.cls", "public class SfoaOnly {}");
+    // The org: what the set deploys, a class made by hand, and nothing of NotDeployed.
+    const orgDir = mkdtempSync(path.join(tmpdir(), "sf-agent-org-"));
+    dirs.push(orgDir);
+    for (const c of ["PolicyService", "Karim_Tools", "HandMade"]) {
+      mkdirSync(path.join(orgDir, "classes"), { recursive: true });
+      writeFileSync(path.join(orgDir, "classes", `${c}.cls`), `public class ${c} {}`);
+    }
+    const org = "org:00D000000000001AAA";
+    await index.build({ source: org, kind: "org" }, () => scanProject(orgDir));
+
+    expect((await call("metadata_index", { project: root, set: "row" })).text).toContain("set and forOrg go with packages");
+    expect((await call("metadata_index", { org: "dev", packages: ["row-app"], set: "row" })).isError).toBe(true);
+    expect((await call("metadata_index", { project: root, packages: ["row-app"] })).text).toContain("needs set");
+    const started = await call("metadata_index", { project: root, packages: ["common-app", "row-app"], set: "row", forOrg: org });
+    expect(started.text).toMatch(/Indexing repo:sf-agent-mono-\w+:row#[0-9a-f]{8} in the background/);
+    await indexer.settle();
+    const sources = (await call("metadata_sources")).text;
+    const set = /repo:sf-agent-mono-\w+:row#[0-9a-f]{8}/.exec(sources)![0];
+    expect(sources).toContain(`- ${set} (repo, 3 components, indexed `);
+    expect(sources).toMatch(new RegExp(`folder set row \\(common-app, row-app\\), deployed to ${org}\\)`));
+    expect(sources).toContain(`, deployed from folder sets ${set})`);
+
+    const inOrg = (name: string) => call("metadata_component", { source: org, type: "ApexClass", name });
+    expect((await inOrg("PolicyService")).text).toContain(`${set}: in the folder set, at common-app/force-app/classes/PolicyService.cls.`);
+    expect((await inOrg("HandMade")).text).toContain(`${set}: not in the folder set (made in the org, or from another repository or a package).`);
+    // A file's path is masked like any text.
+    const tools = (await inOrg("Karim_Tools")).text;
+    expect(tools).toContain(`${set}: in the folder set, at row-app/force-app/classes/`);
+    expect(tools.split("Source:")[1]).not.toContain("Karim");
+    const notDeployed = (await call("metadata_component", { source: set, type: "ApexClass", name: "NotDeployed" })).text;
+    expect(notDeployed).toContain("File: row-app/force-app/classes/NotDeployed.cls");
+    expect(notDeployed).toContain(`${org}: not in the org (not deployed yet, or deleted in the org and still in the repository).`);
+    expect((await call("metadata_component", { source: set, type: "ApexClass", name: "PolicyService" })).text).toContain(`${org}: in the org too.`);
+    expect((await call("metadata_component", { source: set, type: "ApexClass", name: "SfoaOnly" })).text).toContain("No ApexClass named SfoaOnly");
   });
 
   it("summarize, search and open components, with free text and report names masked", async () => {
