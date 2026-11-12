@@ -88,6 +88,10 @@ describe("metadata sources", () => {
     git("commit", "-qm", "second");
     expect(await resolveMetadataSource(spec, workspace)).toBe(dest);
     expect(execFileSync("git", ["-C", dest, "log", "--format=%s"]).toString().trim().split(/\r?\n/)).toEqual(["second"]);
+    // A folder set has a checkout of its own, beside the repository's.
+    const forSet = await resolveMetadataSource(spec, workspace, { checkout: "row" });
+    expect(forSet).toBe(`${dest}_row`);
+    expect(execFileSync("git", ["-C", forSet, "log", "--format=%s"]).toString().trim()).toBe("second");
     // A force push (history rewritten) is followed too.
     git("commit", "-q", "--amend", "-m", "rewritten");
     await resolveMetadataSource(spec, workspace);

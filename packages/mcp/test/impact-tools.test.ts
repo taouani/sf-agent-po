@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackgroundIndexer, indexProject } from "@sf-agent-po/connectors";
-import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, readApex, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
+import { ContextRepository, Database, Masker, MetadataIndex, newVaultKey, readApex, scanProject, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalServer, createServer } from "../src/index.js";
 import { changeEventOf } from "../src/impact-tools.js";
@@ -123,12 +123,13 @@ async function connect() {
   const client = new Client({ name: "test", version: "0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
-  const info = await indexProject(index, project());
+  const root = project();
+  const info = await indexProject(index, root);
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r = (await client.callTool({ name, arguments: args })) as { content: { type: string; text?: string }[]; isError?: boolean };
     return { ...r, text: r.content.map((c) => c.text ?? "").join("\n") };
   };
-  return { call, contexts, source: info.source };
+  return { call, contexts, source: info.source, index, root };
 }
 
 describe("dynamic Apex", () => {
@@ -241,6 +242,24 @@ describe("metadata_impact", () => {
     expect(r.text).toContain("- ApexClass PolicyService (reads it) [outside the scope]");
     expect(r.text).toContain("## Change CustomField Policy__c.Statu__c\nNot in the index. Close matches:\n- CustomField Policy__c.Status__c");
     expect(r.text).toMatch(/## Delete CustomField[^#]*It is outside the scope the user confirmed\./);
+  });
+
+  it("applies a scope confirmed in an org to its folder set, and the other way round", async () => {
+    const { call, contexts, index, root } = await connect();
+    const org = "org:00D000000000001AAA";
+    await index.build({ source: org, kind: "org" }, () => scanProject(root));
+    const set = (await index.build({ source: "repo:mono:row#12345678", kind: "repo", target: { name: "row", packages: ["core"], org } }, () => scanProject(root))).source;
+    const change = { type: "CustomField", name: "Policy__c.Status__c", change: "delete" };
+    contexts.updateSettings("acme", { scope: { source: org, objects: ["Claim__c"], confirmedAt: "2026-11-07T00:00:00.000Z" } });
+    const inSet = await call("metadata_impact", { context: "acme", source: set, changes: [change] });
+    expect(inSet.text).toContain(`Impact in ${set}, against the scope the user confirmed in ${org}.`);
+    expect(inSet.text).toContain("- ApexClass PolicyService (reads it) [outside the scope]");
+    contexts.updateSettings("acme", { scope: { source: set, objects: ["Claim__c"], confirmedAt: "2026-11-07T00:00:00.000Z" } });
+    expect((await call("metadata_impact", { context: "acme", source: org, changes: [change] })).text).toContain(`against the scope the user confirmed in ${set}.`);
+    expect((await call("scope_show", { context: "acme" })).text).toContain(`It also applies, by name, in ${org}`);
+    // Another repository is not the other side of the pair.
+    const other = (await index.build({ source: "repo:other#87654321", kind: "repo" }, () => scanProject(root))).source;
+    expect((await call("metadata_impact", { context: "acme", source: other, changes: [change] })).text).toContain("no confirmed scope in this source");
   });
 
   it("counts only direct grants, lists only what depends on an object, prints shared facts once, and keeps typed names masked", async () => {

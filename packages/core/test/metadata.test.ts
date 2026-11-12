@@ -882,6 +882,52 @@ describe("scanProject on awkward projects", () => {
     expect(index.children(snap.id, "Helper", "Bot")).toMatchObject([{ name: "Helper.v1", parent: "Helper", parentType: "Bot" }]);
   });
 
+  it("reads only the package folders of a set: by top folder in the file's order, by path, by package name, or a sub-project", async () => {
+    write(
+      "sfdx-project.json",
+      JSON.stringify({
+        packageDirectories: [
+          { path: "common-app/force-app", default: true },
+          { path: "row-app/force-app" },
+          { path: "sfoa-app/force-app" },
+          { path: "common-app/care-app", package: "Care" },
+          { path: "row-app/care-app" },
+          { path: "sdg-app" },
+        ],
+      }),
+    );
+    for (const dir of ["common-app/force-app", "row-app/force-app", "sfoa-app/force-app", "common-app/care-app", "row-app/care-app", "sdg-app"]) {
+      const name = dir.replace(/[^a-z]/g, "_");
+      write(`${dir}/classes/${name}.cls`, `public class ${name} {}`);
+    }
+    // The same class in common and in row: the first in the file's order is kept.
+    write("row-app/force-app/classes/Shared.cls", "public class Shared {}");
+    write("common-app/force-app/classes/Shared.cls", "public class Shared {}");
+    write("row-app/scripts/classes/NotAPackage.cls", "public class NotAPackage {}");
+    write("tools/sub/sfdx-project.json", JSON.stringify({ packageDirectories: [{ path: "src" }] }));
+    write("tools/sub/src/classes/Tool.cls", "public class Tool {}");
+    write("tools/sub/other/classes/Skipped.cls", "public class Skipped {}");
+    const classes = async (packages: string[]) => (await scanProject(tmp, { packages })).components.filter((c) => c.type === "ApexClass").map((c) => c.name).sort();
+
+    const row = await scanProject(tmp, { packages: ["sdg-app", "row-app", "common-app"] });
+    expect(row.components.filter((c) => c.type === "ApexClass").map((c) => c.name).sort()).toEqual(
+      ["Shared", "common_app_care_app", "common_app_force_app", "row_app_care_app", "row_app_force_app", "sdg_app"].sort(),
+    );
+    expect(row.components.find((c) => c.name === "Shared")?.file).toBe("common-app/force-app/classes/Shared.cls");
+    expect(row.skipped).toEqual([{ file: "row-app/force-app/classes/Shared.cls", reason: "ApexClass Shared is also defined in common-app/force-app/classes/Shared.cls" }]);
+    expect(await classes(["row-app/care-app", "Care"])).toEqual(["common_app_care_app", "row_app_care_app"]);
+    expect(await classes(["tools/sub"])).toEqual(["Tool"]);
+    await expect(scanProject(tmp, { packages: ["nope-app"] })).rejects.toThrow('"nope-app" is neither a package of sfdx-project.json nor a folder of the project.');
+    await expect(scanProject(tmp, { packages: ["../outside"] })).rejects.toThrow("A package folder must be inside the project");
+    await expect(scanProject(tmp, { packages: ["/home/someone/x"] })).rejects.toThrow(/^A package folder must be inside the project: not an absolute path, nor one that leaves it\.$/);
+    await expect(scanProject(tmp, { packages: ["."] })).rejects.toThrow("root package cannot be part of a folder set");
+    // Where the file system ignores case, so does the match, with the file's spelling kept.
+    if (process.platform === "win32" || process.platform === "darwin") expect(await classes(["Row-App/Care-App"])).toEqual(["row_app_care_app"]);
+    // Without a set, everything the file names, as before.
+    expect(await classes([])).toHaveLength(7);
+    expect((await scanProject(tmp)).components.filter((c) => c.type === "ApexClass").length).toBe(7);
+  });
+
   it("matches names without case, and links roll-ups and dependent picklists", async () => {
     write("objects/Policy__c.object", `<CustomObject>
       <fields><fullName>Holder__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></fields>

@@ -7,7 +7,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ComponentType, ContextRepository, IndexedComponent, Masker, MetadataIndex, Related, SnapshotInfo } from "@sf-agent-po/core";
 import { z } from "zod";
-import { line, pick, Pieces, readySources, sourceArg } from "./metadata-tools.js";
+import { line, pick, Pieces, readySources, sameOrPaired, sourceArg } from "./metadata-tools.js";
 import type { CallContext } from "./review.js";
 import { storedScope } from "./scope-tools.js";
 import { impactKey } from "./design/checks.js";
@@ -75,7 +75,8 @@ const inactive = (c: IndexedComponent) => c.type === "Flow" && typeof c.attrs.st
 /** The scope's components (objects, children and members), by id, or undefined without a confirmed scope in this source. */
 function scopeIds(kit: ImpactKit, context: string, snap: SnapshotInfo): Set<number> | undefined {
   const stored = storedScope(kit.contexts, context);
-  if (!stored || stored.source !== snap.source) return undefined;
+  // A scope confirmed on one side of an org and folder set pair applies on the other, by name.
+  if (!stored || !sameOrPaired(kit.index, stored.source, snap)) return undefined;
   const s = kit.index.scope(snap.id, stored.objects, { hops: 2, neighbours: false });
   // Every part of a scope object counts, standard fields only referenced included.
   const parts = s.objects.flatMap((o) => kit.index.children(snap.id, o.name));
@@ -116,7 +117,7 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
       const pieces = new Pieces(kit.masker, context);
       const scope = scopeIds(kit, context, snap);
       const blind = index.blindSpots(snap.id);
-      const sections: string[] = [`Impact in ${snap.source}${scope ? ", against the scope the user confirmed" : " (no confirmed scope in this source, so nothing is flagged as outside it)"}.`];
+      const sections: string[] = [`Impact in ${snap.source}${scope ? `, against the scope the user confirmed${stored && stored.source !== snap.source ? ` in ${stored.source}` : ""}` : " (no confirmed scope in this source, so nothing is flagged as outside it)"}.`];
       // What is the same for every change on one object is worked out and printed once.
       const perObject = new Map<string, { writers: IndexedComponent[]; touching: Set<number>; printed: { writers?: boolean; blind?: boolean } }>();
       const objectFacts = (object: string) => {

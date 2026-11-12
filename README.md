@@ -222,7 +222,8 @@ The code lives in npm workspaces under `packages/`:
   when typed (`/sa-hld`); versions up to next.6 wrote `.cursor/commands/*.md`, and `init` and
   `doctor` name those files to delete, so Cursor does not offer each workflow twice.
   `npx sf-agent-po@next index --project <folder>`, `--repo <repository>` or `--org <alias>` fills the workspace's
-  metadata index: an org is retrieved in metadata format with the user's own `sf` CLI (read
+  metadata index (with `--packages <a,b> --name <set> --for-org <alias>`, only the package
+  folders one org is deployed from, as a folder set of its own linked to that org): an org is retrieved in metadata format with the user's own `sf` CLI (read
   only; the types the index uses, in parts of at most 9,000 files retrieved two at a time,
   `--parallel 1` to `3`, with profiles merged back),
   under `<workspace>/orgs/<org id>-<suffix>/metadata`, the last complete one named by

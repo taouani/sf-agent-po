@@ -30,6 +30,28 @@ describe("index command", () => {
     expect(() => parseIndexArgs(["--project", "p", "--parallel", "2"], {}, cwd)).toThrow(/only goes with --org/);
   });
 
+  it("takes a folder set of a project or a repository, with its name and org", () => {
+    expect(parseIndexArgs(["--project", "mono", "--packages", "common-app, row-app,sdg-app", "--name", "row", "--for-org", "prod"], {}, cwd)).toMatchObject({
+      target: { kind: "project", dir: path.resolve(cwd, "mono"), set: { name: "row", packages: ["common-app", "row-app", "sdg-app"], forOrg: "prod" } },
+    });
+    expect(parseIndexArgs(["--repo", "github:a/b", "--packages", "row-app", "--name", "row"], {}, cwd)).toMatchObject({ target: { kind: "remote", repo: "github:a/b", set: { name: "row", packages: ["row-app"] } } });
+    expect(() => parseIndexArgs(["--project", "mono", "--packages", "row-app"], {}, cwd)).toThrow(/needs --name/);
+    expect(() => parseIndexArgs(["--project", "mono", "--name", "row"], {}, cwd)).toThrow(/go with --packages/);
+    expect(() => parseIndexArgs(["--org", "prod", "--packages", "row-app", "--name", "row"], {}, cwd)).toThrow(/goes with --project or --repo/);
+    expect(() => parseIndexArgs(["--project", "mono", "--packages", " , ", "--name", "row"], {}, cwd)).toThrow(/at least one folder/);
+    expect(INDEX_USAGE).toContain("--packages <a,b,...> --name <set> [--for-org <alias or username>]");
+    const lines = describeSnapshot({
+      id: 2,
+      source: "repo:mono:row#12345678",
+      kind: "repo",
+      status: "ready",
+      startedAt: "2026-11-07T00:00:00Z",
+      stats: { counts: { ApexClass: 3 }, referenced: 1, edges: 2, target: { name: "row", packages: ["common-app", "row-app"], org: "org:00D000000000001AAA" } },
+    });
+    expect(lines[0]).toBe("Folder set row (common-app, row-app) of the repository, as repo:mono:row#12345678, deployed to org:00D000000000001AAA.");
+    expect(lines[1]).toBe("Indexed 3 components, 2 links, 1 referenced from outside the set.");
+  });
+
   it("says what a run found", () => {
     const lines = describeSnapshot({
       id: 1,

@@ -129,8 +129,32 @@ export function pick(index: MetadataIndex, source: string | undefined): Snapshot
 
 const total = (s: SnapshotInfo) => Object.values(s.stats.counts ?? {}).reduce<number>((n, c) => n + (c ?? 0), 0);
 
-function describeSource(s: SnapshotInfo): string {
-  return `${s.source} (${s.kind}, ${total(s)} components, indexed ${s.finishedAt ?? s.startedAt}${s.kind === "repo" && s.revision ? `, commit ${s.revision.slice(0, 12)}` : ""})`;
+/**
+ * The other side of a pair: for a folder set, its org's index; for an org, the folder sets
+ * deployed to it. Only what is indexed and ready.
+ */
+export function pairedSources(index: MetadataIndex, snap: SnapshotInfo): SnapshotInfo[] {
+  const ready = readySources(index);
+  const org = snap.stats.target?.org;
+  if (org) return ready.filter((s) => s.source === org);
+  return snap.kind === "org" ? ready.filter((s) => s.stats.target?.org === snap.source) : [];
+}
+
+/** Whether a scope confirmed in one source applies in another: the same source, or the two sides of a pair. */
+export function sameOrPaired(index: MetadataIndex, scopeSource: string, snap: SnapshotInfo): boolean {
+  return scopeSource === snap.source || pairedSources(index, snap).some((s) => s.source === scopeSource);
+}
+
+async function describeSource(pieces: Pieces, s: SnapshotInfo, ready: readonly SnapshotInfo[] = []): Promise<string> {
+  const set = s.stats.target;
+  // The folders are the repository's own words: masked like any text.
+  const folders = set ? (await Promise.all(set.packages.map((p) => pieces.mask(p)))).join(", ") : "";
+  const pair = set
+    ? `, folder set ${set.name} (${folders})${set.org ? `, deployed to ${set.org}${ready.some((r) => r.source === set.org) ? "" : " (not indexed)"}` : ""}`
+    : s.kind === "org"
+      ? ((sets) => (sets.length ? `, deployed from folder sets ${sets.join(", ")}` : ""))(ready.filter((r) => r.stats.target?.org === s.source).map((r) => r.source))
+      : "";
+  return `${s.source} (${s.kind}, ${total(s)} components, indexed ${s.finishedAt ?? s.startedAt}${s.kind === "repo" && s.revision ? `, commit ${s.revision.slice(0, 12)}` : ""}${pair})`;
 }
 
 /** A run, with its progress line or error masked: an error can quote a report's name or the CLI's output. */
@@ -140,7 +164,7 @@ async function describeJob(pieces: Pieces, j: IndexJob): Promise<string> {
   return `${j.target}: ${j.state}, ${when}${j.message ? `: ${await pieces.mask(j.message)}` : ""}${steps}`;
 }
 
-export const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash"); the newest one when omitted.');
+export const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash", or a folder set "repo:name:set#hash"); the newest one when omitted.');
 
 export function registerMetadataTools(server: McpServer, kit: MetadataKit): void {
   const { index, indexer, guard, contextName } = kit;
@@ -156,12 +180,22 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         org: z.string().optional().describe("The org's alias or username, as sf org login saved it."),
         project: z.string().optional().describe("A Salesforce project folder (source or metadata format)."),
         repo: z.string().optional().describe("A remote repository: github:owner/repo, gitlab:group/repo, azure-devops:<clone URL> or git:<clone URL>, with #<branch or tag> to pick one."),
+        packages: z
+          .array(z.string().min(1))
+          .min(1)
+          .optional()
+          .describe("With project or repo, for a repository several orgs are deployed from: only these package folders (package names or paths from sfdx-project.json), the ones one org gets. They are indexed as a folder set of their own, next to the whole repository."),
+        set: z.string().optional().describe('With packages: the folder set\'s name, e.g. "prod-eu".'),
+        forOrg: z.string().optional().describe("With packages: the org the set is deployed to (alias or username, or its source org:00D...), to pair the two."),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    guard(async ({ org, project, repo }: { org?: string; project?: string; repo?: string; context?: string }) => {
+    guard(async ({ org, project, repo, packages, set, forOrg }: { org?: string; project?: string; repo?: string; packages?: string[]; set?: string; forOrg?: string; context?: string }) => {
       if ([org, project, repo].filter(Boolean).length !== 1) throw new Error("Give one of org, project or repo.");
-      const { job } = indexer.start(org ? { kind: "org", targetOrg: org } : repo ? { kind: "remote", repo } : { kind: "project", dir: project! });
+      if ((set !== undefined || forOrg !== undefined) && !packages) throw new Error("set and forOrg go with packages.");
+      if (packages && (org || !set)) throw new Error("packages goes with project or repo, and needs set, the folder set's name.");
+      const folders = packages ? { set: { name: set!, packages, ...(forOrg ? { forOrg } : {}) } } : {};
+      const { job } = indexer.start(org ? { kind: "org", targetOrg: org } : repo ? { kind: "remote", repo, ...folders } : { kind: "project", dir: project!, ...folders });
       return text(`Indexing ${job.target} in the background (${job.state}). Call metadata_sources to follow it.`);
     }),
   );
@@ -178,7 +212,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       const ready = readySources(index);
       const jobs = indexer.list();
       const pieces = new Pieces(kit.masker, context);
-      const lines = [ready.length ? `Indexed:\n${ready.map((s) => `- ${describeSource(s)}`).join("\n")}` : "Nothing is indexed yet."];
+      const lines = [ready.length ? `Indexed:\n${(await Promise.all(ready.map(async (s) => `- ${await describeSource(pieces, s, ready)}`))).join("\n")}` : "Nothing is indexed yet."];
       if (jobs.length) lines.push(`Runs since the server started:\n${(await Promise.all(jobs.map(async (j) => `- ${await describeJob(pieces, j)}`))).join("\n")}`);
       return text(lines.join("\n\n"));
     }),
@@ -207,7 +241,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         }),
       );
       const lines = [
-        `Source: ${describeSource(snap)}`,
+        `Source: ${await describeSource(pieces, snap, readySources(index))}`,
         `${snap.stats.referenced ?? 0} standard objects and fields are referenced without being in the source; ${snap.stats.edges ?? 0} links in all.`,
         `Components by type:\n${counts.map(([t, n]) => `- ${t}: ${n}`).join("\n")}`,
         busiest.length ? `Busiest objects:\n${rows.join("\n")}` : "No objects in this source.",
@@ -278,7 +312,25 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
           return text(`No ${type} named ${name} in ${snap.source}.${hint}`);
         }
         const out: string[] = [`${await line(pieces, c)}`, `Source: ${snap.source}`];
-        if (c.missing) out.push("Not in the source: it is only referenced (a standard object or field).");
+        if (c.missing) out.push(`Not in the source: it is only referenced (a standard object or field${snap.stats.target ? ", one in a folder outside the set, or one only in the org" : ""}).`);
+        else if (c.file && snap.kind === "repo") out.push(`File: ${await pieces.mask(c.file)}`);
+        // The other side of a pair: where the org's component is in the repository, or whether the set's is in the org.
+        // Absence from an org is claimed only of a type its index holds: an org is retrieved for some types only.
+        if (!c.missing) {
+          for (const other of pairedSources(index, snap)) {
+            const there = index.component(other.id, c.type, c.name);
+            const found = there && !there.missing;
+            const covered = other.kind === "repo" || Boolean(other.stats.counts?.[c.type]);
+            const where = found
+              ? other.kind === "repo" ? `in the folder set${there.file ? `, at ${await pieces.mask(there.file)}` : ""}` : "in the org too"
+              : !covered
+                ? `its index has no ${c.type}, so it cannot say whether the org has it`
+                : other.kind === "repo"
+                  ? "not in the folder set (made in the org, or from another repository or a package)"
+                  : "not in the org (not deployed yet, or deleted in the org and still in the repository)";
+            out.push(`${other.source}: ${where}.`);
+          }
+        }
         if (Object.keys(c.attrs).length) {
           const details = JSON.stringify(await pieces.deep(trimDetails(c.attrs)));
           out.push(details.length > MAX_DETAILS ? `Details (first ${MAX_DETAILS} characters): ${details.slice(0, MAX_DETAILS)}` : `Details: ${details}`);

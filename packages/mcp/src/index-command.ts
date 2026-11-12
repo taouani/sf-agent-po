@@ -2,10 +2,12 @@
 // remote repository or an org, in the foreground, and says what it found.
 
 import path from "node:path";
-import type { IndexTarget } from "@sf-agent-po/connectors";
+// Types only: main.ts imports the usage text at start-up, before the connectors are needed.
+import type { FolderSet, IndexTarget } from "@sf-agent-po/connectors";
 import type { SnapshotInfo } from "@sf-agent-po/core";
 
 export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder> | --repo <repository>) [--workspace <folder>] [--full] [--force] [--parallel 1|2|3]
+       npx sf-agent-po@next index (--project <folder> | --repo <repository>) --packages <a,b,...> --name <set> [--for-org <alias or username>]
 
 Reads a Salesforce project folder (source or metadata format), a repository, or
 retrieves an org's metadata with your Salesforce CLI (sf, logged in with sf org
@@ -21,7 +23,14 @@ An org is retrieved in parts of up to 9,000 files, 2 at a time; --parallel 1 ret
 them one after another (lighter on the org), --parallel 3 three at a time. The run
 ends with the time each step took.
 --force starts even if another run of the same source seems to be going (two runs of
-one repository then share its checkout).`;
+one repository then share its checkout).
+
+A repository that several orgs are deployed from: --packages names the package folders
+one org gets (package names or paths from sfdx-project.json, or sub-folders with their
+own sfdx-project.json), comma-separated, as your deployment script lists them. They are
+indexed as a source of their own, named by --name (for example prod-eu), next to the
+whole repository's. --for-org links the set to the org it is deployed to, so that the
+agents know which folders that org gets and compare the two.`;
 
 export interface IndexArgs {
   target: IndexTarget;
@@ -38,6 +47,9 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
   let force = false;
   let full = false;
   let parallel: number | undefined;
+  let packages: string[] | undefined;
+  let name: string | undefined;
+  let forOrg: string | undefined;
   const value = (i: number, flag: string) => {
     const v = argv[i];
     if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value.\n\n${INDEX_USAGE}`);
@@ -53,6 +65,9 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
       if (!/^[123]$/.test(v)) throw new Error(`--parallel takes 1, 2 or 3.\n\n${INDEX_USAGE}`);
       parallel = Number(v);
     }
+    else if (arg === "--packages") packages = value(++i, arg).split(",").map((p) => p.trim()).filter(Boolean);
+    else if (arg === "--name") name = value(++i, arg);
+    else if (arg === "--for-org") forOrg = value(++i, arg);
     else if (arg === "--workspace") workspace = path.resolve(cwd, value(++i, arg));
     else if (arg === "--org" || arg === "--project" || arg === "--repo") {
       if (target) throw new Error(`Give one of --org, --project or --repo.\n\n${INDEX_USAGE}`);
@@ -62,6 +77,15 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
   }
   if (!target) throw new Error(`Give --org, --project or --repo.\n\n${INDEX_USAGE}`);
   if (parallel !== undefined && target.kind !== "org") throw new Error(`--parallel only goes with --org.\n\n${INDEX_USAGE}`);
+  if ((name !== undefined || forOrg !== undefined) && packages === undefined) throw new Error(`--name and --for-org go with --packages.\n\n${INDEX_USAGE}`);
+  if (packages !== undefined) {
+    if (target.kind === "org") throw new Error(`--packages goes with --project or --repo.\n\n${INDEX_USAGE}`);
+    if (!packages.length) throw new Error(`--packages needs at least one folder.\n\n${INDEX_USAGE}`);
+    if (name === undefined) throw new Error(`--packages needs --name, the name of the set (for example prod-eu).\n\n${INDEX_USAGE}`);
+    // The command checks the name and the org before it makes the workspace.
+    const set: FolderSet = { name, packages, ...(forOrg ? { forOrg } : {}) };
+    target = { ...target, set };
+  }
   return { target, workspace, force, full, ...(parallel ? { parallel } : {}) };
 }
 
@@ -75,8 +99,10 @@ export function describeSnapshot(s: SnapshotInfo): string[] {
   const retrieve = listed.filter((f) => f.file === "(retrieve)");
   const files = listed.filter((f) => f.file !== "(retrieve)");
   const unread = skipped - retrieve.length;
+  const set = s.stats.target;
   return [
-    `Indexed ${total} components, ${s.stats.edges ?? 0} links, ${s.stats.referenced ?? 0} referenced from outside the project.`,
+    ...(set ? [`Folder set ${set.name} (${set.packages.join(", ")}) of the repository, as ${s.source}${set.org ? `, deployed to ${set.org}` : ""}.`] : []),
+    `Indexed ${total} components, ${s.stats.edges ?? 0} links, ${s.stats.referenced ?? 0} referenced from outside the ${set ? "set" : "project"}.`,
     ...(s.stats.files ? [s.stats.full ? `Parsed all ${s.stats.files.read} files (a full run).` : `Parsed ${s.stats.files.read} changed files; ${s.stats.files.reused} unchanged ones came from the last run.`] : []),
     ...counts.slice(0, 12).map(([type, n]) => `  ${type}: ${n}`),
     ...(counts.length > 12 ? [`  and ${counts.length - 12} more types`] : []),
