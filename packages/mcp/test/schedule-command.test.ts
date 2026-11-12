@@ -97,7 +97,10 @@ describe("schedule command", () => {
     // Scheduled again from a terminal that names the folder in other letter case: the same task.
     pc.calls.length = 0;
     await runSchedule({ action: "add", org: "prod", at: { hour: 2, minute: 0 }, workspace: workspace.replace("my project", "MY PROJECT") }, pc.deps).catch(() => undefined);
-    expect(pc.calls.filter((c) => c.cmd === "schtasks").map((c) => c.args[2])).toEqual([create.args[2]]);
+    // (On Windows the folder is the same one, and its record is found: the task is deleted and made anew.)
+    const named = pc.calls.filter((c) => c.cmd === "schtasks").map((c) => c.args[2]);
+    expect(named.length).toBeGreaterThan(0);
+    expect(new Set(named)).toEqual(new Set([create.args[2]]));
     // Scheduled again where it is recorded: the last task is deleted, then made anew.
     pc.calls.length = 0;
     await runSchedule({ action: "add", org: "prod", at: { hour: 2, minute: 0 }, workspace }, pc.deps);
