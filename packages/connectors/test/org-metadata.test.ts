@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Database, MetadataIndex } from "@sf-agent-po/core";
-import { BackgroundIndexer, indexOrg, indexProject, projectSource, summarizeWarnings } from "../src/indexing.js";
+import { BackgroundIndexer, formatDuration, indexOrg, indexProject, projectSource, StepTimer, summarizeWarnings } from "../src/indexing.js";
 import { capReports, mergeAccess, readManifest, recordNamesOnly, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
 
@@ -21,7 +21,7 @@ const manifest = (types: Record<string, string[]>) =>
 /** A fake sf CLI: lists `org`, and writes each retrieve's members as metadata-format files. */
 function fakeSf(
   org: Record<string, string[]>,
-  calls: { args: string[]; cwd?: string }[] = [],
+  calls: { args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }[] = [],
   behaviour: { messages?: { problem: string }[]; limit?: number; empty?: boolean; junk?: boolean; dates?: Record<string, string>; asked?: { type: string; members: string[] }[][];
     /** What each permission set grants, whatever was retrieved with it (as since API 40). */
     permissionSets?: Record<string, string[]>;
@@ -32,7 +32,7 @@ function fakeSf(
   } = {},
 ): SfRunner {
   return async (args, opts = {}) => {
-    calls.push({ args, cwd: opts.cwd });
+    calls.push({ args, cwd: opts.cwd, ...(opts.env ? { env: opts.env } : {}) });
     if (args[0] === "org" && args[1] === "list" && args[2] === "metadata") {
       if (!behaviour.dates) throw new Error("sf org list failed: not in this fake");
       const type = args[args.indexOf("--metadata-type") + 1]!;
@@ -46,7 +46,10 @@ function fakeSf(
       const query = readFileSync(path.join(opts.cwd!, args[args.indexOf("--file") + 1]!), "utf8");
       const from = /FROM (\w+)/.exec(query)![1]!;
       if (!behaviour.soql?.[from]) throw new Error("sf data query failed: INVALID_TYPE");
-      return { records: behaviour.soql[from], totalSize: behaviour.soql[from].length, done: true };
+      // "WHERE Type IN ('Email', 'EmailTemplate')": the folders of those types.
+      const types = /Type IN \(([^)]*)\)/.exec(query)?.[1]?.split(",").map((t) => t.trim().replace(/'/g, ""));
+      const records = behaviour.soql[from].filter((r) => !types || types.includes(String(r.Type)));
+      return { records, totalSize: records.length, done: true };
     }
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
     // Like the real CLI, which refuses both commands outside a Salesforce project.
@@ -89,6 +92,13 @@ function fakeSf(
           if (e.type === "Dashboard") {
             if (m.includes("/")) write(`dashboards/${m}.dashboard`, `<?xml version="1.0"?><Dashboard><title>${m}</title></Dashboard>`);
             else write(`dashboards/${m}-meta.xml`, `<?xml version="1.0"?><DashboardFolder><name>${m}</name></DashboardFolder>`);
+          }
+          if (e.type === "EmailTemplate") {
+            // A folder holds other members of the org.
+            if (!(org.EmailTemplate ?? []).some((t) => t.startsWith(`${m}/`))) {
+              write(`email/${m}.email`, `Dear {!Contact.FirstName}, ${m}`);
+              write(`email/${m}.email-meta.xml`, `<?xml version="1.0"?><EmailTemplate><subject>{!Case.CaseNumber}</subject><type>text</type></EmailTemplate>`);
+            } else write(`email/${m}-meta.xml`, `<?xml version="1.0"?><EmailFolder><name>${m}</name></EmailFolder>`);
           }
           if (e.type === "PermissionSet") {
             write(`permissionsets/${m}.permissionset`, `<?xml version="1.0"?><PermissionSet>${(behaviour.permissionSets?.[m] ?? []).map((c) => `<classAccesses><apexClass>${c}</apexClass><enabled>true</enabled></classAccesses>`).join("")}<label>${m}</label></PermissionSet>`);
@@ -440,6 +450,71 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     );
   });
 
+  it("dates email templates from two queries, and retrieves only those that changed", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Welcome", "Care/Closed", "Care/Sub", "Care/Sub/Deep", "unfiled$public", "unfiled$public/U"] };
+    const soql: Record<string, Record<string, unknown>[]> = {
+      Folder: [
+        { Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" },
+        { Id: "00l2", DeveloperName: "Sub", ParentId: "00l1", Type: "EmailTemplate", LastModifiedDate: "2026-01-02T00:00:00.000+0000" },
+        { Id: "00l3", DeveloperName: "Sales", ParentId: null, Type: "Report", LastModifiedDate: "2026-01-03T00:00:00.000+0000" },
+      ],
+      EmailTemplate: [
+        { DeveloperName: "Welcome", FolderId: "00l1", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { DeveloperName: "Closed", FolderId: "00l1", LastModifiedDate: "2026-02-02T00:00:00.000+0000" },
+        { DeveloperName: "Deep", FolderId: "00l2", LastModifiedDate: "2026-02-03T00:00:00.000+0000" },
+        { DeveloperName: "U", FolderId: "00D000000000001", LastModifiedDate: "2026-02-04T00:00:00.000+0000" },
+        // In a user's private folder: not retrievable.
+        { DeveloperName: "Mine", FolderId: "005000000000001", LastModifiedDate: "2026-02-05T00:00:00.000+0000" },
+      ],
+    };
+    const calls: { args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }[] = [];
+    const asked: { type: string; members: string[] }[][] = [];
+    const sf = fakeSf(org, calls, { dates: {}, asked, soql });
+    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    // No listing per folder, and no cap of 10,000 rows on the queries.
+    expect(calls.filter((c) => c.args.includes("EmailTemplate"))).toEqual([]);
+    const queries = calls.filter((c) => c.args[0] === "data");
+    expect(queries).toHaveLength(2);
+    for (const q of queries) expect(Number(q.env?.SF_ORG_MAX_QUERY_LIMIT)).toBeGreaterThan(10_000);
+    expect(first.warnings).toEqual([]);
+    const pointer = JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { dates: Record<string, Record<string, string>> };
+    expect(pointer.dates.EmailTemplate).toEqual({
+      Care: "2026-01-01T00:00:00.000+0000",
+      "Care/Sub": "2026-01-02T00:00:00.000+0000",
+      "Care/Welcome": "2026-02-01T00:00:00.000+0000",
+      "Care/Closed": "2026-02-02T00:00:00.000+0000",
+      "Care/Sub/Deep": "2026-02-03T00:00:00.000+0000",
+      "unfiled$public/U": "2026-02-04T00:00:00.000+0000",
+    });
+    // One template changed: it alone is retrieved again (and unfiled$public, which has no date);
+    // the others stay from the last run.
+    soql.EmailTemplate![1]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
+    asked.length = 0;
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(second.incremental).toBeDefined();
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Closed", "unfiled$public"] }]);
+    expect(readdirSync(path.join(second.dir, "metadata", "email", "Care")).sort()).toEqual(["Closed.email", "Closed.email-meta.xml", "Sub", "Sub-meta.xml", "Welcome.email", "Welcome.email-meta.xml"]);
+    // Without the queries, every template is retrieved again, and the run says so.
+    delete soql.EmailTemplate;
+    asked.length = 0;
+    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
+    expect(third.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
+  });
+
+  it("does not take a query the CLI cut short", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Welcome"] };
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const base = fakeSf(org, calls, { dates: {} });
+    // As the CLI returns past its row limit: fewer records than the org holds.
+    const sf: SfRunner = async (args, opts) =>
+      args[0] === "data" ? { records: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }], totalSize: 20_000, done: true } : base(args, opts);
+    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(run.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
+  });
+
   it("caps reports, folders kept, undated ones first", () => {
     const entries = [{ type: "Report", members: ["F", "F/G", "F/G/a", "F/b", "F/c"] }, { type: "ApexClass", members: ["X"] }];
     expect(capReports(entries, { "F/G/a": "2026-02-01", "F/c": "2026-03-01" }, 2)).toEqual({
@@ -580,6 +655,8 @@ describe("indexing", () => {
     const missing = indexer.start({ kind: "project", dir: path.join(workspace, "nope") });
     await indexer.settle();
     expect(a.job).toMatchObject({ state: "ready", snapshot: { status: "ready" } });
+    // How long each step took, once the run is over.
+    expect(a.job.steps).toEqual(expect.arrayContaining(["Time per step:", expect.stringMatching(/^  Retrieving 1 components: |^  Retrieving the metadata: /), expect.stringMatching(/^  Writing the index: /)]));
     expect(missing.job).toMatchObject({ state: "failed", message: expect.stringMatching(/cannot be read/) });
     expect(missing.job.target).toMatch(/^repo:nope#/);
     expect(indexer.list()).toHaveLength(2);
@@ -590,6 +667,38 @@ describe("indexing", () => {
 });
 
 describe("retrieve warnings and unretrievable members", () => {
+  it("times each step of a run, the parts of a retrieval as one", () => {
+    let now = 0;
+    const timer = new StepTimer(() => now);
+    const at = (ms: number, line: string) => {
+      now = ms;
+      timer.mark(line);
+    };
+    at(0, "Listing the metadata in dev");
+    at(12_000, "Reading when each component of dev last changed");
+    at(20_000, "Retrieving part 1 of 3");
+    at(260_000, "Retrieving part 2 of 3");
+    at(300_000, "Retrieving part 3 of 3");
+    at(330_000, "Putting the retrieved files together");
+    // A line that says what was done ends no step.
+    at(331_000, "Retrieved 300 changed or always retrieved components; 2 deleted since the last run");
+    at(332_000, "Reading the retrieved metadata");
+    at(332_400, "Writing the index");
+    now = 4_000_000;
+    expect(timer.lines()).toEqual([
+      "Time per step:",
+      "  Listing the metadata in dev: 12s",
+      "  Reading when each component of dev last changed: 8s",
+      "  Retrieving the metadata: 5m 10s (3 parts, the longest 4m 00s)",
+      "  Putting the retrieved files together: 2s",
+      "  Reading the retrieved metadata: under a second",
+      "  Writing the index: 1h 01m",
+      "  In all: 1h 06m",
+    ]);
+    expect(new StepTimer().lines()).toEqual([]);
+    expect(formatDuration(59_600)).toBe("1m 00s");
+  });
+
   it("counts the components the org listed but did not return, by type", () => {
     const missing = (t: string, n: string) => `Entity of type '${t}' named '${n}' cannot be found`;
     expect(summarizeWarnings([missing("ListView", "A.x"), missing("ListView", "B.y"), "Some other problem", missing("CustomField", "C.z__c")])).toEqual([

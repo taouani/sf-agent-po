@@ -137,7 +137,7 @@ npx -y sf-agent-po@next index --project <folder>                   # a Salesforc
 npx -y sf-agent-po@next index --repo github:owner/repo#main        # or gitlab:, azure-devops:<url>, git:<url>
 ```
 
-You can also ask the assistant to index (the `metadata_index` tool). A run reads only what changed since the last one; `--full` reads everything. The index holds objects, fields, validation rules, record types, flows, Apex, triggers, Lightning components, Visualforce, email templates, layouts, permission sets and profiles, reports, dashboards and report types, and integrations (named and external credentials, remote sites, connected apps, outbound messages, callouts). The org is never changed.
+You can also ask the assistant to index (the `metadata_index` tool). A run reads only what changed since the last one; `--full` reads everything. It ends with the time each step took, which helps when a large org is slow to index. The index holds objects, fields, validation rules, record types, flows, Apex, triggers, Lightning components, Visualforce, email templates, layouts, permission sets and profiles, reports, dashboards and report types, and integrations (named and external credentials, remote sites, connected apps, outbound messages, callouts). The org is never changed.
 
 Ask questions in plain words: "summarise the uat org", "search the metadata for renewal", "what depends on Policy__c.Premium__c?".
 

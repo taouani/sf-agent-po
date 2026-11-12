@@ -48,4 +48,4 @@ export {
   type OrgRetrieval,
   type RetrieveOptions,
 } from "./org-metadata.js";
-export { BackgroundIndexer, indexOrg, indexProject, indexRemote, indexTarget, projectSource, summarizeWarnings, type IndexJob, type IndexOptions, type IndexTarget } from "./indexing.js";
+export { BackgroundIndexer, indexOrg, indexProject, indexRemote, indexTarget, formatDuration, projectSource, StepTimer, summarizeWarnings, type IndexJob, type IndexOptions, type IndexTarget } from "./indexing.js";

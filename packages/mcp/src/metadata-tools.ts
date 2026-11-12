@@ -136,7 +136,8 @@ function describeSource(s: SnapshotInfo): string {
 /** A run, with its progress line or error masked: an error can quote a report's name or the CLI's output. */
 async function describeJob(pieces: Pieces, j: IndexJob): Promise<string> {
   const when = j.finishedAt ? `finished ${j.finishedAt}` : `started ${j.startedAt}`;
-  return `${j.target}: ${j.state}, ${when}${j.message ? `: ${await pieces.mask(j.message)}` : ""}`;
+  const steps = j.steps?.length ? `\n${(await Promise.all(j.steps.map((l) => pieces.mask(l)))).map((l) => `  ${l}`).join("\n")}` : "";
+  return `${j.target}: ${j.state}, ${when}${j.message ? `: ${await pieces.mask(j.message)}` : ""}${steps}`;
 }
 
 export const sourceArg = z.string().optional().describe('An indexed source, as metadata_sources lists it ("org:00D...", "repo:name#hash"); the newest one when omitted.');

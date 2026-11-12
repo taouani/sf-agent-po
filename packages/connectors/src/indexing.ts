@@ -91,12 +91,73 @@ export function summarizeWarnings(warnings: readonly string[]): string[] {
   return lines.length > MAX_WARNING_LINES ? [...lines.slice(0, MAX_WARNING_LINES - 1), `and ${lines.length - MAX_WARNING_LINES + 1} more problems`] : lines;
 }
 
+/** "1h 05m", "4m 12s", "38s", or "under a second". */
+export function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "under a second";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
+/** Progress lines that say what was done, not what starts. */
+const NOT_A_STEP = /^Retrieved \d/;
+/** The step a progress line starts: the parts of a retrieval are one step. */
+const stepOf = (message: string) => (/^Retrieving (?:part \d+ of \d+|\d+ .*components)$/.test(message) ? "Retrieving the metadata" : message);
+
+/**
+ * Times a run from its progress lines: each line starts a step, which ends with the next line
+ * (or `stop`). The same step met again (a retrieval in parts) adds up.
+ */
+export class StepTimer {
+  private readonly steps = new Map<string, { ms: number; times: number; longest: number }>();
+  private current?: { step: string; at: number };
+  private readonly startedAt: number;
+
+  constructor(private readonly now: () => number = Date.now) {
+    this.startedAt = now();
+  }
+
+  /** Starts the step this progress line names. */
+  mark(message: string): void {
+    if (NOT_A_STEP.test(message)) return;
+    this.stop();
+    this.current = { step: stepOf(message), at: this.now() };
+  }
+
+  /** Ends the step in progress. */
+  stop(): void {
+    if (!this.current) return;
+    const ms = this.now() - this.current.at;
+    const s = this.steps.get(this.current.step) ?? { ms: 0, times: 0, longest: 0 };
+    this.steps.set(this.current.step, { ms: s.ms + ms, times: s.times + 1, longest: Math.max(s.longest, ms) });
+    this.current = undefined;
+  }
+
+  /** "Time per step:", a line per step in the order they started, and the run's total. */
+  lines(): string[] {
+    this.stop();
+    if (!this.steps.size) return [];
+    return [
+      "Time per step:",
+      ...[...this.steps].map(([step, s]) => `  ${step}: ${formatDuration(s.ms)}${s.times > 1 ? ` (${s.times} parts, the longest ${formatDuration(s.longest)})` : ""}`),
+      `  In all: ${formatDuration(this.now() - this.startedAt)}`,
+    ];
+  }
+}
+
 /** Indexes a Salesforce project folder (a checkout, or a folder on a shared drive). */
 export async function indexProject(index: MetadataIndex, dir: string, options: Pick<IndexOptions, "progress" | "force" | "full"> & { workspace?: string } = {}): Promise<SnapshotInfo> {
   const revision = await gitRevision(dir);
   options.progress?.(`Reading ${path.basename(path.resolve(dir))}`);
   try {
-    const read = (_lease: unknown, cache: ParseCache) => scrubbing(options.workspace, () => scanProject(dir, { exclude: options.workspace ? [options.workspace] : [], cache }));
+    const read = (_lease: unknown, cache: ParseCache) =>
+      scrubbing(options.workspace, async () => {
+        const parsed = await scanProject(dir, { exclude: options.workspace ? [options.workspace] : [], cache });
+        options.progress?.("Writing the index");
+        return parsed;
+      });
     return await index.build({ source: projectSource(dir), kind: "repo", ...(revision ? { revision } : {}) }, read, {
       force: options.force,
       full: options.full,
@@ -124,7 +185,9 @@ export async function indexRemote(index: MetadataIndex, spec: string | MetadataS
         const revision = await gitRevision(dir);
         if (revision) lease.setRevision(revision);
         options.progress?.(`Reading ${redactLocation(repo.location)}${repo.ref ? ` at ${repo.ref}` : ""}`);
-        return scanProject(dir, { cache });
+        const parsed = await scanProject(dir, { cache });
+        options.progress?.("Writing the index");
+        return parsed;
       }),
       { force: options.force, full: options.full },
     );
@@ -165,6 +228,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
+        options.progress?.("Writing the index");
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
       }),
       { force: options.force, full: options.full },
@@ -189,6 +253,8 @@ export interface IndexJob {
   /** The last progress line, or the error. */
   message?: string;
   snapshot?: SnapshotInfo;
+  /** Once the run is over: how long each step took (StepTimer.lines). */
+  steps?: string[];
 }
 
 /**
@@ -209,9 +275,14 @@ export class BackgroundIndexer {
     const running = this.jobs.get(key);
     if (running?.job.state === "running") return running;
     const job: IndexJob = { target: target.kind === "project" ? projectSource(target.dir) : key, state: "running", startedAt: new Date().toISOString() };
-    const done = indexTarget(this.index, target, { ...this.options, progress: (m) => (job.message = m) }).then(
-      (snapshot) => Object.assign(job, { state: "ready" as const, snapshot, finishedAt: new Date().toISOString(), message: undefined }),
-      (err: unknown) => Object.assign(job, { state: "failed" as const, finishedAt: new Date().toISOString(), message: (err as Error)?.message ?? String(err) }),
+    const timer = new StepTimer();
+    const progress = (m: string) => {
+      timer.mark(m);
+      job.message = m;
+    };
+    const done = indexTarget(this.index, target, { ...this.options, progress }).then(
+      (snapshot) => Object.assign(job, { state: "ready" as const, snapshot, finishedAt: new Date().toISOString(), message: undefined, steps: timer.lines() }),
+      (err: unknown) => Object.assign(job, { state: "failed" as const, finishedAt: new Date().toISOString(), message: (err as Error)?.message ?? String(err), steps: timer.lines() }),
     );
     const entry = { job, done };
     this.jobs.set(key, entry);
