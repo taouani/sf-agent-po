@@ -18,7 +18,7 @@ export interface SObjectDescribe {
 }
 
 /** Runs `sf` with these arguments (and --json) and returns its `result` payload. */
-export type SfRunner = (args: string[], opts?: { cwd?: string; timeoutMs?: number }) => Promise<any>;
+export type SfRunner = (args: string[], opts?: { cwd?: string; timeoutMs?: number; /** Added to the CLI's environment. */ env?: NodeJS.ProcessEnv }) => Promise<any>;
 
 /** Characters allowed in org aliases, usernames, object and folder names passed to the CLI: none cmd.exe reads ("/" and "$" it does not). */
 const SAFE_ARG = /^[\w.@+$\/-]+$/;

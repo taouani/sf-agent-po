@@ -17,6 +17,7 @@ and fetched again on the next run. An org run retrieves only what changed since 
 last run (profiles and permission sets every time), and all of it once a week; files
 that did not change are not parsed again, unless they were last parsed more than 7
 days ago or sf-agent-po's readers changed. --full retrieves and parses everything.
+The run ends with the time each step took.
 --force starts even if another run of the same source seems to be going (two runs of
 one repository then share its checkout).`;
 

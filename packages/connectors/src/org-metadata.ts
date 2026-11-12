@@ -50,12 +50,12 @@ const PROFILE_LISTS = [
  * Types whose members are retrieved on every run. Salesforce does not change the date of a
  * profile or permission set when only its access changes, so both are retrieved each time. A
  * permission set comes back whole (API 40 and later), so it replaces its last copy; a profile
- * only lists access to what is retrieved with it, so it is merged into its last copy. Labels,
- * workflows and email templates are listed without a dependable date per file, and so are
- * the sharing rules of an object and a queue's members.
+ * only lists access to what is retrieved with it, so it is merged into its last copy. Labels
+ * and workflows are listed without a dependable date per file, and so are the sharing rules
+ * of an object and a queue's members. Email templates are dated by a query (queryTemplateDates).
  */
 const MERGED = new Set(["Profile"]);
-const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate", "SharingRules", "Queue"]);
+const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "SharingRules", "Queue"]);
 /** Files of these types go when their type is retrieved again: an email folder with its templates. */
 const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate", ReportFolder: "Report", DashboardFolder: "Dashboard" };
 
@@ -407,6 +407,8 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
     const baseProfiles = base ? await profilesIn(base) : undefined;
     const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : undefined;
+    // Said only when it costs something: a full run retrieves every template anyway.
+    if (plan && !dates.EmailTemplate && entries.some((e) => e.type === "EmailTemplate")) warnings.push("The dates of email templates could not be read, so all of them are retrieved again");
     const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     let n = 0;
@@ -442,6 +444,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       }
     }
     const parts = Array.from({ length: n }, (_, i) => `part-${i + 1}`);
+    progress("Putting the retrieved files together");
     if (n > 1) await mergeProfiles(work, parts);
     // Every file goes to one tree at the same path from run to run, so that the index's parse
     // cache finds the files that did not change. A run that retrieved only what changed starts
@@ -453,6 +456,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       await cp(base!, tree, { recursive: true });
       await removeRetrievedAgain(tree, plan.changed, new Set(entries.flatMap((e) => (MERGED.has(e.type) ? e.members.map((m) => `${e.type}\0${m}`) : []))));
       heartbeat();
+      progress("Putting the retrieved files together");
     }
     for (const part of parts) {
       for (const f of await filesUnder(path.join(work, part))) {
@@ -628,7 +632,8 @@ interface Listed {
  * When each member of the entries' types last changed, from sf org list metadata; a type
  * whose listing fails is left out, and its members count as changed. Reports, dashboards and
  * their folders come from three queries (one listing per folder would start the CLI hundreds
- * of times), or, when a query fails, from one listing per folder.
+ * of times), or, when a query fails, from one listing per folder. Email templates and their
+ * folders come from two queries, or, when one fails, have no date (all count as changed).
  */
 async function listDates(sf: SfRunner, targetOrg: string, entries: readonly ManifestEntry[], opts: { cwd: string; timeoutMs: number; heartbeat: () => void }): Promise<Listed> {
   const { heartbeat, ...run } = opts;
@@ -637,7 +642,13 @@ async function listDates(sf: SfRunner, targetOrg: string, entries: readonly Mani
   const queried = inFolders.length ? await queryFolderDates(sf, targetOrg, run).catch(() => undefined) : undefined;
   heartbeat();
   if (queried) Object.assign(out, { dates: queried.dates, folders: queried.folders });
+  if (entries.some((e) => e.type === "EmailTemplate")) {
+    const templates = await queryTemplateDates(sf, targetOrg, run).catch(() => undefined);
+    if (templates) out.dates.EmailTemplate = templates;
+    heartbeat();
+  }
   const queue: [string, string | undefined][] = entries.flatMap((e): [string, string | undefined][] => {
+    if (e.type === "EmailTemplate") return [];
     if (!IN_FOLDERS.has(e.type)) return [[e.type, undefined]];
     if (queried) return [];
     // Reports and dashboards are listed folder by folder: their manifest lists each folder by
@@ -666,33 +677,46 @@ async function listDates(sf: SfRunner, targetOrg: string, entries: readonly Mani
   return out;
 }
 
-/** The three queries for reports, dashboards and their folders: SOQL in files, so that no quote or space reaches a shell. */
+/** The queries for reports, dashboards, email templates and their folders: SOQL in files, so that no quote or space reaches a shell. */
 const FOLDER_QUERIES = {
   folders: "SELECT Id, DeveloperName, NamespacePrefix, ParentId, Type, LastModifiedDate FROM Folder WHERE Type IN ('Report', 'Dashboard')",
   reports: "SELECT DeveloperName, NamespacePrefix, OwnerId, LastModifiedDate FROM Report",
   dashboards: "SELECT DeveloperName, NamespacePrefix, FolderId, LastModifiedDate FROM Dashboard",
+  // Classic templates sit in folders of type Email, Lightning ones in folders of type EmailTemplate.
+  emailFolders: "SELECT Id, DeveloperName, NamespacePrefix, ParentId, Type, LastModifiedDate FROM Folder WHERE Type IN ('Email', 'EmailTemplate')",
+  templates: "SELECT DeveloperName, NamespacePrefix, FolderId, LastModifiedDate FROM EmailTemplate",
 };
 
 type Row = Record<string, unknown>;
 
 /**
- * Report and dashboard dates, by full name ("Sales/Q1/Pipeline"), and their folders' dates,
- * from SOQL. A report in no folder of the list is in unfiled$public when the org owns it, and
- * private (not retrievable, left out) when a user does.
+ * Rows the CLI returns from one query at most. Its default (org-max-query-limit) is 10,000,
+ * and an org can hold more templates or reports than that: past it, rows would go missing.
+ * Its output is taken up to 64 MB (exec.ts), about 150,000 rows of these queries: past that,
+ * the query fails and the fallback is used.
  */
-async function queryFolderDates(sf: SfRunner, targetOrg: string, run: { cwd: string; timeoutMs: number }): Promise<{ dates: Listed["dates"]; folders: Listed["folders"] }> {
-  const query = async (name: keyof typeof FOLDER_QUERIES): Promise<Row[]> => {
-    await writeFile(path.join(run.cwd, `${name}.soql`), FOLDER_QUERIES[name]);
-    const result = (await sf(["data", "query", "--file", `${name}.soql`, "--target-org", targetOrg], run)) as { records?: unknown } | undefined;
-    if (!Array.isArray(result?.records)) throw new Error(`sf data query gave no records for ${name}`);
-    return result.records as Row[];
-  };
-  const [folders, reports, dashboards] = [await query("folders"), await query("reports"), await query("dashboards")];
-  const apiName = (r: Row) => {
-    const dev = typeof r.DeveloperName === "string" ? r.DeveloperName : undefined;
-    const ns = typeof r.NamespacePrefix === "string" && r.NamespacePrefix ? `${r.NamespacePrefix}__` : "";
-    return dev ? `${ns}${dev}` : undefined;
-  };
+const MAX_QUERY_ROWS = 150_000;
+
+/** Runs one of FOLDER_QUERIES and returns all its rows; throws when the CLI returned fewer than the org holds. */
+async function folderQuery(sf: SfRunner, targetOrg: string, name: keyof typeof FOLDER_QUERIES, run: { cwd: string; timeoutMs: number }): Promise<Row[]> {
+  await writeFile(path.join(run.cwd, `${name}.soql`), FOLDER_QUERIES[name]);
+  const result = (await sf(["data", "query", "--file", `${name}.soql`, "--target-org", targetOrg], { ...run, env: { SF_ORG_MAX_QUERY_LIMIT: String(MAX_QUERY_ROWS) } })) as
+    | { records?: unknown; totalSize?: unknown }
+    | undefined;
+  if (!Array.isArray(result?.records)) throw new Error(`sf data query gave no records for ${name}`);
+  if (typeof result.totalSize === "number" && result.totalSize > result.records.length) throw new Error(`sf data query returned ${result.records.length} of ${result.totalSize} rows for ${name}`);
+  return result.records as Row[];
+}
+
+/** A row's API name: its developer name, after its namespace. */
+function apiName(r: Row): string | undefined {
+  const dev = typeof r.DeveloperName === "string" ? r.DeveloperName : undefined;
+  const ns = typeof r.NamespacePrefix === "string" && r.NamespacePrefix ? `${r.NamespacePrefix}__` : "";
+  return dev ? `${ns}${dev}` : undefined;
+}
+
+/** The path of each folder ("Sales/Q1"), by its id, from its parents. */
+function folderPaths(folders: readonly Row[]): (id: unknown) => string | undefined {
   const byId = new Map(folders.map((f) => [String(f.Id), f]));
   const pathOf = (id: unknown, depth = 0): string | undefined => {
     const f = typeof id === "string" ? byId.get(id) : undefined;
@@ -702,6 +726,42 @@ async function queryFolderDates(sf: SfRunner, targetOrg: string, run: { cwd: str
     const parent = pathOf(f.ParentId, depth + 1);
     return parent ? `${parent}/${name}` : undefined;
   };
+  return pathOf;
+}
+
+/**
+ * Email template dates, by full name ("Care/Welcome"), and their folders' dates, from SOQL:
+ * listing them takes one CLI run per folder. A template in no folder of the list is in
+ * unfiled$public when the org owns it, and private (not retrievable, left out) when a user does.
+ */
+async function queryTemplateDates(sf: SfRunner, targetOrg: string, run: { cwd: string; timeoutMs: number }): Promise<Record<string, string>> {
+  const folders = await folderQuery(sf, targetOrg, "emailFolders", run);
+  const templates = await folderQuery(sf, targetOrg, "templates", run);
+  const pathOf = folderPaths(folders);
+  // unfiled$public is no folder of the query, and never changes: without a date it would be
+  // retrieved on every run.
+  const dates: Record<string, string> = { unfiled$public: "1970-01-01T00:00:00.000Z" };
+  for (const f of folders) {
+    const p = pathOf(f.Id);
+    if (p && typeof f.LastModifiedDate === "string") dates[p] = f.LastModifiedDate;
+  }
+  for (const t of templates) {
+    const name = apiName(t);
+    const folder = pathOf(t.FolderId) ?? (typeof t.FolderId === "string" && t.FolderId.startsWith("00D") ? "unfiled$public" : undefined);
+    if (name && folder && typeof t.LastModifiedDate === "string") dates[`${folder}/${name}`] = t.LastModifiedDate;
+  }
+  return dates;
+}
+
+/**
+ * Report and dashboard dates, by full name ("Sales/Q1/Pipeline"), and their folders' dates,
+ * from SOQL. A report in no folder of the list is in unfiled$public when the org owns it, and
+ * private (not retrievable, left out) when a user does.
+ */
+async function queryFolderDates(sf: SfRunner, targetOrg: string, run: { cwd: string; timeoutMs: number }): Promise<{ dates: Listed["dates"]; folders: Listed["folders"] }> {
+  const query = (name: keyof typeof FOLDER_QUERIES) => folderQuery(sf, targetOrg, name, run);
+  const [folders, reports, dashboards] = [await query("folders"), await query("reports"), await query("dashboards")];
+  const pathOf = folderPaths(folders);
   const dates: Listed["dates"] = { Report: {}, Dashboard: {} };
   const found: Listed["folders"] = { Report: new Set(), Dashboard: new Set() };
   for (const f of folders) {

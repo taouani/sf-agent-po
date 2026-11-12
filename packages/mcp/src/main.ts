@@ -92,11 +92,14 @@ async function init(argv: string[]): Promise<void> {
 async function index(argv: string[]): Promise<void> {
   const { describeSnapshot, parseIndexArgs } = await import("./index-command.js");
   let database: InstanceType<(typeof import("@sf-agent-po/core"))["Database"]> | undefined;
+  // How long each step took, printed at the end, and when the run fails.
+  let timer: InstanceType<(typeof import("@sf-agent-po/connectors"))["StepTimer"]> | undefined;
   try {
     const opts = parseIndexArgs(argv);
     if ("help" in opts) return console.log(opts.help);
     const { Database, MetadataIndex } = await import("@sf-agent-po/core");
-    const { indexTarget, parseRepoSpec } = await import("@sf-agent-po/connectors");
+    const { indexTarget, parseRepoSpec, StepTimer } = await import("@sf-agent-po/connectors");
+    timer = new StepTimer();
     // A repository is checked before the workspace is made for it.
     if (opts.target.kind === "remote" && typeof opts.target.repo === "string") opts.target = { kind: "remote", repo: parseRepoSpec(opts.target.repo) };
     const { databaseFile, ensureWorkspace } = await import("./startup.js");
@@ -117,11 +120,15 @@ async function index(argv: string[]): Promise<void> {
       force: opts.force,
       full: opts.full,
       interactive: Boolean(process.stdin.isTTY),
-      progress: (m) => console.error(m),
+      progress: (m) => {
+        timer?.mark(m);
+        console.error(m);
+      },
     });
-    for (const line of describeSnapshot(snapshot)) console.log(line);
+    for (const line of [...describeSnapshot(snapshot), ...(timer?.lines() ?? [])]) console.log(line);
   } catch (err) {
     console.error((err as Error).message);
+    for (const line of timer?.lines() ?? []) console.error(line);
     process.exitCode = 1;
   } finally {
     database?.close();

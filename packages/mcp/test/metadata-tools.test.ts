@@ -115,6 +115,8 @@ describe("metadata tools", () => {
     const sources = await call("metadata_sources");
     expect(sources.text).toMatch(/Indexed:\n- repo:sf-agent-meta-\w+#[0-9a-f]{8} \(repo, \d+ components/);
     expect(sources.text).toMatch(/: ready, finished/);
+    // How long each step took.
+    expect(sources.text).toMatch(/\n  Time per step:\n  {3}Reading sf-agent-meta-\w+: .+\n  {3}Writing the index: .+\n  {3}In all: /);
     expect(sources.text).not.toContain(root);
   });
 
