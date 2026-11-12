@@ -241,7 +241,10 @@ The code lives in npm workspaces under `packages/`:
   what the queries do not find, or all of them when a query fails, is retrieved. A component
   the org did not return is asked for again next time. The
   `index` command ends with the time each step took (the parts of a retrieval as one step,
-  with the longest), and `metadata_sources` shows the same for runs in the background. Everything is retrieved again with `--full`, a week after the last
+  with the longest), and `metadata_sources` shows the same for runs in the background. `schedule
+  --org <alias>` writes a script under `<workspace>/schedule` and registers it with the OS
+  scheduler (a Task Scheduler task from a task file, a launchd agent, or a crontab line
+  marked with the org and a hash of the workspace), to run the `index` command each day. Everything is retrieved again with `--full`, a week after the last
   full run, when the types indexed changed, or when the last retrieval or a profile's last copy
   is missing (a new profile). What a standard object holds itself (its settings, overrides,
   search layouts) has no date, so it waits for the weekly full run. A repository

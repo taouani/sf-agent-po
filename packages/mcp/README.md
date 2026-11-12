@@ -48,6 +48,16 @@ A run reads only what changed since the last one: an org's components whose date
 is retrieved in full once a week, and every file parsed again at least weekly and after an
 upgrade; `--full` does both now.
 
+To have a large org indexed every night, so that nobody waits for it, let your computer's
+scheduler (Task Scheduler, launchd or cron) run the index command each day, as you (on
+Windows, while you are logged in):
+
+```bash
+npx -y sf-agent-po@next schedule --org <alias or username> --at 02:00
+npx -y sf-agent-po@next schedule --list
+npx -y sf-agent-po@next schedule --remove --org <alias or username>
+```
+
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
 holds the masked inputs and the agents' work. Its masking key is kept in your OS keychain,
 or in a key file when no keychain is available. Back it up: without it, nothing can be

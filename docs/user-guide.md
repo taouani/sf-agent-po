@@ -139,6 +139,16 @@ npx -y sf-agent-po@next index --repo github:owner/repo#main        # or gitlab:,
 
 You can also ask the assistant to index (the `metadata_index` tool). A run reads only what changed since the last one; `--full` reads everything. It ends with the time each step took, which helps when a large org is slow to index. The index holds objects, fields, validation rules, record types, flows, Apex, triggers, Lightning components, Visualforce, email templates, layouts, permission sets and profiles, reports, dashboards and report types, and integrations (named and external credentials, remote sites, connected apps, outbound messages, callouts). The org is never changed.
 
+For a large org, let your computer refresh the index every night, so the morning starts with a fresh one:
+
+```bash
+npx -y sf-agent-po@next schedule --org <alias or username> --at 02:00   # every day, as you, while you are logged in
+npx -y sf-agent-po@next schedule --list                                  # the schedules, and how the last run went
+npx -y sf-agent-po@next schedule --remove --org <alias or username>
+```
+
+It uses Task Scheduler on Windows, launchd on macOS and cron on Linux, and runs as you, with your `sf` login. On Windows it runs while you are logged in, in a console window (closing the window stops the run), and a run missed while the computer was off starts once you log on. On macOS a run missed while the Mac slept starts when it wakes; if the project is under Documents or Desktop, macOS may refuse the run access, which it says in `~/Library/Logs/sf-agent-po`. Each run writes its output to a log in `.sf-agent/schedule`, and `--list` shows how the last run went. The run gets your PATH and a company CA file (`NODE_EXTRA_CA_CERTS`) as they were when you scheduled it; a proxy with a password in it is not written down, so set it in your system settings instead. A scheduled run that starts while another run indexes the same org stops at once and says so in its log, so nothing is indexed twice at the same time.
+
 Ask questions in plain words: "summarise the uat org", "search the metadata for renewal", "what depends on Policy__c.Premium__c?".
 
 ## A first run on the insurance sample
@@ -242,11 +252,12 @@ Export prints only to a terminal, so an AI agent running commands cannot read th
 | `npx -y sf-agent-po@next` | Starts the MCP server (your tool runs this) |
 | `init` | Writes the agent files for your tool into a project |
 | `index` | Fills the metadata index from an org, a project folder or a repository |
+| `schedule` | Refreshes an org's metadata index every day with your computer's scheduler |
 | `doctor` | Checks the set-up and gives the fix for each problem |
 | `key export`, `key import` | Back up and restore the masking key |
 | `report` | The feedback report, optionally as CSV |
 
-`doctor`, `key`, `report` and `index --repo` come with 1.0.0-next.8, and `metadata_code` with 1.0.0-next.9 (flows and sharing rules with 1.0.0-next.10); run `npm view sf-agent-po@next version` to see which version `@next` is. Each command takes `--help` (for example `npx -y sf-agent-po@next doctor --help`). `index`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` and `doctor` take `--dir <project folder>`. `doctor --no-calls` skips the calls to Jira and Confluence, and `report --context <name>` limits the report to one context.
+`doctor`, `key`, `report` and `index --repo` come with 1.0.0-next.8, and `metadata_code` with 1.0.0-next.9 (flows and sharing rules with 1.0.0-next.10); run `npm view sf-agent-po@next version` to see which version `@next` is. Each command takes `--help` (for example `npx -y sf-agent-po@next doctor --help`). `schedule` comes with 1.0.0-next.11. `index`, `schedule`, `key`, `doctor` and `report` take `--workspace <folder>`, else `SF_AGENT_WORKSPACE`, else `.sf-agent` in the current folder; `init` and `doctor` take `--dir <project folder>`. `doctor --no-calls` skips the calls to Jira and Confluence, and `report --context <name>` limits the report to one context.
 
 ### Tools
 
@@ -283,6 +294,7 @@ You rarely call tools by name; this list helps when you want to be precise.
 | --- | --- |
 | Inputs (masked), requirements, workflow runs, designs, backlogs, feedback, the metadata index | `<workspace>/sf-agent.db` |
 | Retrieved org metadata and cloned repositories | `<workspace>/orgs/`, `<workspace>/repos/` |
+| Scheduled runs: their scripts and the output of the last run | `<workspace>/schedule/` |
 | The masking key | Your OS keychain, or a key file readable only by you |
 | The name model | Your user cache folder (or `SF_AGENT_PO_MODEL_DIR`) |
 
