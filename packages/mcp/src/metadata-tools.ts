@@ -298,6 +298,8 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         } else out.push("No links found in the index. Dynamic Apex, SOQL built from strings and long formula chains are not seen: check with the user.");
         if ((c.type === "ApexClass" || c.type === "ApexTrigger") && index.hasBody(c.id)) {
           out.push(`Its code (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code${c.attrs.dynamic ? ", which shows what the links above cannot: the queries it builds from strings and the classes it names at run time" : ""}.`);
+        } else if (c.type === "Flow" && index.hasBody(c.id)) {
+          out.push(`Its logic (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code: the conditions of its decisions, its record filters and what it assigns and calls, which the links above do not show.`);
         }
         return text(out.join("\n\n"));
       },
@@ -307,16 +309,17 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
   server.registerTool(
     "metadata_code",
     {
-      title: "Read Apex code",
+      title: "Read Apex code or flow logic",
       description:
-        "Shows the code of an Apex class or trigger from the index, with line numbers, masked like any input: personal data in strings and comments is replaced by pseudonyms. " +
-        "Use it when the links are not enough, above all for code the index marks as dynamic (queries built from strings, classes named at run time): read the code and say what it does. " +
+        "Shows the code of an Apex class or trigger, or the logic of a flow, from the index, with line numbers, masked like any input: personal data in strings and comments is replaced by pseudonyms. " +
+        "A flow is shown as an outline: how it starts and its entry conditions, then each element in the order the flow reaches it (decision outcomes with their conditions, record filters, assignments, actions and their inputs, where each goes next), then its variables, constants and formulas. " +
+        "Use it when the links are not enough: for code the index marks as dynamic (queries built from strings, classes named at run time), or to say when and why a flow does something. Read it and say what it does. " +
         "find lists the lines that contain a text (\"Database.query\", a field name), from the line given by from, to read around them with from.",
       inputSchema: {
         context: contextName,
         source: sourceArg,
-        type: z.enum(["ApexClass", "ApexTrigger"]),
-        name: z.string().describe('The class or trigger name, e.g. "Account_SM".'),
+        type: z.enum(["ApexClass", "ApexTrigger", "Flow"]),
+        name: z.string().describe('The class, trigger or flow API name, e.g. "Account_SM".'),
         from: z.number().int().min(1).default(1).describe("The first line to show, or to search from."),
         lines: z.number().int().min(1).max(MAX_CODE_LINES).default(CODE_LINES).describe("How many lines to show."),
         find: z.string().min(2).optional().describe("Instead of a range: the lines that contain this text, any case."),
@@ -324,7 +327,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       annotations: { readOnlyHint: true },
     },
     guard(
-      async ({ context, source, type, name, from, lines, find }: { context: string; source?: string; type: "ApexClass" | "ApexTrigger"; name: string; from: number; lines: number; find?: string }) => {
+      async ({ context, source, type, name, from, lines, find }: { context: string; source?: string; type: "ApexClass" | "ApexTrigger" | "Flow"; name: string; from: number; lines: number; find?: string }) => {
         const snap = pick(index, source);
         const pieces = new Pieces(kit.masker, context);
         const c = index.component(snap.id, type, name);
@@ -333,8 +336,8 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         if (body === undefined) {
           return text(
             c.attrs.tooLarge
-              ? `${name} is too large for the index to keep its code.`
-              : c.attrs.lines === undefined
+              ? `${name} is too large for the index to keep its ${type === "Flow" ? "logic" : "code"}.`
+              : c.attrs.lines === undefined && type !== "Flow"
                 ? `${name} could not be read when ${snap.source} was indexed, so the index has no code for it.`
                 : `The index of ${snap.source} has no code for ${name}: it was built by an earlier version. Index the source again (npx sf-agent-po@next index) and ask again.`,
           );

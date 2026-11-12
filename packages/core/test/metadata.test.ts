@@ -305,6 +305,76 @@ describe("flows", () => {
   });
 });
 
+describe("flow logic", () => {
+  const flow = (xml: string) => readFlow("Case_Sharing", (parseMetadataXml(`<Flow>${xml}</Flow>`) as { Flow: Record<string, unknown> }).Flow, "flows/Case_Sharing.flow-meta.xml");
+
+  it("is kept as an outline in the order the flow runs, with conditions, filters and secrets hidden", () => {
+    const f = flow(`
+      <label>Case Sharing</label><processType>AutoLaunchedFlow</processType><status>Active</status><apiVersion>62.0</apiVersion>
+      <start><object>Case</object><triggerType>RecordAfterSave</triggerType><recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <filterLogic>1 AND (2 OR 3)</filterLogic>
+        <filters><field>RecordTypeId</field><operator>EqualTo</operator><value><elementReference>Care_RT</elementReference></value></filters>
+        <filters><field>CareZone__c</field><operator>IsChanged</operator><value><booleanValue>true</booleanValue></value></filters>
+        <filters><field>Store__c</field><operator>IsNull</operator><value><booleanValue>false</booleanValue></value></filters>
+        <connector><targetReference>Check_Zone</targetReference></connector></start>
+      <recordUpdates><name>Unreached</name><object>Case</object></recordUpdates>
+      <actionCalls><name>Share</name><label>Share</label><actionName>CARE_CaseSharing</actionName><actionType>apex</actionType>
+        <inputParameters><name>caseIds</name><value><elementReference>$Record.Id</elementReference></value></inputParameters>
+        <faultConnector><targetReference>Log_Error</targetReference></faultConnector></actionCalls>
+      <decisions><name>Check_Zone</name><label>Check zone</label>
+        <rules><name>Is_EU</name><conditionLogic>and</conditionLogic>
+          <conditions><leftValueReference>$Record.CareZone__c</leftValueReference><operator>EqualTo</operator><rightValue><stringValue>EU</stringValue></rightValue></conditions>
+          <conditions><leftValueReference>$Record.Owner:User.Email</leftValueReference><operator>NotEqualTo</operator><rightValue><stringValue>it's karim.benali@example.com</stringValue></rightValue></conditions>
+          <connector><targetReference>Get_Group</targetReference></connector></rules>
+        <defaultConnectorLabel>Other zones</defaultConnectorLabel></decisions>
+      <recordLookups><name>Get_Group</name><object>Group</object><getFirstRecordOnly>true</getFirstRecordOnly>
+        <filterLogic>and</filterLogic>
+        <filters><field>DeveloperName</field><operator>EqualTo</operator><value><stringValue>Care_CentralTeam_EU</stringValue></value></filters>
+        <queriedFields>Id</queriedFields>
+        <connector><targetReference>Share</targetReference></connector></recordLookups>
+      <recordCreates><name>Log_Error</name><object>Error_Log__c</object>
+        <inputAssignments><field>Message__c</field><value><elementReference>$Flow.FaultMessage</elementReference></value></inputAssignments></recordCreates>
+      <constants><name>apiKey</name><dataType>String</dataType><value><stringValue>k_9f8e7d6c</stringValue></value></constants>
+      <formulas><name>Zone</name><dataType>String</dataType><expression>TEXT(
+        {!$Record.CareZone__c})</expression></formulas>`);
+    const lines = f.body!.split("\n");
+    expect(lines[0]).toBe('FLOW Case_Sharing "Case Sharing" (AutoLaunchedFlow, Active, API 62.0)');
+    expect(f.body).toContain("START after save on Case, when a record is created or updated");
+    expect(f.body).toContain("only when 1 AND (2 OR 3) where 1: RecordTypeId EqualTo {!Care_RT}; 2: CareZone__c IsChanged true; 3: Store__c IsNull false");
+    expect(f.body).toContain("outcome Is_EU: {!$Record.CareZone__c} EqualTo 'EU' AND {!$Record.Owner:User.Email} NotEqualTo 'it\\'s karim.benali@example.com'");
+    expect(f.body).toContain('otherwise "Other zones" -> (end)');
+    expect(f.body).toContain("where DeveloperName EqualTo 'Care_CentralTeam_EU'");
+    expect(f.body).toContain("caseIds <- {!$Record.Id}");
+    expect(f.body).toContain("on error -> Log_Error");
+    expect(f.body).toContain("formula Zone: String = TEXT( {!$Record.CareZone__c})");
+    // In the order the flow runs: the start, the decision, the lookup, the action, its fault path.
+    const at = (s: string) => lines.findIndex((l) => l.startsWith(s));
+    const order = ["START", "DECISION Check_Zone", "GET RECORDS Get_Group", "ACTION Share", "CREATE RECORDS Log_Error", "-- Not reached", "UPDATE RECORDS Unreached"].map(at);
+    expect(order.every((i, k) => i >= 0 && (k === 0 || i > order[k - 1]!))).toBe(true);
+    // A secret among the values is hidden before the outline is kept.
+    expect(f.body).toContain("constant apiKey = 'HIDDEN_SECRET'");
+    expect(f.body).not.toContain("k_9f8e7d6c");
+    expect(f.attrs.lines).toBe(lines.length);
+  });
+
+  it("follows loops and waits, and keeps flows with no start element", () => {
+    const f = flow(`
+      <startElementReference>Each</startElementReference>
+      <loops><name>Each</name><collectionReference>Cases</collectionReference><nextValueConnector><targetReference>Add</targetReference></nextValueConnector><noMoreValuesConnector><targetReference>Wait_Day</targetReference></noMoreValuesConnector></loops>
+      <assignments><name>Add</name><assignmentItems><assignToReference>Ids</assignToReference><operator>Add</operator><value><elementReference>Each.Id</elementReference></value></assignmentItems><connector><targetReference>Each</targetReference></connector></assignments>
+      <waits><name>Wait_Day</name><waitEvents><name>Tomorrow</name><connector><targetReference>Done</targetReference></connector></waitEvents></waits>
+      <recordDeletes><name>Done</name><inputReference>Cases</inputReference></recordDeletes>
+      <variables><name>Cases</name><dataType>SObject</dataType><objectType>Case</objectType><isCollection>true</isCollection><isInput>true</isInput></variables>`);
+    expect(f.body).toContain("START\n  -> Each");
+    expect(f.body).toContain("LOOP Each\n  over {!Cases}\n  each -> Add\n  then -> Wait_Day");
+    expect(f.body).toContain("{!Ids} Add {!Each.Id}");
+    expect(f.body).toContain("WAIT Wait_Day\n  event Tomorrow -> Done\n  otherwise -> (end)");
+    expect(f.body).toContain("DELETE RECORDS Done\n  on {!Cases}");
+    expect(f.body).toContain("variable Cases: Case (collection, input)");
+    expect(f.body).not.toContain("Not reached");
+  });
+});
+
 describe("flow references", () => {
   const edgesOf = (xml: string, others: ParsedComponent[] = []) => {
     const flow = readFlow("F", (parseMetadataXml(`<Flow>${xml}</Flow>`) as { Flow: Record<string, unknown> }).Flow, "flows/F.flow-meta.xml");

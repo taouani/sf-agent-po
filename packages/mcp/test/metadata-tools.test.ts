@@ -221,6 +221,27 @@ describe("metadata tools", () => {
     expect((await call("metadata_code", { context: "acme", type: "ApexClass", name: "Mapper", lines: 501 })).isError).toBe(true);
   });
 
+  it("show a flow's logic, masked", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    writeFileSync(
+      path.join(root, "flows/Lapse.flow"),
+      `<?xml version="1.0"?><Flow><label>Lapse</label><processType>AutoLaunchedFlow</processType><start><object>Policy__c</object><triggerType>RecordAfterSave</triggerType><recordTriggerType>Update</recordTriggerType><connector><targetReference>Is_Lapsed</targetReference></connector></start>` +
+        `<decisions><name>Is_Lapsed</name><rules><name>Yes</name><conditionLogic>and</conditionLogic><conditions><leftValueReference>$Record.Status__c</leftValueReference><operator>EqualTo</operator><rightValue><stringValue>Lapsed by Karim Benali</stringValue></rightValue></conditions><connector><targetReference>Close</targetReference></connector></rules></decisions>` +
+        `<recordUpdates><name>Close</name><inputReference>$Record</inputReference><inputAssignments><field>Premium__c</field><value><numberValue>0</numberValue></value></inputAssignments></recordUpdates></Flow>`,
+    );
+    await indexProject(index, root);
+    const card = await call("metadata_component", { context: "acme", type: "Flow", name: "Lapse" });
+    expect(card.text).toMatch(/Its logic \(\d+ lines\) can be read with metadata_code: the conditions of its decisions/);
+    const logic = await call("metadata_code", { context: "acme", type: "Flow", name: "Lapse" });
+    expect(logic.text).toMatch(/^Flow Lapse, lines 1-\d+ of \d+/);
+    expect(logic.text).toContain("START after save on Policy__c, when a record is updated");
+    expect(logic.text).toMatch(/outcome Yes: \{!\$Record\.Status__c\} EqualTo 'Lapsed by \[PERSON_\d+\]'/);
+    expect(logic.text).toContain("Premium__c = 0");
+    expect(logic.text).not.toContain("Karim");
+    expect((await call("metadata_code", { context: "acme", type: "Flow", name: "Lapse", find: "premium" })).text).toContain('Flow Lapse: 1 line(s) contain "premium"');
+  });
+
   it("show code with its secrets hidden, and long lines cut", async () => {
     const { call, index } = await connect();
     const root = project();
