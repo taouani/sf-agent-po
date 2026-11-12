@@ -206,7 +206,7 @@ The target is at least 7/10 per model. Every score below is one run per scenario
 
 ### Inputs needed from you
 
-Updated 11 Nov 2026, in the order to do them. Done before: the next.6 release, the G3 decision (10 Nov), the OpenRouter credit ($0.49).
+Updated 12 Nov 2026, in the order to do them. Done before: the next.6 release, the G3 decision (10 Nov), the OpenRouter credit ($0.49).
 
 - [x] Set up trusted publishing on npmjs.com (section 6 of the [phase 5 plan](phase-5-plan.md)): package Settings, Trusted publishing, GitHub Actions, user `taouani`, repository `sf-agent-po`, workflow `release-next.yml`, environment `npm-next`; under Allowed actions tick **npm publish** (a new publisher allows only staged publishing by default) and `npm dist-tag`.
 - [x] Delete the `NPM_TOKEN` secret from the `npm-next` environment.
@@ -219,7 +219,7 @@ Updated 11 Nov 2026, in the order to do them. Done before: the next.6 release, t
 - [x] Re-index your UAT org on next.9 (`npx -y sf-agent-po@next index --org <alias> --full`). The first run after the update retrieves and reads everything anyway, since it retrieves a new type (custom metadata records) and the readers changed; `--full` only makes that explicit. That gives the index the Apex code and the custom metadata links. Send the time (the full run took 26 minutes on next.8), then ask the dynamic Apex question again. Done on 11 Nov: 25 minutes, and on 12 Nov the Lifetime Spent and client address answers read the Apex code and the custom metadata mappings.
 - [x] Run the Lifetime Spent check again; if an Apex class is still missed, send its name or the line that reads the field. Done on 12 Nov: classes, components, pages, an email template and three custom metadata records found.
 - [ ] Start the Release next workflow from `main` (dry-run unticked) and approve `npm-next`: it publishes 1.0.0-next.10, with flow logic in `metadata_code` and sharing rules, roles, public groups and queues in the index.
-- [ ] Re-index your UAT org on next.10 (`npx -y sf-agent-po@next index --org <alias>`). This run is full anyway (new types and new readers). Then ask the case visibility question again. After a few changes, run it once more and send that time, against 5 minutes.
+- [ ] Re-index your UAT org on next.10 (`npx -y sf-agent-po@next index --org <alias>`). This run is full anyway (new types and new readers). Send its time (25 minutes on next.9), then ask again how Care case visibility is managed (the question of 12 Nov): the answer should now give the sharing rules and the flow's conditions. After a few changes, run it once more and send that time, against 5 minutes.
 - [ ] Test the Claude Code host and send the results, for the Claude Code part of PR 14 (14b): add the server (`claude mcp add`, see the [package README](../packages/mcp/README.md)), run `npx -y sf-agent-po@next init --host claude-code`, then `/sa-hld` and `/po-backlog`.
 - [ ] In Cursor 2.4 or later, run `npx -y sf-agent-po@next init --host cursor` (skills came after next.6), check that the workflows appear as skills, and delete the old `.cursor/commands` files that `init` lists.
 - [ ] One guided design and backlog in any host, published to a test Confluence space and a test Jira project: the first live check of draw.io, the matrix page and the sub-tasks.
