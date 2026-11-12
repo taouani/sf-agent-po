@@ -1296,6 +1296,10 @@ describe("record access: sharing rules, roles, groups and queues", () => {
           <criteriaItems><field>CareZone__c</field><operation>equals</operation><value>EU</value></criteriaItems>
           <criteriaItems><field>Origin</field><operation>notEqual</operation><value>Karim Benali's line</value></criteriaItems>
         </sharingCriteriaRules>
+        <sharingCriteriaRules><fullName>Managers</fullName><accessLevel>Read</accessLevel><label>Managers</label>
+          <sharedTo><managers>jane.doe@acme.example.com</managers><managerSubordinates>john.roe@acme.example.com</managerSubordinates><guestUser>site.guest@acme.example.com</guestUser><groups><group>Care_CentralTeam_EU</group></groups></sharedTo>
+          <criteriaItems><field>Store__c</field><operation>notEqual</operation><value></value></criteriaItems>
+        </sharingCriteriaRules>
         <sharingOwnerRules><fullName>Stores_To_All</fullName><accessLevel>Read</accessLevel><label>Stores</label>
           <sharedTo><allInternalUsers></allInternalUsers></sharedTo>
           <sharedFrom><roleAndSubordinatesInternal>Store_Manager</roleAndSubordinatesInternal></sharedFrom>
@@ -1318,7 +1322,11 @@ describe("record access: sharing rules, roles, groups and queues", () => {
   it("links rules to the fields they test, the object they share and the groups and roles they share with", async () => {
     const { components, edges } = await scanProject(project());
     const rules = components.find((c) => c.type === "SharingRules")!;
-    expect(rules).toMatchObject({ name: "Case", attrs: { object: "Case", counts: { criteria: 1, owner: 1 } } });
+    expect(rules).toMatchObject({ name: "Case", parent: "Case", attrs: { object: "Case", counts: { criteria: 2, owner: 1 } } });
+    // Users are named by their username: only words are kept.
+    expect((rules.attrs.rules as { name: string; to: string }[]).find((r) => r.name === "Managers")!.to).toBe("a manager group, a manager and subordinates group, the site guest user, group Care_CentralTeam_EU");
+    expect(JSON.stringify(rules)).not.toMatch(/jane|john|site\.guest/);
+    (rules.attrs.rules as unknown[]).splice(1, 1);
     expect(rules.attrs.rules).toEqual([
       { name: "Care_EU", kind: "criteria", label: "Care EU", access: "Edit", to: "group Care_CentralTeam_EU", criteria: "1 AND 2 where 1: CareZone__c equals 'EU'; 2: Origin notEqual 'Karim Benali\\'s line'" },
       { name: "Stores_To_All", kind: "owner", label: "Stores", access: "Read", to: "all internal users", from: "role and internal subordinates Store_Manager" },
@@ -1326,7 +1334,7 @@ describe("record access: sharing rules, roles, groups and queues", () => {
     expect(rules.body).toContain("CRITERIA RULE Care_EU \"Care EU\"\n  records where 1 AND 2 where 1: CareZone__c equals 'EU'");
     expect(rules.body).toContain("  shared with group Care_CentralTeam_EU: Edit");
     expect(rules.body).toContain("OWNER RULE Stores_To_All \"Stores\"\n  records owned by role and internal subordinates Store_Manager\n  shared with all internal users: Read");
-    for (const [kind, to] of [["reads", "CustomField:Case.CareZone__c"], ["reads", "CustomField:Case.Origin"], ["grants", "CustomObject:Case"], ["references", "Group:Care_CentralTeam_EU"], ["references", "Role:Store_Manager"]])
+    for (const [kind, to] of [["reads", "CustomField:Case.CareZone__c"], ["reads", "CustomField:Case.Origin"], ["part_of", "CustomObject:Case"], ["references", "Group:Care_CentralTeam_EU"], ["references", "Role:Store_Manager"]])
       expect(edges.some(edge("SharingRules:Case", kind!, to!)), `${kind} ${to}`).toBe(true);
     expect(edges.some(edge("Role:Store_Manager", "references", "Role:CEO"))).toBe(true);
     expect(components.find((c) => c.type === "Role" && c.name === "Store_Manager")).toMatchObject({ label: "Store manager", attrs: { parentRole: "CEO", caseAccessLevel: "Read" }, text: "For stores" });

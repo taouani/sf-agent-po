@@ -46,17 +46,31 @@ const WORDS: Record<string, string> = {
   publicGroup: "group",
   roleAndSubordinate: "role and subordinates",
   roleAndSubordinateInternal: "role and internal subordinates",
+  managers: "a manager group",
+  managerSubordinates: "a manager and subordinates group",
 };
 
+/**
+ * Targets named by a user's username (a site guest user, a user's manager group): only words
+ * are kept, never the name. The retrieve empties them before the file is written.
+ */
+export const USER_TARGETS = ["guestUser", "managers", "managerSubordinates"] as const;
+
 /** "group Care_EU, role CEO" from a sharedTo or sharedFrom element, with refs to what it names. */
-function targets(el: unknown, refs: Ref[]): string {
-  const parts: string[] = [];
+function targets(el: unknown, refs: Ref[], parts: string[] = []): string {
   for (const [key, v] of Object.entries(obj(el))) {
     const type = TARGETS[key];
+    // A list of targets ("<groups><group>A</group></groups>"): its items.
+    for (const inner of list(v)) if (inner && typeof inner === "object" && !(USER_TARGETS as readonly string[]).includes(key)) targets(inner, refs, parts);
     const names = list(v).map(str).filter((n): n is string => !!n);
-    // An element with no name ("<allInternalUsers/>") stands for everyone it says. The site
-    // guest user is named by its username: not kept.
-    if (!names.length || key === "guestUser") {
+    // An element with no name ("<allInternalUsers/>") stands for everyone it says. Users are
+    // named by their username: not kept.
+    if ((USER_TARGETS as readonly string[]).includes(key)) {
+      parts.push(WORDS[key] ?? key);
+      continue;
+    }
+    if (!names.length) {
+      if (list(v).some((x) => x && typeof x === "object")) continue;
       parts.push(WORDS[key] ?? key);
       continue;
     }
@@ -72,13 +86,13 @@ function targets(el: unknown, refs: Ref[]): string {
 const quote = (s: string) => `'${s.replace(/'/g, "\\'")}'`;
 
 /**
- * The sharing rules of one object (sharingRules/Case.sharingRules): criteria rules read the
- * fields in their criteria, every rule grants access to the object's records, and names the
+ * The sharing rules of one object (sharingRules/Case.sharingRules): a part of the object,
+ * deleted with it; criteria rules read the fields in their criteria, and every rule names the
  * groups, roles and queues it shares to or from. The rules are kept in `attrs.rules`, and as
  * text in `body`, for an agent to read; their values are masked when a tool returns them.
  */
 export function readSharingRules(object: string, root: Record<string, unknown>, file: string): ParsedComponent {
-  const refs: Ref[] = [{ kind: "grants", object }];
+  const refs: Ref[] = [];
   const rules: Record<string, unknown>[] = [];
   const lines: string[] = [`SHARING RULES on ${object}`];
   const kinds: [string, string][] = [
@@ -123,6 +137,7 @@ export function readSharingRules(object: string, root: Record<string, unknown>, 
   return {
     type: "SharingRules",
     name: object,
+    parent: object,
     file,
     attrs: { object, rules, counts: Object.fromEntries(kinds.map(([k, kind]) => [kind, list(root[k]).length]).filter(([, n]) => n)) },
     refs,

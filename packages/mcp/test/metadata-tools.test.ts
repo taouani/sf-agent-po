@@ -259,7 +259,8 @@ describe("metadata tools", () => {
     w("roles/Care_Manager.role", "<Role><name>Care manager</name><parentRole>CEO</parentRole></Role>");
     await indexProject(index, root);
     const object = await call("metadata_component", { context: "acme", type: "CustomObject", name: "Policy__c" });
-    expect(object.text).toContain("has its records shared by: SharingRules Policy__c");
+    // Its sharing rules are one of its parts.
+    expect(object.text).toMatch(/Children \(\d+\):[\s\S]*- SharingRules Policy__c/);
     const rules = await call("metadata_component", { context: "acme", type: "SharingRules", name: "Policy__c" });
     expect(rules.text).toContain("share records of: CustomObject Policy__c");
     expect(rules.text).toContain("references: Group Care_EU");
@@ -273,6 +274,16 @@ describe("metadata tools", () => {
     // Deleting a field a sharing rule tests is refused by Salesforce.
     const impact = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomField", name: "Policy__c.Status__c" }] });
     expect(impact.text).toContain("SharingRules Policy__c");
+    expect(impact.text).toContain("Salesforce refuses the delete");
+    // The object's own sharing rules go with it: they do not stop its delete.
+    const object_ = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomObject", name: "Policy__c" }] });
+    expect(object_.text).not.toMatch(/SharingRules Policy__c.*\(reads it/);
+    const rulesChange = await call("metadata_impact", { context: "acme", changes: [{ change: "modify", type: "SharingRules", name: "Policy__c" }] });
+    expect(rulesChange.text).toContain("It decides who sees records of Policy__c beyond their owner, through Group Care_EU");
+    const group = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "Group", name: "Care_EU" }] });
+    expect(group.text).toContain("Its members see records through it: 1 object(s) share records with it");
+    expect(group.text).toContain("check in Setup whether Salesforce refuses the delete or removes them");
+    expect(group.text).not.toContain("Salesforce refuses the delete while");
   });
 
   it("say why there is no flow logic to show", async () => {

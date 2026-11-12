@@ -546,7 +546,7 @@ const VERB: Record<string, [string, string]> = {
 /** A may_read from a custom metadata type: its records name the field or object. */
 const NAMED_IN_RECORDS: [string, string] = ["its records name", "is named in the records of"];
 const MAY_READ: [string, string] = ["may read", "may be read by"];
-/** A grant from an object's sharing rules: they share its records. */
+/** An object's sharing rules are a part of it: they share its records. */
 const SHARES: [string, string] = ["share records of", "has its records shared by"];
 
 async function relatedLine(pieces: Pieces, r: Related, self?: string): Promise<string> {
@@ -554,7 +554,7 @@ async function relatedLine(pieces: Pieces, r: Related, self?: string): Promise<s
   // Two links away, the source of the last link is the one between: its kind is said plainly.
   const source = r.direction === "out" ? (r.depth > 1 ? undefined : self) : r.component.type;
   const verb = (k: string) =>
-    k === "grants" && source === "SharingRules" ? SHARES : k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k];
+    k === "part_of" && source === "SharingRules" ? SHARES : k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k];
   const verbs = r.kinds.map((k) => verb(k)?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
   const via = r.depth > 1 ? ` (${r.depth} links away)` : "";
   return `${verbs}${via}: ${(await line(pieces, r.component)).slice(2)}`;

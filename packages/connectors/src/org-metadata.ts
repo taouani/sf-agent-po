@@ -3,7 +3,7 @@
 
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { classifyFile, isMappingValue, parseMetadataXml } from "@sf-agent-po/core";
+import { classifyFile, isMappingValue, parseMetadataXml, USER_TARGETS } from "@sf-agent-po/core";
 import { defaultSfRunner, type SfRunner } from "./salesforce.js";
 
 /**
@@ -76,12 +76,21 @@ export const SECRET_ELEMENTS: Readonly<Record<string, readonly string[]>> = {
   Queue: ["users", "email"],
 };
 
-/** A retrieved file of this type without its SECRET_ELEMENTS. */
+/**
+ * Elements emptied rather than removed: they say who a sharing rule shares with by a user's
+ * username (a site guest user, a manager group). The element stays, so the rule still says
+ * "the site guest user" or "a manager group"; the username goes.
+ */
+export const USER_ELEMENTS: Readonly<Record<string, readonly string[]>> = { SharingRules: USER_TARGETS };
+
+/** A retrieved file of this type without its SECRET_ELEMENTS, and with its USER_ELEMENTS emptied. */
 export function withoutSecrets(type: string, xml: string): string {
   const names = SECRET_ELEMENTS[type];
-  if (!names?.length) return xml;
-  const tags = names.join("|");
-  return xml.replace(new RegExp(`[ \\t]*<(${tags})(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</\\1\\s*>)[ \\t]*\\r?\\n?`, "g"), "");
+  const users = USER_ELEMENTS[type];
+  let out = xml;
+  if (names?.length) out = out.replace(new RegExp(`[ \\t]*<(${names.join("|")})(?:\\s[^>]*)?(?:/>|>[\\s\\S]*?</\\1\\s*>)[ \\t]*\\r?\\n?`, "g"), "");
+  if (users?.length) out = out.replace(new RegExp(`<(${users.join("|")})(?:\\s[^>]*)?>[\\s\\S]*?</\\1\\s*>`, "g"), "<$1/>");
+  return out;
 }
 
 /**
@@ -460,7 +469,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
           }
         }
         await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text.toString("utf8")) : kind && Object.hasOwn(SECRET_ELEMENTS, kind) ? withoutSecrets(kind, text.toString("utf8")) : text);
+        await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text.toString("utf8")) : kind && (Object.hasOwn(SECRET_ELEMENTS, kind) || Object.hasOwn(USER_ELEMENTS, kind)) ? withoutSecrets(kind, text.toString("utf8")) : text);
       }
       await remove(path.join(work, part));
     }

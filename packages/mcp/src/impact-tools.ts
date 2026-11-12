@@ -33,6 +33,9 @@ const MAX_BLIND = 15;
 const CHANGES = ["add", "modify", "delete"] as const;
 type Change = (typeof CHANGES)[number];
 
+/** Who is in them sees records through sharing rules, the role hierarchy or queue ownership. */
+const RECORD_ACCESS_TYPES = new Set(["Role", "Group", "Queue"]);
+
 const VERB_IN: Record<string, string> = {
   references: "references it",
   reads: "reads it",
@@ -213,6 +216,17 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           for (const g of given) byType.set(g.component.type, (byType.get(g.component.type) ?? 0) + 1);
           out.push(given.length ? `It gives access to ${[...byType].map(([t, n]) => `${n} ${t}`).join(", ")}: whoever has it gains or loses that.` : "It gives access to nothing the index holds.");
         }
+        // Record access: sharing rules, roles, groups and queues change who sees which records.
+        if (c && c.type === "SharingRules") {
+          const to = index.related(c.id, { depth: 1, kinds: ["references"] }).filter((r) => r.direction === "out");
+          const names = await Promise.all(to.slice(0, MAX_DEPENDENTS).map(async (r) => (await line(pieces, r.component)).slice(2)));
+          out.push(
+            `It decides who sees records of ${c.name} beyond their owner${names.length ? `, through ${names.join("; ")}${to.length > names.length ? "; ..." : ""}` : ""}: whoever is in those groups, roles or queues gains or loses access. Read the rules with metadata_code.`,
+          );
+        } else if (c && RECORD_ACCESS_TYPES.has(c.type)) {
+          const users = index.related(c.id, { depth: 1, kinds: ["references"] }).filter((r) => r.direction === "in" && r.component.type === "SharingRules").length;
+          out.push(`Its members see records through it${users ? `: ${users} object(s) share records with it or from it in their sharing rules (listed above)` : ""}${c.type === "Role" ? ", and through the role hierarchy above it" : ""}.`);
+        }
 
         // Weak links.
         // Outside systems that receive it: an outbound message sends the field, change data
@@ -260,7 +274,9 @@ export function registerImpactTools(server: McpServer, kit: ImpactKit): void {
           const code = weak.length - mappings;
           // Salesforce refuses the delete only for what references it directly and for sure.
           const blocking = rest.filter((d) => d.depth === 1 && !weak.includes(d)).length;
-          if (blocking) flags.push(`Deleting it breaks or changes ${rest.length - weak.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
+          if (blocking && c && RECORD_ACCESS_TYPES.has(c.type))
+            flags.push(`Deleting it changes ${rest.length - weak.length} component(s) above that share records with it or hold it: check in Setup whether Salesforce refuses the delete or removes them, and who loses access.`);
+          else if (blocking) flags.push(`Deleting it breaks or changes ${rest.length - weak.length} component(s) above; Salesforce refuses the delete while some still reference it.`);
           if (code) flags.push(`${code} class(es) may read it in a query built in strings: Salesforce does not stop the delete, and the query fails when it runs. Check their code with metadata_code.`);
           if (mappings) flags.push(`${mappings} custom metadata type(s) name it in their records: the code that reads them may fail once it is gone. Update or remove those records.`);
         }

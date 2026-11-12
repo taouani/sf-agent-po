@@ -12,4 +12,4 @@ export { readLayout, readPermissions, readPermissionSetGroup } from "./access.js
 export { readDashboard, readReport, readReportType, reportColumnRef } from "./reports.js";
 export { hostOf, hostsOnly, IP_HOST, readConnectedApp, readExternalCredential, readExternalService, readNamedCredential, readOutboundMessage, readPlatformEventChannel, readPlatformEventChannelMember, readRemoteSiteSetting, readWorkflow } from "./integrations.js";
 export { readerVersion, readerVersionComplete } from "./reader-version.js";
-export { readGroup, readQueue, readRole, readSharingRules } from "./sharing.js";
+export { readGroup, readQueue, readRole, readSharingRules, USER_TARGETS } from "./sharing.js";
