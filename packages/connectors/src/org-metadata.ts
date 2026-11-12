@@ -416,9 +416,15 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     let wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
     const retrievedCount = wanted.reduce((k, e) => k + e.members.length, 0);
     // Many email templates are read by query; what the queries do not find is retrieved.
-    const templates = wanted.find((e) => e.type === "EmailTemplate")?.members.filter((m) => m.includes("/")) ?? [];
+    // Only when most of them are wanted: the queries read every template of the org.
+    const templatesIn = (members: readonly string[]) => {
+      const folders = foldersOf(members);
+      return members.filter((m) => m.includes("/") && !folders.has(m));
+    };
+    const templates = templatesIn(wanted.find((e) => e.type === "EmailTemplate")?.members ?? []);
+    const all = templatesIn(entries.find((e) => e.type === "EmailTemplate")?.members ?? []);
     let queried = false;
-    if (templates.length >= (options.queryTemplatesFrom ?? QUERY_TEMPLATES_FROM)) {
+    if (templates.length >= (options.queryTemplatesFrom ?? QUERY_TEMPLATES_FROM) && templates.length * 2 >= all.length) {
       progress(`Reading ${templates.length.toLocaleString("en")} email templates by query`);
       const out = path.join(work, QUERIED);
       const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat).catch(async () => {
@@ -428,7 +434,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       if (found?.size) {
         queried = true;
         wanted = wanted.map((e) => (e.type === "EmailTemplate" ? { ...e, members: e.members.filter((m) => !found.has(m)) } : e)).filter((e) => e.members.length);
-      } else warnings.push("The email templates could not be read by query, so they are retrieved");
+      } else if (!found) warnings.push("The email templates could not be read by query, so they are retrieved");
     }
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     let n = 0;
@@ -738,7 +744,7 @@ export const QUERY_TEMPLATES_FROM = 500;
 /** Templates read by one query at first: halved while the CLI's output is too large. */
 const TEMPLATES_PER_QUERY = 2_000;
 /** An error from output too large to take in one piece. */
-const tooMuchOutput = (err: unknown) => /maxBuffer|unexpected output|EXCEEDED_MAX_SIZE_REQUEST|response size/i.test((err as Error)?.message ?? "");
+const tooMuchOutput = (err: unknown) => /maxBuffer|unexpected output|EXCEEDED_MAX_SIZE_REQUEST|response size|Invalid string length|heap out of memory/i.test((err as Error)?.message ?? "");
 /** A record id, as it may be quoted in a query. */
 const RECORD_ID = /^[A-Za-z0-9]{15,18}$/;
 
@@ -763,6 +769,7 @@ async function queryTemplates(
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   let after = "";
   let size = TEMPLATES_PER_QUERY;
+  let fits = 0;
   for (;;) {
     const soql = `SELECT Id, DeveloperName, NamespacePrefix, FolderId, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate${after ? ` WHERE Id > '${after}'` : ""} ORDER BY Id LIMIT ${size}`;
     let rows: Row[];
@@ -771,6 +778,7 @@ async function queryTemplates(
     } catch (err) {
       if (size > 1 && tooMuchOutput(err)) {
         size = Math.ceil(size / 2);
+        fits = 0;
         continue;
       }
       throw err;
@@ -781,8 +789,10 @@ async function queryTemplates(
       const folder = pathOf(t.FolderId) ?? (typeof t.FolderId === "string" && t.FolderId.startsWith("00D") ? "unfiled$public" : undefined);
       const member = name && folder ? `${folder}/${name}` : undefined;
       if (!member || !wanted.has(member) || !/^[\w$]+(?:\/[\w$]+)+$/.test(member)) continue;
-      // What a retrieve puts in the .email file: the markup, the HTML, or the text.
-      const body = text(t.Markup) || text(t.HtmlValue) || text(t.Body);
+      // What a retrieve puts in the .email file: the markup, the text, or the HTML, by the
+      // template's type; else whichever is there.
+      const type = text(t.TemplateType).toLowerCase();
+      const body = (type === "visualforce" ? text(t.Markup) : type === "text" ? text(t.Body) : type ? text(t.HtmlValue) : "") || text(t.Markup) || text(t.HtmlValue) || text(t.Body);
       const plain = body === text(t.Body) ? "" : text(t.Body);
       const file = path.join(out, "email", ...member.split("/"));
       await mkdir(path.dirname(file), { recursive: true });
@@ -796,6 +806,12 @@ async function queryTemplates(
     const last = rows.at(-1)?.Id;
     if (rows.length < size || typeof last !== "string" || !RECORD_ID.test(last)) break;
     after = last;
+    // A page halved for a few large templates: after a few pages that fit, the next ones are
+    // tried in a larger one again.
+    if (++fits >= 4 && size < TEMPLATES_PER_QUERY) {
+      size = Math.min(TEMPLATES_PER_QUERY, size * 2);
+      fits = 0;
+    }
   }
   return written;
 }

@@ -530,7 +530,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
       Folder: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }],
       EmailTemplate: [
         { Id: "00X000000000001", DeveloperName: "Html", FolderId: "00l1", TemplateType: "custom", Subject: "Case {!Case.CaseNumber} & co", HtmlValue: "<p>{!Case.Claim_Ref__c}</p>", Body: "{!Case.Plain__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
-        { Id: "00X000000000002", DeveloperName: "Text", FolderId: "00l1", TemplateType: "text", Subject: "Hi", Body: "Dear {!Contact.Nickname__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { Id: "00X000000000002", DeveloperName: "Text", FolderId: "00l1", TemplateType: "text", Subject: "Hi", Body: "Dear {!Contact.Nickname__c}", HtmlValue: "<p>{!Contact.Stale__c}</p>", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
         { Id: "00X000000000003", DeveloperName: "Vf", FolderId: "00l1", TemplateType: "visualforce", Markup: '<messaging:emailTemplate relatedToType="Policy__c" subject="x"><messaging:plainTextEmailBody>{!relatedTo.Premium__c}</messaging:plainTextEmailBody></messaging:emailTemplate>', LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
         { Id: "00X000000000004", DeveloperName: "U", FolderId: "00D000000000001", TemplateType: "text", Body: "{!Account.Tier__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
         // In a user's private folder: not in the listing.
@@ -551,6 +551,8 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     expect(readFileSync(path.join(email, "Care", "Html.email-meta.xml"), "utf8")).toContain("<subject>Case {!Case.CaseNumber} &amp; co</subject>");
     expect(readFileSync(path.join(email, "Care", "Html.email-meta.xml"), "utf8")).toContain("<textOnly>{!Case.Plain__c}</textOnly>");
     expect(readFileSync(path.join(email, "Care", "Text.email-meta.xml"), "utf8")).not.toContain("textOnly");
+    // A text template's body is its text, whatever else the row holds.
+    expect(readFileSync(path.join(email, "Care", "Text.email"), "utf8")).toBe("Dear {!Contact.Nickname__c}");
     expect(existsSync(path.join(email, "unfiled$public", "U.email"))).toBe(true);
     expect(existsSync(path.join(email, "Care", "Lost.email"))).toBe(true);
     expect(readdirSync(path.join(run.dir, "metadata")).sort()).toEqual(["classes", "email"]);
@@ -561,6 +563,30 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // Pages of 2 rows, once halved: each page asks for the next, after the last id.
     const pages = calls.filter((c) => c.args[0] === "data" && c.args.includes("templates-page.soql"));
     expect(pages.length).toBe(10 + 3);
+    // An incremental run with few templates changed retrieves them: the queries would read them all.
+    soql.EmailTemplate![0]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
+    asked.length = 0;
+    calls.length = 0;
+    const next = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2 });
+    expect(next.incremental).toBeDefined();
+    expect(calls.filter((c) => c.args.includes("templates-page.soql"))).toEqual([]);
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Html", "Care/Lost"] }]);
+    expect(readdirSync(path.join(next.dir, "metadata", "email", "Care")).filter((f) => f.endsWith(".email")).sort()).toEqual(["Html.email", "Lost.email", "Text.email", "Vf.email"]);
+    // A query that fails after some pages were written: none of them is kept, all are retrieved.
+    let served = 0;
+    const failing: SfRunner = async (args, opts) => {
+      const page = args.includes("templates-page.soql");
+      if (page && served >= 1) throw new Error("sf data query failed: QUERY_TIMEOUT");
+      const result: unknown = await sf(args, opts);
+      if (page) served++;
+      return result;
+    };
+    asked.length = 0;
+    const broken = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: failing, queryTemplatesFrom: 2 });
+    expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
+    expect(broken.warnings).toContain("The email templates could not be read by query, so they are retrieved");
+    // The retrieved Html.email, not the queried one.
+    expect(readFileSync(path.join(broken.dir, "metadata", "email", "Care", "Html.email"), "utf8")).toBe("Dear {!Contact.FirstName}, Care/Html");
     // Without the queries, the templates are retrieved, and the run says so.
     delete soql.EmailTemplate;
     asked.length = 0;
