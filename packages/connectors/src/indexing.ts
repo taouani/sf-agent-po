@@ -27,11 +27,15 @@ export type IndexTarget =
 /** A folder set's name: short, and safe in a source name and a file name. */
 export const SET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
 
+/** An org's source, as indexOrg names it: the 18-character id sf org display gives. */
+const ORG_SOURCE = /^org:00D[0-9A-Za-z]{15}$/;
+
 /** Checks a folder set before a run, so that a typo fails at once. */
 export function checkFolderSet(set: FolderSet): void {
   if (!SET_NAME.test(set.name)) throw new Error(`A folder set's name has letters, digits, ".", "_" or "-", up to 40 (not "${set.name}").`);
   if (!set.packages.length || set.packages.some((p) => !p.trim())) throw new Error("Name at least one package folder.");
-  if (set.forOrg && !/^org:00D[0-9A-Za-z]{12,15}$/.test(set.forOrg)) checkOrgArg(set.forOrg);
+  if (set.forOrg?.startsWith("org:") && !ORG_SOURCE.test(set.forOrg)) throw new Error(`${set.forOrg} is not an org's source: give org: and the 18-character org id, as metadata_sources lists it, or the org's alias.`);
+  if (set.forOrg && !set.forOrg.startsWith("org:")) checkOrgArg(set.forOrg);
 }
 
 /**
@@ -250,9 +254,10 @@ export async function indexRemote(index: MetadataIndex, spec: string | MetadataS
     const target = set ? await setTarget(set, options.sf) : undefined;
     return await index.build(
       { source: set ? setSource(repoSource(repo), set.name) : repoSource(repo), kind: "repo", ...(target ? { target } : {}) },
-      // Fetched under the lease, so that two runs of one repository never share a checkout.
+      // Fetched under the lease, so that two runs of one repository never share a checkout (a
+      // folder set has a checkout of its own, under its own lease).
       (lease, cache) => scrubbing(options.workspace, async () => {
-        const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress, interactive: options.interactive });
+        const dir = await resolveMetadataSource(repo, options.workspace, { progress: options.progress, interactive: options.interactive, ...(set ? { checkout: set.name } : {}) });
         lease.renew();
         const revision = await gitRevision(dir);
         if (revision) lease.setRevision(revision);
@@ -335,7 +340,7 @@ export interface IndexJob {
  * returns that run. Jobs are kept until the server stops; the index keeps the snapshots.
  */
 export class BackgroundIndexer {
-  private readonly jobs = new Map<string, { job: IndexJob; done: Promise<IndexJob> }>();
+  private readonly jobs = new Map<string, { job: IndexJob; done: Promise<IndexJob>; packages?: string }>();
 
   constructor(
     private readonly index: MetadataIndex,
@@ -345,13 +350,20 @@ export class BackgroundIndexer {
   /** Starts indexing a target, or returns the run already going for it. */
   start(target: IndexTarget): { job: IndexJob; done: Promise<IndexJob> } {
     const repo = target.kind === "remote" ? (typeof target.repo === "string" ? parseRepoSpec(target.repo) : target.repo) : undefined;
-    const base = target.kind === "project" ? projectSource(target.dir) : target.kind === "org" ? `org:${target.targetOrg}` : repoSource(repo!);
+    // A local repository is indexed as a project folder, under the folder's source.
+    const base =
+      target.kind === "project" ? projectSource(target.dir) : target.kind === "org" ? `org:${target.targetOrg}` : repo!.provider === "local" ? projectSource(repo!.location) : repoSource(repo!);
     const set = target.kind === "org" ? undefined : target.set;
     if (set) checkFolderSet(set);
     const name = set ? setSource(base, set.name) : base;
     const key = target.kind === "project" ? `project:${path.resolve(target.dir)}${set ? `:${set.name}` : ""}` : name;
     const running = this.jobs.get(key);
-    if (running?.job.state === "running") return running;
+    if (running?.job.state === "running") {
+      // The same set asked for again with other folders: say so rather than hand back the run.
+      const asked = target.kind === "org" ? undefined : target.set;
+      if (running.packages !== (asked?.packages.join("\n") ?? undefined)) throw new Error(`${name} is being indexed with other package folders; ask again once it is done (metadata_sources).`);
+      return running;
+    }
     const job: IndexJob = { target: name, state: "running", startedAt: new Date().toISOString() };
     const timer = new StepTimer();
     const progress = (m: string) => {
@@ -362,9 +374,9 @@ export class BackgroundIndexer {
       (snapshot) => Object.assign(job, { state: "ready" as const, snapshot, finishedAt: new Date().toISOString(), message: undefined, steps: timer.lines() }),
       (err: unknown) => Object.assign(job, { state: "failed" as const, finishedAt: new Date().toISOString(), message: (err as Error)?.message ?? String(err), steps: timer.lines() }),
     );
-    const entry = { job, done };
+    const entry = { job, done, ...(set ? { packages: set.packages.join("\n") } : {}) };
     this.jobs.set(key, entry);
-    return entry;
+    return { job, done };
   }
 
   /** Every run since the server started, newest first. */

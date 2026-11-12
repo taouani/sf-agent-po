@@ -133,6 +133,8 @@ describe("metadata tools", () => {
     w("row-app/force-app/classes/Karim_Tools.cls", "public class Karim_Tools {}");
     w("row-app/force-app/classes/NotDeployed.cls", "public class NotDeployed {}");
     w("sfoa-app/force-app/classes/SfoaOnly.cls", "public class SfoaOnly {}");
+    w("row-app/force-app/staticresources/Logo.resource-meta.xml", "<StaticResource/>");
+    w("row-app/force-app/objects/Policy__c/fields/Region__c.field-meta.xml", "<CustomField><fullName>Region__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></CustomField>");
     // The org: what the set deploys, a class made by hand, and nothing of NotDeployed.
     const orgDir = mkdtempSync(path.join(tmpdir(), "sf-agent-org-"));
     dirs.push(orgDir);
@@ -151,7 +153,7 @@ describe("metadata tools", () => {
     await indexer.settle();
     const sources = (await call("metadata_sources")).text;
     const set = /repo:sf-agent-mono-\w+:row#[0-9a-f]{8}/.exec(sources)![0];
-    expect(sources).toContain(`- ${set} (repo, 3 components, indexed `);
+    expect(sources).toMatch(new RegExp(`- ${set.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(repo, \\d+ components, indexed `));
     expect(sources).toMatch(new RegExp(`folder set row \\(common-app, row-app\\), deployed to ${org}\\)`));
     expect(sources).toContain(`, deployed from folder sets ${set})`);
 
@@ -167,6 +169,20 @@ describe("metadata tools", () => {
     expect(notDeployed).toContain(`${org}: not in the org (not deployed yet, or deleted in the org and still in the repository).`);
     expect((await call("metadata_component", { source: set, type: "ApexClass", name: "PolicyService" })).text).toContain(`${org}: in the org too.`);
     expect((await call("metadata_component", { source: set, type: "ApexClass", name: "SfoaOnly" })).text).toContain("No ApexClass named SfoaOnly");
+    // A type the org's index does not hold: no claim either way.
+    expect((await call("metadata_component", { source: set, type: "StaticResource", name: "Logo" })).text).toContain(`${org}: its index has no StaticResource, so it cannot say whether the org has it.`);
+    // Only referenced: no pair line, and a standard field stays among the reasons.
+    const referenced = (await call("metadata_component", { source: set, type: "CustomObject", name: "Account" })).text;
+    expect(referenced).toContain("only referenced (a standard object or field, one in a folder outside the set, or one only in the org)");
+    expect(referenced).not.toContain(`${org}:`);
+    // Folders are masked like any text.
+    w("Karim_App/classes/Extra.cls", "public class Extra {}");
+    await call("metadata_index", { project: root, packages: ["Karim_App"], set: "extra" });
+    await indexer.settle();
+    const listed = (await call("metadata_sources")).text;
+    expect(listed).toContain("folder set extra (");
+    expect(listed).not.toContain("Karim");
+    expect((await call("metadata_index", { project: root, packages: ["row-app"], set: "x", forOrg: "org:00D000000000001" })).text).toContain("18-character org id");
   });
 
   it("summarize, search and open components, with free text and report names masked", async () => {

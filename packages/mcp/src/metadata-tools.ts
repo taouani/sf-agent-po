@@ -145,10 +145,12 @@ export function sameOrPaired(index: MetadataIndex, scopeSource: string, snap: Sn
   return scopeSource === snap.source || pairedSources(index, snap).some((s) => s.source === scopeSource);
 }
 
-function describeSource(s: SnapshotInfo, ready: readonly SnapshotInfo[] = []): string {
+async function describeSource(pieces: Pieces, s: SnapshotInfo, ready: readonly SnapshotInfo[] = []): Promise<string> {
   const set = s.stats.target;
+  // The folders are the repository's own words: masked like any text.
+  const folders = set ? (await Promise.all(set.packages.map((p) => pieces.mask(p)))).join(", ") : "";
   const pair = set
-    ? `, folder set ${set.name} (${set.packages.join(", ")})${set.org ? `, deployed to ${set.org}${ready.some((r) => r.source === set.org) ? "" : " (not indexed)"}` : ""}`
+    ? `, folder set ${set.name} (${folders})${set.org ? `, deployed to ${set.org}${ready.some((r) => r.source === set.org) ? "" : " (not indexed)"}` : ""}`
     : s.kind === "org"
       ? ((sets) => (sets.length ? `, deployed from folder sets ${sets.join(", ")}` : ""))(ready.filter((r) => r.stats.target?.org === s.source).map((r) => r.source))
       : "";
@@ -210,7 +212,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       const ready = readySources(index);
       const jobs = indexer.list();
       const pieces = new Pieces(kit.masker, context);
-      const lines = [ready.length ? `Indexed:\n${ready.map((s) => `- ${describeSource(s, ready)}`).join("\n")}` : "Nothing is indexed yet."];
+      const lines = [ready.length ? `Indexed:\n${(await Promise.all(ready.map(async (s) => `- ${await describeSource(pieces, s, ready)}`))).join("\n")}` : "Nothing is indexed yet."];
       if (jobs.length) lines.push(`Runs since the server started:\n${(await Promise.all(jobs.map(async (j) => `- ${await describeJob(pieces, j)}`))).join("\n")}`);
       return text(lines.join("\n\n"));
     }),
@@ -239,7 +241,7 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         }),
       );
       const lines = [
-        `Source: ${describeSource(snap, readySources(index))}`,
+        `Source: ${await describeSource(pieces, snap, readySources(index))}`,
         `${snap.stats.referenced ?? 0} standard objects and fields are referenced without being in the source; ${snap.stats.edges ?? 0} links in all.`,
         `Components by type:\n${counts.map(([t, n]) => `- ${t}: ${n}`).join("\n")}`,
         busiest.length ? `Busiest objects:\n${rows.join("\n")}` : "No objects in this source.",
@@ -310,17 +312,24 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
           return text(`No ${type} named ${name} in ${snap.source}.${hint}`);
         }
         const out: string[] = [`${await line(pieces, c)}`, `Source: ${snap.source}`];
-        if (c.missing) out.push(`Not in the source: it is only referenced (${snap.stats.target ? "from a folder outside the set, or only in the org" : "a standard object or field"}).`);
+        if (c.missing) out.push(`Not in the source: it is only referenced (a standard object or field${snap.stats.target ? ", one in a folder outside the set, or one only in the org" : ""}).`);
         else if (c.file && snap.kind === "repo") out.push(`File: ${await pieces.mask(c.file)}`);
         // The other side of a pair: where the org's component is in the repository, or whether the set's is in the org.
-        for (const other of pairedSources(index, snap)) {
-          const there = index.component(other.id, c.type, c.name);
-          const found = there && !there.missing;
-          const where =
-            other.kind === "repo"
-              ? found ? `in the folder set${there.file ? `, at ${await pieces.mask(there.file)}` : ""}` : "not in the folder set (made in the org, or from another repository or a package)"
-              : found ? "in the org too" : "not in the org (not deployed yet, or deleted in the org and still in the repository)";
-          out.push(`${other.source}: ${where}.`);
+        // Absence from an org is claimed only of a type its index holds: an org is retrieved for some types only.
+        if (!c.missing) {
+          for (const other of pairedSources(index, snap)) {
+            const there = index.component(other.id, c.type, c.name);
+            const found = there && !there.missing;
+            const covered = other.kind === "repo" || Boolean(other.stats.counts?.[c.type]);
+            const where = found
+              ? other.kind === "repo" ? `in the folder set${there.file ? `, at ${await pieces.mask(there.file)}` : ""}` : "in the org too"
+              : !covered
+                ? `its index has no ${c.type}, so it cannot say whether the org has it`
+                : other.kind === "repo"
+                  ? "not in the folder set (made in the org, or from another repository or a package)"
+                  : "not in the org (not deployed yet, or deleted in the org and still in the repository)";
+            out.push(`${other.source}: ${where}.`);
+          }
         }
         if (Object.keys(c.attrs).length) {
           const details = JSON.stringify(await pieces.deep(trimDetails(c.attrs)));

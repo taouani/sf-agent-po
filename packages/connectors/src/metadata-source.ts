@@ -102,7 +102,16 @@ export function repoSource(spec: MetadataSourceSpec): string {
 export async function resolveMetadataSource(
   spec: MetadataSourceSpec,
   workspaceDir: string,
-  options: { progress?: (message: string) => void; /** Let git and gh ask for credentials (a run in a terminal). */ interactive?: boolean } = {},
+  options: {
+    progress?: (message: string) => void;
+    /** Let git and gh ask for credentials (a run in a terminal). */
+    interactive?: boolean;
+    /**
+     * A folder set's name: the set gets a checkout of its own, so that runs of the whole
+     * repository and of each set, which hold different leases, never share one.
+     */
+    checkout?: string;
+  } = {},
 ): Promise<string> {
   if (spec.provider === "local") {
     const dir = path.resolve(spec.location);
@@ -119,7 +128,7 @@ export async function resolveMetadataSource(
   const redacted = (err: unknown, prefix = "") => new Error(prefix + ((err as Error)?.message ?? String(err)).split(spec.location).join(shown));
   // One folder per source: names that differ only by a character the folder name cannot hold
   // stay apart.
-  const dest = path.join(workspaceDir, "repos", checkoutName(spec));
+  const dest = path.join(workspaceDir, "repos", `${checkoutName(spec)}${options.checkout ? `_${options.checkout.replace(/[^\w.-]+/g, "_")}` : ""}`);
   const quiet = { ...(options.interactive ? {} : { env: NON_INTERACTIVE }) };
   let fetchError: unknown;
   if (await exists(path.join(dest, ".git"))) {

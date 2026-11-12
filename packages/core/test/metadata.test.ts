@@ -918,7 +918,11 @@ describe("scanProject on awkward projects", () => {
     expect(await classes(["row-app/care-app", "Care"])).toEqual(["common_app_care_app", "row_app_care_app"]);
     expect(await classes(["tools/sub"])).toEqual(["Tool"]);
     await expect(scanProject(tmp, { packages: ["nope-app"] })).rejects.toThrow('"nope-app" is neither a package of sfdx-project.json nor a folder of the project.');
-    await expect(scanProject(tmp, { packages: ["../outside"] })).rejects.toThrow("is not a folder inside the project");
+    await expect(scanProject(tmp, { packages: ["../outside"] })).rejects.toThrow("A package folder must be inside the project");
+    await expect(scanProject(tmp, { packages: ["/home/someone/x"] })).rejects.toThrow(/^A package folder must be inside the project: not an absolute path, nor one that leaves it\.$/);
+    await expect(scanProject(tmp, { packages: ["."] })).rejects.toThrow("root package cannot be part of a folder set");
+    // Where the file system ignores case, so does the match, with the file's spelling kept.
+    if (process.platform === "win32" || process.platform === "darwin") expect(await classes(["Row-App/Care-App"])).toEqual(["row_app_care_app"]);
     // Without a set, everything the file names, as before.
     expect(await classes([])).toHaveLength(7);
     expect((await scanProject(tmp)).components.filter((c) => c.type === "ApexClass").length).toBe(7);

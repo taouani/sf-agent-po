@@ -204,17 +204,21 @@ async function packageDirs(root: string, only?: readonly string[]): Promise<stri
   }
   const picked = new Set<string>();
   const others: string[] = [];
+  // Windows and macOS find Row-App for row-app: so does the match, which keeps the file's spelling.
+  const fold = process.platform === "win32" || process.platform === "darwin" ? (p: string) => p.toLowerCase() : (p: string) => p;
   for (const asked of only) {
     const named = listed.find((d) => d.name === asked);
     const at = named?.path ?? packagePath(asked);
-    if (at === undefined || at === "") throw new Error(`"${asked}" is not a folder inside the project.`);
-    const under = listed.filter((d) => d.path === at || d.path.startsWith(`${at}/`));
+    // The value is left out when it may be a path outside the project, which can hold the user's name.
+    if (at === undefined) throw new Error("A package folder must be inside the project: not an absolute path, nor one that leaves it.");
+    if (at === "") throw new Error("The project's root package cannot be part of a folder set: name the folders under it instead.");
+    const under = listed.filter((d) => fold(d.path) === fold(at) || fold(d.path).startsWith(`${fold(at)}/`));
     if (under.length) {
       for (const d of under) picked.add(d.path);
       continue;
     }
     const isDir = await stat(path.join(root, at)).then((s) => s.isDirectory(), () => false);
-    if (!isDir) throw new Error(`"${asked}" is neither a package of sfdx-project.json nor a folder of the project.`);
+    if (!isDir) throw new Error(`"${at}" is neither a package of sfdx-project.json nor a folder of the project.`);
     // A sub-folder with its own sfdx-project.json: its package folders, else the whole sub-folder.
     const own = (await projectPackages(path.join(root, at)))?.map((d) => (d.path ? `${at}/${d.path}` : at));
     others.push(...(own?.length ? own : [at]));

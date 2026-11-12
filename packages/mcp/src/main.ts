@@ -99,8 +99,10 @@ async function index(argv: string[]): Promise<void> {
     const opts = parseIndexArgs(argv);
     if ("help" in opts) return console.log(opts.help);
     const { Database, MetadataIndex } = await import("@sf-agent-po/core");
-    const { indexTarget, parseRepoSpec, StepTimer } = await import("@sf-agent-po/connectors");
+    const { checkFolderSet, indexTarget, parseRepoSpec, StepTimer } = await import("@sf-agent-po/connectors");
     timer = new StepTimer();
+    // A folder set with a bad name or org fails before the workspace is made for it.
+    if (opts.target.kind !== "org" && opts.target.set) checkFolderSet(opts.target.set);
     // A repository is checked before the workspace is made for it.
     if (opts.target.kind === "remote" && typeof opts.target.repo === "string") opts.target = { ...opts.target, repo: parseRepoSpec(opts.target.repo) };
     const { databaseFile, ensureWorkspace } = await import("./startup.js");

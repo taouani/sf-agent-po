@@ -82,7 +82,7 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     if (target.kind === "org") throw new Error(`--packages goes with --project or --repo.\n\n${INDEX_USAGE}`);
     if (!packages.length) throw new Error(`--packages needs at least one folder.\n\n${INDEX_USAGE}`);
     if (name === undefined) throw new Error(`--packages needs --name, the name of the set (for example prod-eu).\n\n${INDEX_USAGE}`);
-    // The run checks the name and the org before it reads anything.
+    // The command checks the name and the org before it makes the workspace.
     const set: FolderSet = { name, packages, ...(forOrg ? { forOrg } : {}) };
     target = { ...target, set };
   }

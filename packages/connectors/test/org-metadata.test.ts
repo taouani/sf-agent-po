@@ -818,6 +818,16 @@ describe("indexing", () => {
     expect(job.target).toBe(row.source);
     expect((await done).state).toBe("ready");
     expect(() => indexer.start({ kind: "project", dir: project, set: { name: "", packages: ["row-app"] } })).toThrow("A folder set's name");
+    // The same set asked for with other folders while it runs is refused, not merged into the run.
+    const again = indexer.start({ kind: "project", dir: project, set: { name: "row", packages: ["row-app"] } });
+    expect(indexer.start({ kind: "project", dir: project, set: { name: "row", packages: ["row-app"] } }).job).toBe(again.job);
+    expect(() => indexer.start({ kind: "project", dir: project, set: { name: "row", packages: ["sfoa-app"] } })).toThrow("is being indexed with other package folders");
+    await again.done;
+    // A local repository's set is named as the folder's, as it is stored.
+    const local = indexer.start({ kind: "remote", repo: { provider: "local", location: project }, set: { name: "row", packages: ["row-app"] } });
+    expect(local.job.target).toBe(row.source);
+    expect((await local.done).snapshot?.source).toBe(row.source);
+    await expect(indexProject(idx, project, { set: { name: "x", packages: ["row-app"], forOrg: "org:00D000000000001" } })).rejects.toThrow("18-character org id");
   });
 
   it("leaves the workspace out of a project, and its path out of errors", async () => {
