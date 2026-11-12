@@ -1271,3 +1271,70 @@ describe("custom metadata mapping records", () => {
     expect(readCustomMetadataRecord({ values: [{ field: "Owner__c", value: "Dupont" }, { field: "Kind__c", value: "Event" }] })).toEqual([]);
   });
 });
+
+describe("record access: sharing rules, roles, groups and queues", () => {
+  const tmps: string[] = [];
+  afterEach(() => {
+    for (const d of tmps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const project = () => {
+    const root = mkdtempSync(join(tmpdir(), "sfpo-sharing-"));
+    tmps.push(root);
+    const w = (rel: string, c: string) => {
+      mkdirSync(join(root, rel, ".."), { recursive: true });
+      writeFileSync(join(root, rel), c);
+    };
+    const field = (name: string) => `<CustomField><fullName>${name}</fullName><type>Text</type></CustomField>`;
+    w("objects/Case/Case.object-meta.xml", "<CustomObject><sharingModel>Private</sharingModel></CustomObject>");
+    for (const f of ["CareZone__c", "Origin", "Store__c"]) w(`objects/Case/fields/${f}.field-meta.xml`, field(f));
+    w(
+      "sharingRules/Case.sharingRules-meta.xml",
+      `<?xml version="1.0"?><SharingRules xmlns="http://soap.sforce.com/2006/04/metadata">
+        <sharingCriteriaRules><fullName>Care_EU</fullName><accessLevel>Edit</accessLevel><label>Care EU</label>
+          <sharedTo><group>Care_CentralTeam_EU</group></sharedTo>
+          <booleanFilter>1 AND 2</booleanFilter>
+          <criteriaItems><field>CareZone__c</field><operation>equals</operation><value>EU</value></criteriaItems>
+          <criteriaItems><field>Origin</field><operation>notEqual</operation><value>Karim Benali's line</value></criteriaItems>
+        </sharingCriteriaRules>
+        <sharingOwnerRules><fullName>Stores_To_All</fullName><accessLevel>Read</accessLevel><label>Stores</label>
+          <sharedTo><allInternalUsers></allInternalUsers></sharedTo>
+          <sharedFrom><roleAndSubordinatesInternal>Store_Manager</roleAndSubordinatesInternal></sharedFrom>
+        </sharingOwnerRules>
+      </SharingRules>`,
+    );
+    w("roles/CEO.role-meta.xml", "<Role><name>CEO</name><caseAccessLevel>Edit</caseAccessLevel></Role>");
+    w("roles/Store_Manager.role-meta.xml", "<Role><name>Store manager</name><parentRole>CEO</parentRole><caseAccessLevel>Read</caseAccessLevel><description>For stores</description></Role>");
+    w("groups/Care_CentralTeam_EU.group-meta.xml", "<Group><name>Care central team EU</name><doesIncludeBosses>true</doesIncludeBosses></Group>");
+    w(
+      "queues/Care_Store_Paris.queue-meta.xml",
+      `<Queue><name>Care store Paris</name><queueSobject><sobjectType>Case</sobjectType></queueSobject>
+        <queueMembers><publicGroups><publicGroup>Care_CentralTeam_EU</publicGroup></publicGroups><roleAndSubordinates><roleAndSubordinate>Store_Manager</roleAndSubordinate></roleAndSubordinates><users><user>karim.benali@example.com</user></users></queueMembers></Queue>`,
+    );
+    return root;
+  };
+  const edge = (from: string, kind: string, to: string) => (e: { from: { type: string; name: string }; to: { type: string; name: string }; kind: string }) =>
+    `${e.from.type}:${e.from.name}` === from && e.kind === kind && `${e.to.type}:${e.to.name}` === to;
+
+  it("links rules to the fields they test, the object they share and the groups and roles they share with", async () => {
+    const { components, edges } = await scanProject(project());
+    const rules = components.find((c) => c.type === "SharingRules")!;
+    expect(rules).toMatchObject({ name: "Case", attrs: { object: "Case", counts: { criteria: 1, owner: 1 } } });
+    expect(rules.attrs.rules).toEqual([
+      { name: "Care_EU", kind: "criteria", label: "Care EU", access: "Edit", to: "group Care_CentralTeam_EU", criteria: "1 AND 2 where 1: CareZone__c equals 'EU'; 2: Origin notEqual 'Karim Benali\\'s line'" },
+      { name: "Stores_To_All", kind: "owner", label: "Stores", access: "Read", to: "all internal users", from: "role and internal subordinates Store_Manager" },
+    ]);
+    expect(rules.body).toContain("CRITERIA RULE Care_EU \"Care EU\"\n  records where 1 AND 2 where 1: CareZone__c equals 'EU'");
+    expect(rules.body).toContain("  shared with group Care_CentralTeam_EU: Edit");
+    expect(rules.body).toContain("OWNER RULE Stores_To_All \"Stores\"\n  records owned by role and internal subordinates Store_Manager\n  shared with all internal users: Read");
+    for (const [kind, to] of [["reads", "CustomField:Case.CareZone__c"], ["reads", "CustomField:Case.Origin"], ["grants", "CustomObject:Case"], ["references", "Group:Care_CentralTeam_EU"], ["references", "Role:Store_Manager"]])
+      expect(edges.some(edge("SharingRules:Case", kind!, to!)), `${kind} ${to}`).toBe(true);
+    expect(edges.some(edge("Role:Store_Manager", "references", "Role:CEO"))).toBe(true);
+    expect(components.find((c) => c.type === "Role" && c.name === "Store_Manager")).toMatchObject({ label: "Store manager", attrs: { parentRole: "CEO", caseAccessLevel: "Read" }, text: "For stores" });
+    expect(components.find((c) => c.type === "Group")).toMatchObject({ name: "Care_CentralTeam_EU", attrs: { doesIncludeBosses: "true" } });
+    const queue = components.find((c) => c.type === "Queue")!;
+    expect(queue.attrs).toEqual({ objects: ["Case"], members: { group: ["Care_CentralTeam_EU"], "role and subordinates": ["Store_Manager"] } });
+    for (const to of ["CustomObject:Case", "Group:Care_CentralTeam_EU", "Role:Store_Manager"]) expect(edges.some(edge("Queue:Care_Store_Paris", "references", to)), to).toBe(true);
+    // A queue's users are never kept.
+    expect(JSON.stringify(queue)).not.toContain("karim");
+  });
+});

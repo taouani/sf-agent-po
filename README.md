@@ -249,10 +249,13 @@ The code lives in npm workspaces under `packages/`:
   from which classes and flows, busiest first, flagged when Apex calls a URL no active remote site
   setting allows; connected apps and event channels), `metadata_search` (a host finds what calls or allows it) and `metadata_component` (one
   component, its children and what it reads, writes, calls or grants, one or two links away)
-  and `metadata_code` (the code of an Apex class or trigger, or the logic of a flow as an outline
+  and `metadata_code` (the code of an Apex class or trigger, an object's sharing rules, or the logic of a flow as an outline
   of its start conditions, decisions, record filters, assignments and actions, by line range or
   by the lines that contain a text, masked like any input, so the agent can read what dynamic
-  Apex does and when a flow acts).
+  Apex does and when a flow acts). Record access is indexed too: each object's sharing rules
+  (the fields their criteria test, the groups and roles they share with or from), roles with
+  their parent, public groups, and queues with the objects they own and the roles and groups
+  among their members; user members are never kept.
   `scope_propose` puts the objects a piece of work touches in front of the user on the approval
   page (they untick, tick linked objects or type others); the confirmed objects are kept with the
   context, and `scope_show` gives them with their fields, rules, record types, the flows, triggers,

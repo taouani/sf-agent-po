@@ -14,7 +14,9 @@ import { defaultSfRunner, type SfRunner } from "./salesforce.js";
  * event channels) are retrieved for where the org connects; the index keeps hosts, never a
  * secret or a username. Custom metadata records are retrieved for the objects and fields their
  * values name (mapping tables code reads): each is kept on disk with only its values shaped like
- * names (recordNamesOnly), and the index keeps only the links their type gets. Left out:
+ * names (recordNamesOnly), and the index keeps only the links their type gets. Sharing rules,
+ * roles, public groups and queues are retrieved for who can see records; a queue is kept
+ * without its user members and its email. Left out:
  * documents (people's text) and large binaries (static resources).
  */
 export const DEFAULT_ORG_TYPES = [
@@ -24,7 +26,7 @@ export const DEFAULT_ORG_TYPES = [
   "CustomApplication", "CustomTab", "FlexiPage", "CustomPermission", "CustomLabels", "Workflow",
   "ExternalServiceRegistration", "GlobalValueSet", "EmailTemplate", "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "PlatformEventChannel", "PlatformEventChannelMember",
-  "CustomMetadata",
+  "CustomMetadata", "SharingRules", "Role", "Group", "Queue",
 ] as const;
 
 /** Reports retrieved in one run at most, the most recently changed first: an org can hold hundreds of thousands. */
@@ -49,10 +51,11 @@ const PROFILE_LISTS = [
  * profile or permission set when only its access changes, so both are retrieved each time. A
  * permission set comes back whole (API 40 and later), so it replaces its last copy; a profile
  * only lists access to what is retrieved with it, so it is merged into its last copy. Labels,
- * workflows and email templates are listed without a dependable date per file.
+ * workflows and email templates are listed without a dependable date per file, and so are
+ * the sharing rules of an object and a queue's members.
  */
 const MERGED = new Set(["Profile"]);
-const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate"]);
+const ALWAYS = new Set([...MERGED, "PermissionSet", "CustomLabels", "Workflow", "EmailTemplate", "SharingRules", "Queue"]);
 /** Files of these types go when their type is retrieved again: an email folder with its templates. */
 const REPLACED_WITH: Record<string, string> = { EmailFolder: "EmailTemplate", ReportFolder: "Report", DashboardFolder: "Dashboard" };
 
@@ -69,6 +72,8 @@ export const SECRET_ELEMENTS: Readonly<Record<string, readonly string[]>> = {
   WorkflowAlert: ["recipient", "ccEmails", "senderAddress"],
   WorkflowTask: ["assignedTo"],
   Dashboard: ["runningUser"],
+  // A queue's user members and its email: people. Its roles and groups stay.
+  Queue: ["users", "email"],
 };
 
 /** A retrieved file of this type without its SECRET_ELEMENTS. */

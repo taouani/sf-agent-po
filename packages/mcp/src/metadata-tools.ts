@@ -298,6 +298,8 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         } else out.push("No links found in the index. Dynamic Apex, SOQL built from strings and long formula chains are not seen: check with the user.");
         if ((c.type === "ApexClass" || c.type === "ApexTrigger") && index.hasBody(c.id)) {
           out.push(`Its code (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code${c.attrs.dynamic ? ", which shows what the links above cannot: the queries it builds from strings and the classes it names at run time" : ""}.`);
+        } else if (c.type === "SharingRules" && index.hasBody(c.id)) {
+          out.push("Each rule (what records it shares, with whom, and how much access) can be read in full with metadata_code.");
         } else if (c.type === "Flow" && index.hasBody(c.id)) {
           out.push(`Its logic (${String(c.attrs.lines ?? "?")} lines) can be read with metadata_code: the conditions of its decisions, its record filters and what it assigns and calls, which the links above do not show.`);
         }
@@ -309,17 +311,18 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
   server.registerTool(
     "metadata_code",
     {
-      title: "Read Apex code or flow logic",
+      title: "Read Apex code, flow logic or sharing rules",
       description:
         "Shows the code of an Apex class or trigger, or the logic of a flow, from the index, with line numbers, masked like any input: personal data in strings and comments is replaced by pseudonyms. " +
         "A flow is shown as an outline: how it starts and its entry conditions, then each element in the order the flow reaches it (decision outcomes with their conditions, record filters, assignments, actions and their inputs, where each goes next), then its variables, constants and formulas. " +
+        "type SharingRules with an object's name shows its sharing rules: the records each shares (criteria, or owner role or group), with whom and the access given. " +
         "Use it when the links are not enough: for code the index marks as dynamic (queries built from strings, classes named at run time), or to say when and why a flow does something. Read it and say what it does. " +
         "find lists the lines that contain a text (\"Database.query\", a field name), from the line given by from, to read around them with from.",
       inputSchema: {
         context: contextName,
         source: sourceArg,
-        type: z.enum(["ApexClass", "ApexTrigger", "Flow"]),
-        name: z.string().describe('The class, trigger or flow API name, e.g. "Account_SM".'),
+        type: z.enum(["ApexClass", "ApexTrigger", "Flow", "SharingRules"]),
+        name: z.string().describe('The class, trigger or flow API name, e.g. "Account_SM", or for SharingRules the object, e.g. "Case".'),
         from: z.number().int().min(1).default(1).describe("The first line to show, or to search from."),
         lines: z.number().int().min(1).max(MAX_CODE_LINES).default(CODE_LINES).describe("How many lines to show."),
         find: z.string().min(2).optional().describe("Instead of a range: the lines that contain this text, any case."),
@@ -327,19 +330,19 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       annotations: { readOnlyHint: true },
     },
     guard(
-      async ({ context, source, type, name, from, lines, find }: { context: string; source?: string; type: "ApexClass" | "ApexTrigger" | "Flow"; name: string; from: number; lines: number; find?: string }) => {
+      async ({ context, source, type, name, from, lines, find }: { context: string; source?: string; type: "ApexClass" | "ApexTrigger" | "Flow" | "SharingRules"; name: string; from: number; lines: number; find?: string }) => {
         const snap = pick(index, source);
         const pieces = new Pieces(kit.masker, context);
         const c = index.component(snap.id, type, name);
         if (!c || c.missing) return text(`No ${type} named ${name} in ${snap.source}.`);
         const body = index.body(c.id);
-        const what = type === "Flow" ? "logic" : "code";
+        const what = type === "Flow" ? "logic" : type === "SharingRules" ? "rules" : "code";
         if (body === undefined) {
           return text(
             c.attrs.tooLarge
               ? `${name} is too large for the index to keep its code.`
               : // A file the scan could not read has no details; a flow an earlier version read has some, but no lines.
-                (type === "Flow" ? Object.keys(c.attrs).length === 0 : c.attrs.lines === undefined)
+                (type === "Flow" || type === "SharingRules" ? Object.keys(c.attrs).length === 0 : c.attrs.lines === undefined)
                 ? `${name} could not be read when ${snap.source} was indexed, so the index has no ${what} for it.`
                 : `The index of ${snap.source} has no ${what} for ${name}: it was built by an earlier version. Index the source again (npx sf-agent-po@next index) and ask again.`,
           );
@@ -543,12 +546,15 @@ const VERB: Record<string, [string, string]> = {
 /** A may_read from a custom metadata type: its records name the field or object. */
 const NAMED_IN_RECORDS: [string, string] = ["its records name", "is named in the records of"];
 const MAY_READ: [string, string] = ["may read", "may be read by"];
+/** A grant from an object's sharing rules: they share its records. */
+const SHARES: [string, string] = ["share records of", "has its records shared by"];
 
 async function relatedLine(pieces: Pieces, r: Related, self?: string): Promise<string> {
   // The source of the link: the component shown for a link out, the other one for a link in.
   // Two links away, the source of the last link is the one between: its kind is said plainly.
   const source = r.direction === "out" ? (r.depth > 1 ? undefined : self) : r.component.type;
-  const verb = (k: string) => (k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k]);
+  const verb = (k: string) =>
+    k === "grants" && source === "SharingRules" ? SHARES : k !== "may_read" ? VERB[k] : source === "CustomObject" ? NAMED_IN_RECORDS : r.depth > 1 ? MAY_READ : VERB[k];
   const verbs = r.kinds.map((k) => verb(k)?.[r.direction === "out" ? 0 : 1] ?? k).join(", ");
   const via = r.depth > 1 ? ` (${r.depth} links away)` : "";
   return `${verbs}${via}: ${(await line(pieces, r.component)).slice(2)}`;

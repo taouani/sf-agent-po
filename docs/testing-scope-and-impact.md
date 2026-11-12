@@ -13,7 +13,7 @@ The scope and impact tools are in the published pre-release `sf-agent-po@next` (
 | `metadata_summary` | Gives the objects of a source and their size, and where the org connects (hosts, connected apps, event channels). |
 | `metadata_search` | Finds components by name or label, or what calls a host. |
 | `metadata_component` | Shows one component and what links to it. |
-| `metadata_code` | Shows the code of an Apex class or trigger, or a flow's logic as an outline, masked, by line range or by the lines that contain a text. |
+| `metadata_code` | Shows the code of an Apex class or trigger, an object's sharing rules, or a flow's logic as an outline, masked, by line range or by the lines that contain a text. |
 | `scope_propose` | Opens the approval page where you confirm the objects the work touches. |
 | `scope_show` | Shows the confirmed scope: objects, fields, rules, automation, code, access. |
 | `metadata_impact` | Lists what depends on each change, and the weak links. |
@@ -97,6 +97,7 @@ Ask the model to analyse the impact of a change (`metadata_impact`). Each case b
 | Weak links (real org) | A field used by dynamic SOQL, or an object with an inactive flow | The Apex the index cannot follow, and the inactive flow that would break once activated. |
 | Queries built in strings (real org) | A field a class reads only in a query it builds in strings | The class, linked as "may read (a query built in strings)". Ask for its code (`metadata_code`) to check. |
 | Flow logic (real org, next.10) | Why a record-triggered flow shares or updates a record (for example CARE_Case_Sharing) | Its entry conditions, each decision outcome with its conditions, the record filters and the actions with their inputs, in the order the flow runs. |
+| Record access (real org, next.10) | Who can see Care cases | The org-wide default on Case, its sharing rules with their criteria and targets (`metadata_code` with type SharingRules), the roles and queues they name, and the flows that add shares. |
 | Mapping records (real org) | A field named in a custom metadata mapping (for example CIM_Client_Field__mdt) | The type, linked as "is named in the records of", and the classes that read the type one link further. |
 | Reports (real org, next.8) | A field shown or filtered on in reports | The number of reports and dashboards, and the first ten named. |
 | Integrations (real org, next.8) | A field sent by an outbound message, or an object with change data capture on | A weak link naming the outbound message and its host, or the change data capture channel. |

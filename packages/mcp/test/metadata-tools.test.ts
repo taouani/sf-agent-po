@@ -242,6 +242,39 @@ describe("metadata tools", () => {
     expect((await call("metadata_code", { context: "acme", type: "Flow", name: "Lapse", find: "premium" })).text).toContain('Flow Lapse: 1 line(s) contain "premium"');
   });
 
+  it("show who records are shared with, masked", async () => {
+    const { call, index } = await connect();
+    const root = project();
+    const w = (rel: string, c: string) => {
+      mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      writeFileSync(path.join(root, rel), c);
+    };
+    w(
+      "sharingRules/Policy__c.sharingRules",
+      `<?xml version="1.0"?><SharingRules><sharingCriteriaRules><fullName>Lapsed_To_Care</fullName><accessLevel>Edit</accessLevel><label>Lapsed</label><sharedTo><group>Care_EU</group></sharedTo>` +
+        `<criteriaItems><field>Status__c</field><operation>equals</operation><value>Lapsed by Karim Benali</value></criteriaItems></sharingCriteriaRules></SharingRules>`,
+    );
+    w("groups/Care_EU.group", "<Group><name>Care EU</name></Group>");
+    w("roles/CEO.role", "<Role><name>CEO</name></Role>");
+    w("roles/Care_Manager.role", "<Role><name>Care manager</name><parentRole>CEO</parentRole></Role>");
+    await indexProject(index, root);
+    const object = await call("metadata_component", { context: "acme", type: "CustomObject", name: "Policy__c" });
+    expect(object.text).toContain("has its records shared by: SharingRules Policy__c");
+    const rules = await call("metadata_component", { context: "acme", type: "SharingRules", name: "Policy__c" });
+    expect(rules.text).toContain("share records of: CustomObject Policy__c");
+    expect(rules.text).toContain("references: Group Care_EU");
+    expect(rules.text).toContain("can be read in full with metadata_code");
+    expect(rules.text).not.toContain("Karim");
+    const full = await call("metadata_code", { context: "acme", type: "SharingRules", name: "Policy__c" });
+    expect(full.text).toMatch(/CRITERIA RULE Lapsed_To_Care "Lapsed"\n *\d+ +records where Status__c equals 'Lapsed by \[PERSON_\d+\]'\n *\d+ +shared with group Care_EU: Edit/);
+    expect(full.text).not.toContain("Karim");
+    const role = await call("metadata_component", { context: "acme", type: "Role", name: "Care_Manager" });
+    expect(role.text).toContain("references: Role CEO");
+    // Deleting a field a sharing rule tests is refused by Salesforce.
+    const impact = await call("metadata_impact", { context: "acme", changes: [{ change: "delete", type: "CustomField", name: "Policy__c.Status__c" }] });
+    expect(impact.text).toContain("SharingRules Policy__c");
+  });
+
   it("say why there is no flow logic to show", async () => {
     const { call, index, db } = await connect();
     await indexProject(index, project());

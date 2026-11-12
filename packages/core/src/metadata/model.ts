@@ -10,6 +10,7 @@ export const COMPONENT_TYPES = [
   "Report", "Dashboard", "ReportType",
   "NamedCredential", "ExternalCredential", "RemoteSiteSetting", "ConnectedApp", "ExternalServiceRegistration",
   "PlatformEventChannel", "PlatformEventChannelMember", "Workflow", "WorkflowOutboundMessage", "CustomMetadata",
+  "SharingRules", "Role", "Group", "Queue",
 ] as const;
 /** A Metadata API type name: one of COMPONENT_TYPES, or any other the registry knows. */
 export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
@@ -17,7 +18,9 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
 /**
  * How one component depends on another:
  * - part_of: a field, record type or rule belongs to its object;
- * - references: a lookup or master-detail field points at an object, a flow variable is of
+ * - references: a sharing rule shares to or from a group, role or queue; a role sits under its
+ *   parent role; a queue owns records of an object and holds roles and groups; a lookup or
+ *   master-detail field points at an object, a flow variable is of
  *   an Apex-defined type, or a person account field (Account.Foo__pc) stands for its contact
  *   field (Contact.Foo__c); a named credential uses an external credential (or, the legacy
  *   kind, an auth provider), an external credential uses an auth provider, and an external
@@ -35,7 +38,8 @@ export type ComponentType = (typeof COMPONENT_TYPES)[number] | (string & {});
  *   through a named credential (callout:Name); a Visualforce page or component uses its
  *   controller, extensions and components;
  * - grants: a permission set or profile gives access to an object, field, class, page, flow,
- *   record type, app, custom permission or layout (how much is in its attrs);
+ *   record type, app, custom permission or layout (how much is in its attrs); an object's
+ *   sharing rules give access to its records;
  * - includes: a permission set group holds a permission set;
  * - shows: a layout puts a field, button, related list, page or action in front of users; a
  *   field set lists a field;

@@ -8,6 +8,7 @@ import { COMPONENT_TYPES, type ParseCache, type ParsedComponent, type ParsedMeta
 import { componentKey, isCustomName, linkObjects, readCustomMetadataRecord, readField, readFieldSet, readObject, readRecordType, readValidationRule } from "./objects.js";
 import { MARKUP_SUFFIX, readMarkup } from "./markup.js";
 import { readFlow } from "./flows.js";
+import { readGroup, readQueue, readRole, readSharingRules } from "./sharing.js";
 import { readApex } from "./apex.js";
 import { readLayout, readPermissions, readPermissionSetGroup } from "./access.js";
 import { readDashboard, readReport, readReportType } from "./reports.js";
@@ -34,7 +35,7 @@ type Kind =
   | "apexClass" | "apexTrigger" | "permissionSet" | "profile" | "permissionSetGroup" | "layout" | "fieldSet" | "markup"
   | "report" | "dashboard" | "reportType"
   | "namedCredential" | "externalCredential" | "remoteSite" | "connectedApp" | "externalService" | "eventChannel" | "eventChannelMember" | "workflow" | "outboundMessage"
-  | "customMetadata";
+  | "customMetadata" | "sharingRules" | "role" | "group" | "queue";
 
 /**
  * Types read in detail that sit right in their folder: folder, the file's suffix, and the
@@ -68,6 +69,11 @@ const BY_TYPE: Readonly<Record<string, Kind>> = {
   WorkflowOutboundMessage: "outboundMessage",
   // customMetadata/CIM_Client_Field.Account_Name.md(-meta.xml)
   CustomMetadata: "customMetadata",
+  // sharingRules/Case.sharingRules, roles/CEO.role, groups/Care_EU.group, queues/Care_Store.queue
+  SharingRules: "sharingRules",
+  Role: "role",
+  Group: "group",
+  Queue: "queue",
 };
 
 /** Types read in detail: every other one is indexed by name and file. */
@@ -390,6 +396,14 @@ function readComponents(what: NonNullable<ReturnType<typeof classify>>, file: st
       return [readPlatformEventChannelMember(what.object, obj(doc.PlatformEventChannelMember), file)];
     case "workflow":
       return readWorkflow(what.object, obj(doc.Workflow), file);
+    case "sharingRules":
+      return [readSharingRules(what.object, obj(doc.SharingRules), file)];
+    case "role":
+      return [readRole(what.object, obj(doc.Role), file)];
+    case "group":
+      return [readGroup(what.object, obj(doc.Group), file)];
+    case "queue":
+      return [readQueue(what.object, obj(doc.Queue), file)];
     case "outboundMessage": {
       const dot = what.object.indexOf(".");
       return dot > 0 ? [readOutboundMessage(what.object.slice(0, dot), what.object.slice(dot + 1), obj(doc.WorkflowOutboundMessage), file)] : [];
