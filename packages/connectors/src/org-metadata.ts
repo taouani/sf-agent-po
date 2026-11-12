@@ -112,6 +112,8 @@ export function recordNamesOnly(xml: string): string {
 export const FULL_RETRIEVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 /** The layout of a retrieval folder: 2 keeps every file in metadata/, whatever the parts. */
 const LAYOUT = 2;
+/** The folder of a run that holds the email templates read by query. */
+const QUERIED = "queried";
 /** The folder of a retrieval that holds its files, at stable paths from run to run. */
 export const RETRIEVAL_TREE = "metadata";
 
@@ -311,6 +313,8 @@ export interface RetrieveOptions {
   full?: boolean;
   /** Reports retrieved at most (MAX_REPORTS by default), the most recently changed first. */
   maxReports?: number;
+  /** From this many email templates to retrieve, they are read by query (QUERY_TEMPLATES_FROM by default). */
+  queryTemplatesFrom?: number;
 }
 
 /** The org id from `sf org display`, checked. */
@@ -409,7 +413,23 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : undefined;
     // Said only when it costs something: a full run retrieves every template anyway.
     if (plan && !dates.EmailTemplate && entries.some((e) => e.type === "EmailTemplate")) warnings.push("The dates of email templates could not be read, so all of them are retrieved again");
-    const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
+    let wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
+    const retrievedCount = wanted.reduce((k, e) => k + e.members.length, 0);
+    // Many email templates are read by query; what the queries do not find is retrieved.
+    const templates = wanted.find((e) => e.type === "EmailTemplate")?.members.filter((m) => m.includes("/")) ?? [];
+    let queried = false;
+    if (templates.length >= (options.queryTemplatesFrom ?? QUERY_TEMPLATES_FROM)) {
+      progress(`Reading ${templates.length.toLocaleString("en")} email templates by query`);
+      const out = path.join(work, QUERIED);
+      const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat).catch(async () => {
+        await remove(out);
+        return undefined;
+      });
+      if (found?.size) {
+        queried = true;
+        wanted = wanted.map((e) => (e.type === "EmailTemplate" ? { ...e, members: e.members.filter((m) => !found.has(m)) } : e)).filter((e) => e.members.length);
+      } else warnings.push("The email templates could not be read by query, so they are retrieved");
+    }
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     let n = 0;
     while (queue.length) {
@@ -458,7 +478,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       heartbeat();
       progress("Putting the retrieved files together");
     }
-    for (const part of parts) {
+    for (const part of [...parts, ...(queried ? [QUERIED] : [])]) {
       for (const f of await filesUnder(path.join(work, part))) {
         const rel = f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f;
         if (rel === "package.xml") continue;
@@ -521,7 +541,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       parts: n,
       warnings,
       retrievedAt,
-      ...(plan ? { incremental: { retrieved: wanted.reduce((k, e) => k + e.members.length, 0), deleted: plan.deleted } } : {}),
+      ...(plan ? { incremental: { retrieved: retrievedCount, deleted: plan.deleted } } : {}),
     };
   } catch (err) {
     await remove(work).catch(() => {});
@@ -698,14 +718,86 @@ type Row = Record<string, unknown>;
 const MAX_QUERY_ROWS = 150_000;
 
 /** Runs one of FOLDER_QUERIES and returns all its rows; throws when the CLI returned fewer than the org holds. */
-async function folderQuery(sf: SfRunner, targetOrg: string, name: keyof typeof FOLDER_QUERIES, run: { cwd: string; timeoutMs: number }): Promise<Row[]> {
-  await writeFile(path.join(run.cwd, `${name}.soql`), FOLDER_QUERIES[name]);
+function folderQuery(sf: SfRunner, targetOrg: string, name: keyof typeof FOLDER_QUERIES, run: { cwd: string; timeoutMs: number }): Promise<Row[]> {
+  return soqlRows(sf, targetOrg, name, FOLDER_QUERIES[name], run);
+}
+
+/** Runs a query, written to `<name>.soql` so that no quote or space reaches a shell, and returns all its rows. */
+async function soqlRows(sf: SfRunner, targetOrg: string, name: string, soql: string, run: { cwd: string; timeoutMs: number }): Promise<Row[]> {
+  await writeFile(path.join(run.cwd, `${name}.soql`), soql);
   const result = (await sf(["data", "query", "--file", `${name}.soql`, "--target-org", targetOrg], { ...run, env: { SF_ORG_MAX_QUERY_LIMIT: String(MAX_QUERY_ROWS) } })) as
     | { records?: unknown; totalSize?: unknown }
     | undefined;
   if (!Array.isArray(result?.records)) throw new Error(`sf data query gave no records for ${name}`);
   if (typeof result.totalSize === "number" && result.totalSize > result.records.length) throw new Error(`sf data query returned ${result.records.length} of ${result.totalSize} rows for ${name}`);
   return result.records as Row[];
+}
+
+/** From this many email templates to retrieve, they are read by query rather than retrieved. */
+export const QUERY_TEMPLATES_FROM = 500;
+/** Templates read by one query at first: halved while the CLI's output is too large. */
+const TEMPLATES_PER_QUERY = 2_000;
+/** An error from output too large to take in one piece. */
+const tooMuchOutput = (err: unknown) => /maxBuffer|unexpected output|EXCEEDED_MAX_SIZE_REQUEST|response size/i.test((err as Error)?.message ?? "");
+/** A record id, as it may be quoted in a query. */
+const RECORD_ID = /^[A-Za-z0-9]{15,18}$/;
+
+/**
+ * Email templates read with paged queries instead of a retrieve, and written where a retrieve
+ * puts them (email/<folder>/<name>.email and its -meta.xml) with what the index reads of
+ * them: the body (Visualforce markup, HTML or text), the subject and the plain text. Tens of
+ * thousands of templates take many retrieves of 9,000 files, and a query reads a few
+ * thousand at a time. Only `wanted` members are written; returns those written. A template the
+ * queries do not find (one of another namespace's folders, say) is left to the retrieve.
+ */
+async function queryTemplates(
+  sf: SfRunner,
+  targetOrg: string,
+  wanted: ReadonlySet<string>,
+  out: string,
+  run: { cwd: string; timeoutMs: number },
+  heartbeat: () => void,
+): Promise<Set<string>> {
+  const pathOf = folderPaths(await folderQuery(sf, targetOrg, "emailFolders", run));
+  const written = new Set<string>();
+  const text = (v: unknown) => (typeof v === "string" ? v : "");
+  let after = "";
+  let size = TEMPLATES_PER_QUERY;
+  for (;;) {
+    const soql = `SELECT Id, DeveloperName, NamespacePrefix, FolderId, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate${after ? ` WHERE Id > '${after}'` : ""} ORDER BY Id LIMIT ${size}`;
+    let rows: Row[];
+    try {
+      rows = await soqlRows(sf, targetOrg, "templates-page", soql, run);
+    } catch (err) {
+      if (size > 1 && tooMuchOutput(err)) {
+        size = Math.ceil(size / 2);
+        continue;
+      }
+      throw err;
+    }
+    heartbeat();
+    for (const t of rows) {
+      const name = apiName(t);
+      const folder = pathOf(t.FolderId) ?? (typeof t.FolderId === "string" && t.FolderId.startsWith("00D") ? "unfiled$public" : undefined);
+      const member = name && folder ? `${folder}/${name}` : undefined;
+      if (!member || !wanted.has(member) || !/^[\w$]+(?:\/[\w$]+)+$/.test(member)) continue;
+      // What a retrieve puts in the .email file: the markup, the HTML, or the text.
+      const body = text(t.Markup) || text(t.HtmlValue) || text(t.Body);
+      const plain = body === text(t.Body) ? "" : text(t.Body);
+      const file = path.join(out, "email", ...member.split("/"));
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(`${file}.email`, body);
+      await writeFile(
+        `${file}.email-meta.xml`,
+        `<?xml version="1.0" encoding="UTF-8"?>\n<EmailTemplate xmlns="http://soap.sforce.com/2006/04/metadata">\n${text(t.Subject) ? `    <subject>${escapeXml(text(t.Subject))}</subject>\n` : ""}${plain ? `    <textOnly>${escapeXml(plain)}</textOnly>\n` : ""}${text(t.TemplateType) ? `    <type>${escapeXml(text(t.TemplateType))}</type>\n` : ""}</EmailTemplate>\n`,
+      );
+      written.add(member);
+    }
+    const last = rows.at(-1)?.Id;
+    if (rows.length < size || typeof last !== "string" || !RECORD_ID.test(last)) break;
+    after = last;
+  }
+  return written;
 }
 
 /** A row's API name: its developer name, after its namespace. */

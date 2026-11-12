@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Database, MetadataIndex } from "@sf-agent-po/core";
+import { Database, MetadataIndex, scanProject } from "@sf-agent-po/core";
 import { BackgroundIndexer, formatDuration, indexOrg, indexProject, projectSource, StepTimer, summarizeWarnings } from "../src/indexing.js";
 import { capReports, mergeAccess, readManifest, recordNamesOnly, retrieveOrgMetadata, splitManifest, withoutSecrets, writeManifest } from "../src/org-metadata.js";
 import type { SfRunner } from "../src/salesforce.js";
@@ -29,6 +29,8 @@ function fakeSf(
     skip?: Set<string>;
     /** What sf data query returns, by the queried object; without it, queries fail. */
     soql?: Record<string, Record<string, unknown>[]>;
+    /** Rows a page may hold before the CLI's output is too large. */
+    maxRows?: number;
   } = {},
 ): SfRunner {
   return async (args, opts = {}) => {
@@ -48,7 +50,15 @@ function fakeSf(
       if (!behaviour.soql?.[from]) throw new Error("sf data query failed: INVALID_TYPE");
       // "WHERE Type IN ('Email', 'EmailTemplate')": the folders of those types.
       const types = /Type IN \(([^)]*)\)/.exec(query)?.[1]?.split(",").map((t) => t.trim().replace(/'/g, ""));
-      const records = behaviour.soql[from].filter((r) => !types || types.includes(String(r.Type)));
+      let records = behaviour.soql[from].filter((r) => !types || types.includes(String(r.Type)));
+      // A page: "WHERE Id > '...' ORDER BY Id LIMIT n".
+      const after = /Id > '(\w+)'/.exec(query)?.[1];
+      const limit = /LIMIT (\d+)/.exec(query)?.[1];
+      if (/ORDER BY Id/.test(query)) records = records.filter((r) => !after || String(r.Id) > after).sort((a, b) => (String(a.Id) < String(b.Id) ? -1 : 1));
+      if (limit) {
+        if (behaviour.maxRows && Number(limit) > behaviour.maxRows) throw new Error("sf data query returned unexpected output: {\"status\":0,");
+        records = records.slice(0, Number(limit));
+      }
       return { records, totalSize: records.length, done: true };
     }
     if (args[0] === "org" && args[1] === "display") return { id: ORG_ID, alias: "dev", accessToken: "SECRET" };
@@ -511,6 +521,52 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // A full run retrieves every template anyway: nothing to say.
     expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, full: true })).warnings).toEqual([]);
     expect(third.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
+  });
+
+  it("reads many email templates by query, page by page, and retrieves what the queries did not find", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Html", "Care/Text", "Care/Vf", "Care/Lost", "unfiled$public", "unfiled$public/U"] };
+    const soql: Record<string, Record<string, unknown>[]> = {
+      Folder: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }],
+      EmailTemplate: [
+        { Id: "00X000000000001", DeveloperName: "Html", FolderId: "00l1", TemplateType: "custom", Subject: "Case {!Case.CaseNumber} & co", HtmlValue: "<p>{!Case.Claim_Ref__c}</p>", Body: "{!Case.Plain__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { Id: "00X000000000002", DeveloperName: "Text", FolderId: "00l1", TemplateType: "text", Subject: "Hi", Body: "Dear {!Contact.Nickname__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { Id: "00X000000000003", DeveloperName: "Vf", FolderId: "00l1", TemplateType: "visualforce", Markup: '<messaging:emailTemplate relatedToType="Policy__c" subject="x"><messaging:plainTextEmailBody>{!relatedTo.Premium__c}</messaging:plainTextEmailBody></messaging:emailTemplate>', LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        { Id: "00X000000000004", DeveloperName: "U", FolderId: "00D000000000001", TemplateType: "text", Body: "{!Account.Tier__c}", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+        // In a user's private folder: not in the listing.
+        { Id: "00X000000000005", DeveloperName: "Mine", FolderId: "005000000000001", TemplateType: "text", Body: "x", LastModifiedDate: "2026-02-01T00:00:00.000+0000" },
+      ],
+    };
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const asked: { type: string; members: string[] }[][] = [];
+    const progress: string[] = [];
+    // Pages of 2,000 rows are too large here: the run halves them until they fit.
+    const sf = fakeSf(org, calls, { dates: {}, asked, soql, maxRows: 2 });
+    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2, progress: (m) => progress.push(m) });
+    expect(progress).toContain("Reading 5 email templates by query");
+    // What the queries did not find (Care/Lost), and the folders, are retrieved.
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care", "Care/Lost", "unfiled$public"] }]);
+    const email = path.join(run.dir, "metadata", "email");
+    expect(readFileSync(path.join(email, "Care", "Html.email"), "utf8")).toBe("<p>{!Case.Claim_Ref__c}</p>");
+    expect(readFileSync(path.join(email, "Care", "Html.email-meta.xml"), "utf8")).toContain("<subject>Case {!Case.CaseNumber} &amp; co</subject>");
+    expect(readFileSync(path.join(email, "Care", "Html.email-meta.xml"), "utf8")).toContain("<textOnly>{!Case.Plain__c}</textOnly>");
+    expect(readFileSync(path.join(email, "Care", "Text.email-meta.xml"), "utf8")).not.toContain("textOnly");
+    expect(existsSync(path.join(email, "unfiled$public", "U.email"))).toBe(true);
+    expect(existsSync(path.join(email, "Care", "Lost.email"))).toBe(true);
+    expect(readdirSync(path.join(run.dir, "metadata")).sort()).toEqual(["classes", "email"]);
+    // The index reads the same merge fields as from a retrieve.
+    const scanned = await scanProject(run.dir);
+    const reads = scanned.components.filter((c) => c.type === "EmailTemplate").flatMap((c) => (c.refs ?? []).map((r) => ("path" in r && r.path ? `${r.object}.${r.path}` : undefined))).filter(Boolean);
+    expect(reads).toEqual(expect.arrayContaining(["Case.Claim_Ref__c", "Case.Plain__c", "Contact.Nickname__c", "Policy__c.Premium__c", "Account.Tier__c"]));
+    // Pages of 2 rows, once halved: each page asks for the next, after the last id.
+    const pages = calls.filter((c) => c.args[0] === "data" && c.args.includes("templates-page.soql"));
+    expect(pages.length).toBe(10 + 3);
+    // Without the queries, the templates are retrieved, and the run says so.
+    delete soql.EmailTemplate;
+    asked.length = 0;
+    const again = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2 });
+    expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
+    expect(again.warnings).toContain("The email templates could not be read by query, so they are retrieved");
   });
 
   it("does not take a query the CLI cut short", async () => {

@@ -235,7 +235,11 @@ The code lives in npm workspaces under `packages/`:
   and their folders are dated by SOQL queries (`sf data query`, with its 10,000-row cap
   raised), which take one run of the CLI where a listing takes one per folder; when a query
   fails, reports and dashboards are listed folder by folder and email templates are all
-  retrieved again. A component the org did not return is asked for again next time. The
+  retrieved again. From 500 email templates to retrieve (a full run of an org with
+  thousands), they are read by paged SOQL queries instead (body, subject and plain text,
+  written where a retrieve puts them), which is much faster than retrieves of 9,000 files;
+  what the queries do not find, or all of them when a query fails, is retrieved. A component
+  the org did not return is asked for again next time. The
   `index` command ends with the time each step took (the parts of a retrieval as one step,
   with the longest), and `metadata_sources` shows the same for runs in the background. Everything is retrieved again with `--full`, a week after the last
   full run, when the types indexed changed, or when the last retrieval or a profile's last copy
