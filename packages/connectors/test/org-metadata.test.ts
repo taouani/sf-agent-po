@@ -660,6 +660,51 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     expect(readdirSync(path.join(r.dir, "metadata", "classes")).filter((f) => f.endsWith(".cls")).sort()).toEqual(["A.cls", "B.cls", "C.cls", "D.cls"]);
   });
 
+  it("retrieves parts two at a time by default, up to three, and waits for all before failing", async () => {
+    const org = { ApexClass: ["A", "B", "C", "D", "E", "F"], Profile: ["Admin"] };
+    /** The fake, with each retrieve taking a while, and how many ran at once. */
+    const slow = (fail?: string) => {
+      const base = fakeSf(org);
+      const state = { running: 0, most: 0, finished: 0 };
+      const sf: SfRunner = async (args, opts) => {
+        if (args[1] !== "retrieve") return base(args, opts);
+        state.running++;
+        state.most = Math.max(state.most, state.running);
+        try {
+          await new Promise((r) => setTimeout(r, 20));
+          if (fail && readFileSync(path.join(opts!.cwd!, args[args.indexOf("--manifest") + 1]!), "utf8").includes(`<members>${fail}</members>`)) throw new Error("sf project retrieve failed: INVALID_SESSION");
+          return await base(args, opts);
+        } finally {
+          state.running--;
+          state.finished++;
+        }
+      };
+      return { sf, state };
+    };
+    const two = slow();
+    const progress: string[] = [];
+    // A part per class: the profile goes with each, and is merged back.
+    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: two.sf, maxFilesPerRetrieve: 2, progress: (m) => progress.push(m) });
+    expect(r.parts).toBe(6);
+    expect(two.state.most).toBe(2);
+    expect(progress).toContain("Retrieved 6 parts, 2 at a time; the longest took 0s");
+    const profile = readFileSync(path.join(r.dir, "metadata", "profiles", "Admin.profile"), "utf8");
+    for (const c of org.ApexClass) expect(profile).toContain(`<apexClass>${c}</apexClass>`);
+    const one = slow();
+    await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: one.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 1 });
+    expect(one.state.most).toBe(1);
+    const many = slow();
+    await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: many.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 9 });
+    expect(many.state.most).toBe(3);
+    // A part that fails: the one running beside it ends before the run fails and its folder goes.
+    const failing = slow("B");
+    const dir = tmp();
+    await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: failing.sf, maxFilesPerRetrieve: 2 })).rejects.toThrow(/INVALID_SESSION/);
+    expect(failing.state.running).toBe(0);
+    expect(failing.state.finished).toBe(2);
+    expect(readdirSync(dir).filter((f) => f.startsWith(ORG_ID))).toEqual([]);
+  });
+
   it("removes the folders of runs that died, and of earlier versions, but not other orgs'", async () => {
     const dir = tmp();
     for (const f of [`.retrieve-${ORG_ID}-dead`, `.old-${ORG_ID}-1`, ORG_ID, `${ORG_ID}-dead`, "00D000000000002AAA-x"]) mkdirSync(path.join(dir, f, "part-1"), { recursive: true });
@@ -763,7 +808,7 @@ describe("indexing", () => {
 });
 
 describe("retrieve warnings and unretrievable members", () => {
-  it("times each step of a run, the parts of a retrieval as one", () => {
+  it("times each step of a run, the parts of a retrieval as one, with what was done under it", () => {
     let now = 0;
     const timer = new StepTimer(() => now);
     const at = (ms: number, line: string) => {
@@ -772,13 +817,15 @@ describe("retrieve warnings and unretrievable members", () => {
     };
     at(0, "Listing the metadata in dev");
     at(12_000, "Reading when each component of dev last changed");
+    // Parts retrieved two at a time: their lines interleave, the step goes on.
     at(20_000, "Retrieving part 1 of 3");
-    at(260_000, "Retrieving part 2 of 3");
-    at(300_000, "Retrieving part 3 of 3");
+    at(21_000, "Retrieving part 2 of 3");
+    at(260_000, "Retrieving part 3 of 3");
+    at(330_000, "Retrieved 3 parts, 2 at a time; the longest took 4m 00s");
     at(330_000, "Putting the retrieved files together");
     at(330_500, "Copying the last retrieval");
     at(330_700, "Putting the retrieved files together");
-    // A line that says what was done ends no step.
+    // A line that says what was done ends no step, and goes under the retrieval.
     at(331_000, "Retrieved 300 changed or always retrieved components; 2 deleted since the last run");
     at(332_000, "Reading the retrieved metadata");
     at(332_400, "Writing the index");
@@ -787,7 +834,9 @@ describe("retrieve warnings and unretrievable members", () => {
       "Time per step:",
       "  Listing the metadata in dev: 12s",
       "  Reading when each component of dev last changed: 8s",
-      "  Retrieving the metadata: 5m 10s (3 retrieves, the longest 4m 00s)",
+      "  Retrieving the metadata: 5m 10s",
+      "    Retrieved 3 parts, 2 at a time; the longest took 4m 00s",
+      "    Retrieved 300 changed or always retrieved components; 2 deleted since the last run",
       "  Putting the retrieved files together: 2s",
       "  Copying the last retrieval: under a second",
       "  Reading the retrieved metadata: under a second",

@@ -21,6 +21,8 @@ export interface IndexOptions {
   force?: boolean;
   /** Parse every file again, reusing nothing from the last run. */
   full?: boolean;
+  /** Parts of an org retrieved at the same time (2 by default, at most 3). */
+  parallelRetrieves?: number;
   /** Let git and gh ask for credentials: a run in a terminal, not the server's. */
   interactive?: boolean;
 }
@@ -101,18 +103,19 @@ export function formatDuration(ms: number): string {
   return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
-/** Progress lines that say what was done, not what starts. */
-const NOT_A_STEP = /^Retrieved \d/;
-/** The step a progress line starts: the parts of a retrieval are one step. */
+/** Progress lines that say what was done ("Retrieved 14 parts, ..."), not what starts: notes. */
+const NOTE = /^Retrieved /;
+/** The step a progress line starts: the parts of a retrieval, retrieved a few at a time, are one step. */
 const RETRIEVING = "Retrieving the metadata";
 const stepOf = (message: string) => (/^Retrieving (?:part \d+ of \d+|\d+ .*components)$/.test(message) ? RETRIEVING : message);
 
 /**
  * Times a run from its progress lines: each line starts a step, which ends with the next line
- * (or `stop`). The same step met again (a retrieval in parts) adds up.
+ * (or `stop`). The same step met again (the parts of a retrieval) adds up. A line that says
+ * what was done is kept as a note, under the retrieval when there is one.
  */
 export class StepTimer {
-  private readonly steps = new Map<string, { ms: number; times: number; longest: number }>();
+  private readonly steps = new Map<string, { ms: number; notes: string[] }>();
   private current?: { step: string; at: number };
   private readonly startedAt: number;
 
@@ -120,32 +123,43 @@ export class StepTimer {
     this.startedAt = now();
   }
 
-  /** Starts the step this progress line names. */
+  /** Starts the step this progress line names, or notes what it says was done. */
   mark(message: string): void {
-    if (NOT_A_STEP.test(message)) return;
+    if (NOTE.test(message)) {
+      const step = this.steps.has(RETRIEVING) || this.current?.step === RETRIEVING ? RETRIEVING : this.current?.step;
+      if (step) this.entry(step).notes.push(message);
+      return;
+    }
+    const step = stepOf(message);
+    // Parts retrieved together: the step goes on.
+    if (this.current?.step === step && step === RETRIEVING) return;
     this.stop();
-    this.current = { step: stepOf(message), at: this.now() };
+    this.entry(step);
+    this.current = { step, at: this.now() };
   }
 
   /** Ends the step in progress. */
   stop(): void {
     if (!this.current) return;
-    const ms = this.now() - this.current.at;
-    const s = this.steps.get(this.current.step) ?? { ms: 0, times: 0, longest: 0 };
-    this.steps.set(this.current.step, { ms: s.ms + ms, times: s.times + 1, longest: Math.max(s.longest, ms) });
+    this.entry(this.current.step).ms += this.now() - this.current.at;
     this.current = undefined;
   }
 
-  /** "Time per step:", a line per step in the order they started, and the run's total. */
+  /** "Time per step:", a line per step in the order they started, its notes, and the run's total. */
   lines(): string[] {
     this.stop();
     if (!this.steps.size) return [];
     return [
       "Time per step:",
-      // A retrieval's parts: how many retrieves (a part refused as too large is one more), and the longest.
-      ...[...this.steps].map(([step, s]) => `  ${step}: ${formatDuration(s.ms)}${step === RETRIEVING && s.times > 1 ? ` (${s.times} retrieves, the longest ${formatDuration(s.longest)})` : ""}`),
+      ...[...this.steps].flatMap(([step, s]) => [`  ${step}: ${formatDuration(s.ms)}`, ...s.notes.map((n) => `    ${n}`)]),
       `  In all: ${formatDuration(this.now() - this.startedAt)}`,
     ];
+  }
+
+  private entry(step: string) {
+    let s = this.steps.get(step);
+    if (!s) this.steps.set(step, (s = { ms: 0, notes: [] }));
+    return s;
   }
 }
 
@@ -220,6 +234,7 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
           progress: options.progress,
           heartbeat: () => lease.renew(),
           full: options.full,
+          ...(options.parallelRetrieves ? { parallelRetrieves: options.parallelRetrieves } : {}),
         });
         if (retrieved.incremental) options.progress?.(`Retrieved ${retrieved.incremental.retrieved} changed or always retrieved components; ${retrieved.incremental.deleted} deleted since the last run`);
         options.progress?.("Reading the retrieved metadata");

@@ -25,6 +25,9 @@ describe("index command", () => {
     expect(() => parseIndexArgs(["--org", "a", "--project", "b"], {}, cwd)).toThrow(/one of/);
     expect(() => parseIndexArgs(["--repo", "github:a/b", "--org", "b"], {}, cwd)).toThrow(/one of/);
     expect(() => parseIndexArgs(["--orgs", "a"], {}, cwd)).toThrow(/Unknown option "--orgs"/);
+    expect(parseIndexArgs(["--org", "prod", "--parallel", "3"], {}, cwd)).toMatchObject({ parallel: 3 });
+    expect(() => parseIndexArgs(["--org", "prod", "--parallel", "4"], {}, cwd)).toThrow(/1, 2 or 3/);
+    expect(() => parseIndexArgs(["--project", "p", "--parallel", "2"], {}, cwd)).toThrow(/only goes with --org/);
   });
 
   it("says what a run found", () => {
