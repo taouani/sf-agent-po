@@ -448,66 +448,95 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
         wanted = wanted.map((e) => (e.type === "EmailTemplate" ? { ...e, members: e.members.filter((m) => !found.has(m)) } : e)).filter((e) => e.members.length);
       } else if (!found) warnings.push("The email templates could not be read by query, so they are retrieved");
     }
-    const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
+    // Each part keeps one id from run to run: the halves of a part too large for one retrieve
+    // take its place (part 3 becomes 3.1 and 3.2), whatever else finished first.
+    type Part = { id: number[]; entries: ManifestEntry[] };
+    const first = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
+    const queue: Part[] = first.map((entries, i) => ({ id: [i + 1], entries }));
+    const label = (id: number[]) => (id.length === 1 ? `part ${id[0]} of ${first.length}` : `part ${id.join(".")}`);
     // Parts are retrieved a few at a time: each waits for Salesforce to build its zip.
-    const atOnce = Math.max(1, Math.min(options.parallelRetrieves ?? PARALLEL_RETRIEVES, MAX_PARALLEL_RETRIEVES));
-    let n = 0;
-    let total = queue.length;
-    const retrieved: { name: string; ms: number }[] = [];
+    const asked = options.parallelRetrieves;
+    const atOnce = Math.max(1, Math.min(Number.isInteger(asked) ? asked! : PARALLEL_RETRIEVES, MAX_PARALLEL_RETRIEVES));
+    const retrieved: { id: number[]; name: string; ms: number }[] = [];
+    let running = 0;
+    let most = 0;
+    let splits = 0;
     let failure: { err: unknown } | undefined;
+    // Idle workers wait while others run: a part split in two goes back on the queue.
+    let wake = () => {};
+    let changed = new Promise<void>((resolve) => (wake = resolve));
+    const notify = () => {
+      wake();
+      changed = new Promise<void>((resolve) => (wake = resolve));
+    };
     const worker = async () => {
-      // A worker stops taking parts once another failed; a part split in two goes back on the queue.
-      while (queue.length && !failure) {
-        const part = queue.shift()!;
-        const number = ++n;
-        const name = `part-${number}`;
-        await writeFile(path.join(work, `${name}.xml`), writeManifest(part, version));
-        const members = part.reduce((k, e) => k + e.members.length, 0);
-        progress(total > 1 ? `Retrieving part ${number} of ${total}` : `Retrieving ${members} ${plan ? "changed or always retrieved " : ""}components`);
-        const started = Date.now();
-        let result: unknown;
-        try {
-          result = await sf(
-            ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
-            { cwd: work, timeoutMs: (wait + 5) * 60_000 },
-          );
-        } catch (err) {
-          // Too large for one retrieve after all: split it in two and go on.
-          const files = estimateFiles(part);
-          if (!tooLarge(err) || files < 2) throw err;
-          await remove(path.join(work, name));
-          const halves = splitManifest(part, Math.ceil(files / 2));
-          queue.unshift(...halves);
-          total += halves.length;
+      while (!failure) {
+        if (!queue.length) {
+          if (!running) return;
+          await changed;
           continue;
         }
-        heartbeat();
-        warnings.push(...problemsOf(result));
-        // The zip the CLI kept beside the unzipped folder is not needed.
-        const out = path.join(work, name);
-        const kept = await readdir(out).catch(() => [] as string[]);
-        for (const f of kept) if (f.endsWith(".zip")) await remove(path.join(out, f));
-        if (!(await filesUnder(out).catch(() => [] as string[])).some((f) => !f.endsWith("package.xml"))) {
-          throw new Error(`The org returned nothing for part ${number}${warnings.length ? `: ${warnings.slice(-3).join("; ")}` : ""}.`);
+        const part = queue.shift()!;
+        running++;
+        most = Math.max(most, running);
+        try {
+          const name = `part-${part.id.join("-")}`;
+          await writeFile(path.join(work, `${name}.xml`), writeManifest(part.entries, version));
+          const members = part.entries.reduce((k, e) => k + e.members.length, 0);
+          progress(first.length > 1 || part.id.length > 1 ? `Retrieving ${label(part.id)}` : `Retrieving ${members} ${plan ? "changed or always retrieved " : ""}components`);
+          const started = Date.now();
+          let result: unknown;
+          try {
+            result = await sf(
+              ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
+              { cwd: work, timeoutMs: (wait + 5) * 60_000 },
+            );
+          } catch (err) {
+            // Too large for one retrieve after all: split it in two and go on.
+            const files = estimateFiles(part.entries);
+            if (!tooLarge(err) || files < 2) throw err;
+            await remove(path.join(work, name));
+            const halves = splitManifest(part.entries, Math.ceil(files / 2));
+            splits++;
+            progress(`Part ${part.id.join(".")} is too large for one retrieve, so it is retrieved in ${halves.length} pieces`);
+            queue.unshift(...halves.map((entries, i) => ({ id: [...part.id, i + 1], entries })));
+            continue;
+          }
+          heartbeat();
+          const problems = problemsOf(result);
+          warnings.push(...problems);
+          // The zip the CLI kept beside the unzipped folder is not needed.
+          const out = path.join(work, name);
+          const kept = await readdir(out).catch(() => [] as string[]);
+          for (const f of kept) if (f.endsWith(".zip")) await remove(path.join(out, f));
+          if (!(await filesUnder(out).catch(() => [] as string[])).some((f) => !f.endsWith("package.xml"))) {
+            throw new Error(`The org returned nothing for part ${part.id.join(".")}${problems.length ? `: ${problems.slice(0, 3).join("; ")}` : ""}.`);
+          }
+          retrieved.push({ id: part.id, name, ms: Date.now() - started });
+        } catch (err) {
+          if (!failure && running > 1) progress(`Part ${part.id.join(".")} failed; waiting for the ${running - 1 === 1 ? "part" : `${running - 1} parts`} still running before stopping`);
+          failure ??= { err };
+        } finally {
+          running--;
+          notify();
         }
-        retrieved.push({ name, ms: Date.now() - started });
       }
     };
     // Every worker is waited for, so that no retrieve still writes into the folder when it goes.
-    await Promise.all(
-      Array.from({ length: Math.min(atOnce, Math.max(1, queue.length)) }, () =>
-        worker().catch((err: unknown) => {
-          failure ??= { err };
-        }),
-      ),
-    );
+    await Promise.all(Array.from({ length: atOnce }, () => worker()));
     if (failure) throw failure.err;
+    if (first.length && !retrieved.length) throw new Error("No part of the metadata was retrieved.");
     if (retrieved.length > 1) {
       const longest = Math.max(...retrieved.map((r) => r.ms));
-      progress(`Retrieved ${retrieved.length} parts, ${Math.min(atOnce, retrieved.length)} at a time; the longest took ${formatMinutes(longest)}`);
+      const split = splits ? ` (${splits} split for being too large)` : "";
+      progress(`Retrieved ${retrieved.length} parts${split}, ${most === 1 ? "one at a time" : `${most} at a time`}; the longest took ${formatMinutes(longest)}`);
     }
     // In the order they were asked for: a profile's first copy is in the first part that has it.
-    const parts = retrieved.map((r) => r.name).sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)));
+    const byId = (a: number[], b: number[]) => {
+      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
+      return a.length - b.length;
+    };
+    const parts = [...retrieved].sort((a, b) => byId(a.id, b.id)).map((r) => r.name);
     progress("Putting the retrieved files together");
     if (parts.length > 1) await mergeProfiles(work, parts);
     // Every file goes to one tree at the same path from run to run, so that the index's parse

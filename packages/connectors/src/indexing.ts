@@ -107,7 +107,8 @@ export function formatDuration(ms: number): string {
 const NOTE = /^Retrieved /;
 /** The step a progress line starts: the parts of a retrieval, retrieved a few at a time, are one step. */
 const RETRIEVING = "Retrieving the metadata";
-const stepOf = (message: string) => (/^Retrieving (?:part \d+ of \d+|\d+ .*components)$/.test(message) ? RETRIEVING : message);
+const stepOf = (message: string) =>
+  /^Retrieving (?:part \d+ of \d+|part \d+(?:\.\d+)+|\d+ .*components)$|^Part [\d.]+ (?:is too large|failed)/.test(message) ? RETRIEVING : message;
 
 /**
  * Times a run from its progress lines: each line starts a step, which ends with the next line
