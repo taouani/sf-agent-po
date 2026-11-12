@@ -3,7 +3,7 @@ export { componentKey, formulaCode, formulaFields, isCustomName, isMappingValue,
 export { classify, MAX_FILE_BYTES, MAX_FILES, MAX_SKIPPED_LISTED, packagePath, scanProject } from "./scan.js";
 export { BUILD_LEASE_MS, FULL_RUN_AFTER_MS, MetadataIndex, type BuildLease, type IndexedComponent, type MetadataScope, type ObjectSummary, type ScopeMember, type ScopeNeighbour, type Related, type SnapshotInfo, type SnapshotSource, type SnapshotStats } from "./index-store.js";
 export { outsideCdataAndComments, parseMetadataXml } from "./xml.js";
-export { readFlow } from "./flows.js";
+export { flowOutline, MAX_OUTLINE_LENGTH, readFlow } from "./flows.js";
 export { classifyFile, registryTypeCount, type RegistryMatch, type RegistryType } from "./registry.js";
 export { REGISTRY_VERSION } from "./registry-data.js";
 export { apexCode, HIDDEN_SECRET, hideCodeSecrets, MAX_APEX_LENGTH, readApex, soqlFields } from "./apex.js";
