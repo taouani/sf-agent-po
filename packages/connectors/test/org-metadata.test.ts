@@ -480,6 +480,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     expect(first.warnings).toEqual([]);
     const pointer = JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { dates: Record<string, Record<string, string>> };
     expect(pointer.dates.EmailTemplate).toEqual({
+      unfiled$public: "1970-01-01T00:00:00.000Z",
       Care: "2026-01-01T00:00:00.000+0000",
       "Care/Sub": "2026-01-02T00:00:00.000+0000",
       "Care/Welcome": "2026-02-01T00:00:00.000+0000",
@@ -487,32 +488,45 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
       "Care/Sub/Deep": "2026-02-03T00:00:00.000+0000",
       "unfiled$public/U": "2026-02-04T00:00:00.000+0000",
     });
-    // One template changed: it alone is retrieved again (and unfiled$public, which has no date);
-    // the others stay from the last run.
+    // One template changed: it alone is retrieved again; the others stay from the last run.
     soql.EmailTemplate![1]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
     asked.length = 0;
     const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
     expect(second.incremental).toBeDefined();
-    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Closed", "unfiled$public"] }]);
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Closed"] }]);
     expect(readdirSync(path.join(second.dir, "metadata", "email", "Care")).sort()).toEqual(["Closed.email", "Closed.email-meta.xml", "Sub", "Sub-meta.xml", "Welcome.email", "Welcome.email-meta.xml"]);
+    // A template deleted, and one of a namespace added: the first goes, the second comes.
+    org.EmailTemplate = org.EmailTemplate!.filter((m) => m !== "Care/Welcome").concat("Care/acme__Promo");
+    soql.EmailTemplate = soql.EmailTemplate!.filter((t) => t.DeveloperName !== "Welcome").concat({ DeveloperName: "Promo", NamespacePrefix: "acme", FolderId: "00l1", LastModifiedDate: "2026-04-01T00:00:00.000+0000" });
+    asked.length = 0;
+    const moved = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(moved.incremental?.deleted).toBe(1);
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/acme__Promo"] }]);
+    expect(readdirSync(path.join(moved.dir, "metadata", "email", "Care")).filter((f) => f.endsWith(".email")).sort()).toEqual(["Closed.email", "acme__Promo.email"]);
     // Without the queries, every template is retrieved again, and the run says so.
     delete soql.EmailTemplate;
     asked.length = 0;
     const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
     expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
+    // A full run retrieves every template anyway: nothing to say.
+    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, full: true })).warnings).toEqual([]);
     expect(third.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
   });
 
   it("does not take a query the CLI cut short", async () => {
     const dir = tmp();
-    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Welcome"] };
+    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Welcome"], Report: ["Sales", "Sales/A"] };
     const calls: { args: string[]; cwd?: string }[] = [];
     const base = fakeSf(org, calls, { dates: {} });
     // As the CLI returns past its row limit: fewer records than the org holds.
     const sf: SfRunner = async (args, opts) =>
       args[0] === "data" ? { records: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }], totalSize: 20_000, done: true } : base(args, opts);
-    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
-    expect(run.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
+    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    calls.length = 0;
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    expect(second.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
+    // Reports are listed folder by folder instead.
+    expect(calls.filter((c) => c.args.includes("--folder")).map((c) => c.args[c.args.indexOf("--folder") + 1])).toEqual(["Sales"]);
   });
 
   it("caps reports, folders kept, undated ones first", () => {
@@ -680,6 +694,8 @@ describe("retrieve warnings and unretrievable members", () => {
     at(260_000, "Retrieving part 2 of 3");
     at(300_000, "Retrieving part 3 of 3");
     at(330_000, "Putting the retrieved files together");
+    at(330_500, "Copying the last retrieval");
+    at(330_700, "Putting the retrieved files together");
     // A line that says what was done ends no step.
     at(331_000, "Retrieved 300 changed or always retrieved components; 2 deleted since the last run");
     at(332_000, "Reading the retrieved metadata");
@@ -689,8 +705,9 @@ describe("retrieve warnings and unretrievable members", () => {
       "Time per step:",
       "  Listing the metadata in dev: 12s",
       "  Reading when each component of dev last changed: 8s",
-      "  Retrieving the metadata: 5m 10s (3 parts, the longest 4m 00s)",
+      "  Retrieving the metadata: 5m 10s (3 retrieves, the longest 4m 00s)",
       "  Putting the retrieved files together: 2s",
+      "  Copying the last retrieval: under a second",
       "  Reading the retrieved metadata: under a second",
       "  Writing the index: 1h 01m",
       "  In all: 1h 06m",

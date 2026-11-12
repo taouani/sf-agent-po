@@ -400,7 +400,6 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       entries = capped.entries;
       warnings.push(`${capped.left} ${capped.left === 1 ? "report was" : "reports were"} left out: only the ${max.toLocaleString("en")} most recently changed are retrieved`);
     }
-    if (!dates.EmailTemplate && entries.some((e) => e.type === "EmailTemplate")) warnings.push("The dates of email templates could not be read, so all of them are retrieved again");
     if (undated.length) warnings.push(`The dates of ${undated.length === 1 ? "one folder" : `${undated.length} folders`} could not be listed, so ${undated.length === 1 ? "its" : "their"} reports or dashboards are retrieved again: ${undated.slice(0, 5).join(", ")}${undated.length > 5 ? ", …" : ""}`);
     const counts = Object.fromEntries(entries.map((e) => [e.type, e.members.length]));
     // The last tree, which an incremental run starts from: gone (deleted, or quarantined by an
@@ -408,6 +407,8 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
     const baseProfiles = base ? await profilesIn(base) : undefined;
     const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : undefined;
+    // Said only when it costs something: a full run retrieves every template anyway.
+    if (plan && !dates.EmailTemplate && entries.some((e) => e.type === "EmailTemplate")) warnings.push("The dates of email templates could not be read, so all of them are retrieved again");
     const wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
     const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
     let n = 0;
@@ -691,8 +692,10 @@ type Row = Record<string, unknown>;
 /**
  * Rows the CLI returns from one query at most. Its default (org-max-query-limit) is 10,000,
  * and an org can hold more templates or reports than that: past it, rows would go missing.
+ * Its output is taken up to 64 MB (exec.ts), about 150,000 rows of these queries: past that,
+ * the query fails and the fallback is used.
  */
-const MAX_QUERY_ROWS = 500_000;
+const MAX_QUERY_ROWS = 150_000;
 
 /** Runs one of FOLDER_QUERIES and returns all its rows; throws when the CLI returned fewer than the org holds. */
 async function folderQuery(sf: SfRunner, targetOrg: string, name: keyof typeof FOLDER_QUERIES, run: { cwd: string; timeoutMs: number }): Promise<Row[]> {
@@ -735,7 +738,9 @@ async function queryTemplateDates(sf: SfRunner, targetOrg: string, run: { cwd: s
   const folders = await folderQuery(sf, targetOrg, "emailFolders", run);
   const templates = await folderQuery(sf, targetOrg, "templates", run);
   const pathOf = folderPaths(folders);
-  const dates: Record<string, string> = {};
+  // unfiled$public is no folder of the query, and never changes: without a date it would be
+  // retrieved on every run.
+  const dates: Record<string, string> = { unfiled$public: "1970-01-01T00:00:00.000Z" };
   for (const f of folders) {
     const p = pathOf(f.Id);
     if (p && typeof f.LastModifiedDate === "string") dates[p] = f.LastModifiedDate;

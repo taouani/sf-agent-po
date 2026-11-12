@@ -104,7 +104,8 @@ export function formatDuration(ms: number): string {
 /** Progress lines that say what was done, not what starts. */
 const NOT_A_STEP = /^Retrieved \d/;
 /** The step a progress line starts: the parts of a retrieval are one step. */
-const stepOf = (message: string) => (/^Retrieving (?:part \d+ of \d+|\d+ .*components)$/.test(message) ? "Retrieving the metadata" : message);
+const RETRIEVING = "Retrieving the metadata";
+const stepOf = (message: string) => (/^Retrieving (?:part \d+ of \d+|\d+ .*components)$/.test(message) ? RETRIEVING : message);
 
 /**
  * Times a run from its progress lines: each line starts a step, which ends with the next line
@@ -141,7 +142,8 @@ export class StepTimer {
     if (!this.steps.size) return [];
     return [
       "Time per step:",
-      ...[...this.steps].map(([step, s]) => `  ${step}: ${formatDuration(s.ms)}${s.times > 1 ? ` (${s.times} parts, the longest ${formatDuration(s.longest)})` : ""}`),
+      // A retrieval's parts: how many retrieves (a part refused as too large is one more), and the longest.
+      ...[...this.steps].map(([step, s]) => `  ${step}: ${formatDuration(s.ms)}${step === RETRIEVING && s.times > 1 ? ` (${s.times} retrieves, the longest ${formatDuration(s.longest)})` : ""}`),
       `  In all: ${formatDuration(this.now() - this.startedAt)}`,
     ];
   }
