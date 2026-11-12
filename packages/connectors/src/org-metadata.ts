@@ -38,6 +38,16 @@ const IN_FOLDERS = new Set(["Report", "Dashboard"]);
 const OBJECT_CHILDREN = new Set(["CustomField", "RecordType", "ValidationRule", "ListView", "CompactLayout", "FieldSet", "WebLink", "BusinessProcess", "SharingReason", "Index"]);
 /** Types made of a source file and its metadata file, or of a folder of files. */
 const FILES_PER_MEMBER: Record<string, number> = { ApexClass: 2, ApexTrigger: 2, ApexPage: 2, ApexComponent: 2, EmailTemplate: 2, LightningComponentBundle: 8, AuraDefinitionBundle: 10 };
+/** Retrieves run at the same time by default, and at most: Salesforce limits an org's concurrent metadata requests, which deployments and other tools share. */
+export const PARALLEL_RETRIEVES = 2;
+export const MAX_PARALLEL_RETRIEVES = 3;
+/** "9m 12s", "1h 05m", "40s". */
+const formatMinutes = (ms: number) => {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+};
 /** One retrieve may return 10,000 files; a little room is kept. */
 export const MAX_FILES_PER_RETRIEVE = 9_000;
 /** Elements a profile lists per component: what a retrieve in several parts must merge. */
@@ -313,6 +323,8 @@ export interface RetrieveOptions {
   full?: boolean;
   /** Reports retrieved at most (MAX_REPORTS by default), the most recently changed first. */
   maxReports?: number;
+  /** Parts retrieved at the same time (PARALLEL_RETRIEVES by default, at most MAX_PARALLEL_RETRIEVES). */
+  parallelRetrieves?: number;
   /** From this many email templates to retrieve, they are read by query (QUERY_TEMPLATES_FROM by default). */
   queryTemplatesFrom?: number;
 }
@@ -436,42 +448,97 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
         wanted = wanted.map((e) => (e.type === "EmailTemplate" ? { ...e, members: e.members.filter((m) => !found.has(m)) } : e)).filter((e) => e.members.length);
       } else if (!found) warnings.push("The email templates could not be read by query, so they are retrieved");
     }
-    const queue = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
-    let n = 0;
-    while (queue.length) {
-      const part = queue.shift()!;
-      const name = `part-${++n}`;
-      await writeFile(path.join(work, `${name}.xml`), writeManifest(part, version));
-      const members = part.reduce((k, e) => k + e.members.length, 0);
-      progress(queue.length || n > 1 ? `Retrieving part ${n} of ${n + queue.length}` : `Retrieving ${members} ${plan ? "changed or always retrieved " : ""}components`);
-      let result: unknown;
-      try {
-        result = await sf(
-          ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
-          { cwd: work, timeoutMs: (wait + 5) * 60_000 },
-        );
-      } catch (err) {
-        // Too large for one retrieve after all: split it in two and go on.
-        const files = estimateFiles(part);
-        if (!tooLarge(err) || files < 2) throw err;
-        await remove(path.join(work, name));
-        queue.unshift(...splitManifest(part, Math.ceil(files / 2)));
-        n--;
-        continue;
+    // Each part keeps one id from run to run: the halves of a part too large for one retrieve
+    // take its place (part 3 becomes 3.1 and 3.2), whatever else finished first.
+    type Part = { id: number[]; entries: ManifestEntry[] };
+    const first = wanted.length ? splitManifest(wanted, options.maxFilesPerRetrieve) : [];
+    const queue: Part[] = first.map((entries, i) => ({ id: [i + 1], entries }));
+    const label = (id: number[]) => (id.length === 1 ? `part ${id[0]} of ${first.length}` : `part ${id.join(".")}`);
+    // Parts are retrieved a few at a time: each waits for Salesforce to build its zip.
+    const asked = options.parallelRetrieves;
+    const atOnce = Math.max(1, Math.min(Number.isInteger(asked) ? asked! : PARALLEL_RETRIEVES, MAX_PARALLEL_RETRIEVES));
+    const retrieved: { id: number[]; name: string; ms: number }[] = [];
+    let running = 0;
+    let most = 0;
+    let splits = 0;
+    let failure: { err: unknown } | undefined;
+    // Idle workers wait while others run: a part split in two goes back on the queue.
+    let wake = () => {};
+    let changed = new Promise<void>((resolve) => (wake = resolve));
+    const notify = () => {
+      wake();
+      changed = new Promise<void>((resolve) => (wake = resolve));
+    };
+    const worker = async () => {
+      while (!failure) {
+        if (!queue.length) {
+          if (!running) return;
+          await changed;
+          continue;
+        }
+        const part = queue.shift()!;
+        running++;
+        most = Math.max(most, running);
+        try {
+          const name = `part-${part.id.join("-")}`;
+          await writeFile(path.join(work, `${name}.xml`), writeManifest(part.entries, version));
+          const members = part.entries.reduce((k, e) => k + e.members.length, 0);
+          progress(first.length > 1 || part.id.length > 1 ? `Retrieving ${label(part.id)}` : `Retrieving ${members} ${plan ? "changed or always retrieved " : ""}components`);
+          const started = Date.now();
+          let result: unknown;
+          try {
+            result = await sf(
+              ["project", "retrieve", "start", "--manifest", `${name}.xml`, "--target-metadata-dir", name, "--unzip", "--wait", String(wait), "--target-org", targetOrg],
+              { cwd: work, timeoutMs: (wait + 5) * 60_000 },
+            );
+          } catch (err) {
+            // Too large for one retrieve after all: split it in two and go on.
+            const files = estimateFiles(part.entries);
+            if (!tooLarge(err) || files < 2) throw err;
+            await remove(path.join(work, name));
+            const halves = splitManifest(part.entries, Math.ceil(files / 2));
+            splits++;
+            progress(`Part ${part.id.join(".")} is too large for one retrieve, so it is retrieved in ${halves.length} pieces`);
+            queue.unshift(...halves.map((entries, i) => ({ id: [...part.id, i + 1], entries })));
+            continue;
+          }
+          heartbeat();
+          const problems = problemsOf(result);
+          warnings.push(...problems);
+          // The zip the CLI kept beside the unzipped folder is not needed.
+          const out = path.join(work, name);
+          const kept = await readdir(out).catch(() => [] as string[]);
+          for (const f of kept) if (f.endsWith(".zip")) await remove(path.join(out, f));
+          if (!(await filesUnder(out).catch(() => [] as string[])).some((f) => !f.endsWith("package.xml"))) {
+            throw new Error(`The org returned nothing for part ${part.id.join(".")}${problems.length ? `: ${problems.slice(0, 3).join("; ")}` : ""}.`);
+          }
+          retrieved.push({ id: part.id, name, ms: Date.now() - started });
+        } catch (err) {
+          if (!failure && running > 1) progress(`Part ${part.id.join(".")} failed; waiting for the ${running - 1 === 1 ? "part" : `${running - 1} parts`} still running before stopping`);
+          failure ??= { err };
+        } finally {
+          running--;
+          notify();
+        }
       }
-      heartbeat();
-      warnings.push(...problemsOf(result));
-      // The zip the CLI kept beside the unzipped folder is not needed.
-      const out = path.join(work, name);
-      const kept = await readdir(out).catch(() => [] as string[]);
-      for (const f of kept) if (f.endsWith(".zip")) await remove(path.join(out, f));
-      if (!(await filesUnder(out).catch(() => [] as string[])).some((f) => !f.endsWith("package.xml"))) {
-        throw new Error(`The org returned nothing for part ${n}${warnings.length ? `: ${warnings.slice(-3).join("; ")}` : ""}.`);
-      }
+    };
+    // Every worker is waited for, so that no retrieve still writes into the folder when it goes.
+    await Promise.all(Array.from({ length: atOnce }, () => worker()));
+    if (failure) throw failure.err;
+    if (first.length && !retrieved.length) throw new Error("No part of the metadata was retrieved.");
+    if (retrieved.length > 1) {
+      const longest = Math.max(...retrieved.map((r) => r.ms));
+      const split = splits ? ` (${splits} split for being too large)` : "";
+      progress(`Retrieved ${retrieved.length} parts${split}, ${most === 1 ? "one at a time" : `${most} at a time`}; the longest took ${formatMinutes(longest)}`);
     }
-    const parts = Array.from({ length: n }, (_, i) => `part-${i + 1}`);
+    // In the order they were asked for: a profile's first copy is in the first part that has it.
+    const byId = (a: number[], b: number[]) => {
+      for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
+      return a.length - b.length;
+    };
+    const parts = [...retrieved].sort((a, b) => byId(a.id, b.id)).map((r) => r.name);
     progress("Putting the retrieved files together");
-    if (n > 1) await mergeProfiles(work, parts);
+    if (parts.length > 1) await mergeProfiles(work, parts);
     // Every file goes to one tree at the same path from run to run, so that the index's parse
     // cache finds the files that did not change. A run that retrieved only what changed starts
     // from a copy of the last tree.
@@ -544,7 +611,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       orgId,
       ...(typeof info.alias === "string" ? { alias: info.alias } : {}),
       counts,
-      parts: n,
+      parts: parts.length,
       warnings,
       retrievedAt,
       ...(plan ? { incremental: { retrieved: retrievedCount, deleted: plan.deleted } } : {}),

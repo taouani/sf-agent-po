@@ -137,7 +137,7 @@ npx -y sf-agent-po@next index --project <folder>                   # a Salesforc
 npx -y sf-agent-po@next index --repo github:owner/repo#main        # or gitlab:, azure-devops:<url>, git:<url>
 ```
 
-You can also ask the assistant to index (the `metadata_index` tool). A run reads only what changed since the last one; `--full` reads everything. It ends with the time each step took, which helps when a large org is slow to index. The index holds objects, fields, validation rules, record types, flows, Apex, triggers, Lightning components, Visualforce, email templates, layouts, permission sets and profiles, reports, dashboards and report types, and integrations (named and external credentials, remote sites, connected apps, outbound messages, callouts). The org is never changed.
+You can also ask the assistant to index (the `metadata_index` tool). A run reads only what changed since the last one; `--full` reads everything. It ends with the time each step took, which helps when a large org is slow to index. A large org is retrieved in parts, two at a time; `--parallel 3` retrieves three at a time, and `--parallel 1` one after another, which is lighter on an org that is busy with deployments. The index holds objects, fields, validation rules, record types, flows, Apex, triggers, Lightning components, Visualforce, email templates, layouts, permission sets and profiles, reports, dashboards and report types, and integrations (named and external credentials, remote sites, connected apps, outbound messages, callouts). The org is never changed.
 
 For a large org, let your computer refresh the index every night, so the morning starts with a fresh one:
 

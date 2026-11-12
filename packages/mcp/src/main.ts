@@ -120,6 +120,7 @@ async function index(argv: string[]): Promise<void> {
       workspace: opts.workspace,
       force: opts.force,
       full: opts.full,
+      ...(opts.parallel ? { parallelRetrieves: opts.parallel } : {}),
       interactive: Boolean(process.stdin.isTTY),
       progress: (m) => {
         timer?.mark(m);

@@ -5,7 +5,7 @@ import path from "node:path";
 import type { IndexTarget } from "@sf-agent-po/connectors";
 import type { SnapshotInfo } from "@sf-agent-po/core";
 
-export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder> | --repo <repository>) [--workspace <folder>] [--full] [--force]
+export const INDEX_USAGE = `Usage: npx sf-agent-po@next index (--org <alias or username> | --project <folder> | --repo <repository>) [--workspace <folder>] [--full] [--force] [--parallel 1|2|3]
 
 Reads a Salesforce project folder (source or metadata format), a repository, or
 retrieves an org's metadata with your Salesforce CLI (sf, logged in with sf org
@@ -17,7 +17,9 @@ and fetched again on the next run. An org run retrieves only what changed since 
 last run (profiles and permission sets every time), and all of it once a week; files
 that did not change are not parsed again, unless they were last parsed more than 7
 days ago or sf-agent-po's readers changed. --full retrieves and parses everything.
-The run ends with the time each step took.
+An org is retrieved in parts of up to 9,000 files, 2 at a time; --parallel 1 retrieves
+them one after another (lighter on the org), --parallel 3 three at a time. The run
+ends with the time each step took.
 --force starts even if another run of the same source seems to be going (two runs of
 one repository then share its checkout).`;
 
@@ -26,6 +28,8 @@ export interface IndexArgs {
   workspace: string;
   force: boolean;
   full: boolean;
+  /** Parts of an org retrieved at the same time. */
+  parallel?: number;
 }
 
 export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): IndexArgs | { help: string } {
@@ -33,6 +37,7 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
   let workspace = path.resolve(env.SF_AGENT_WORKSPACE ?? path.join(cwd, ".sf-agent"));
   let force = false;
   let full = false;
+  let parallel: number | undefined;
   const value = (i: number, flag: string) => {
     const v = argv[i];
     if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value.\n\n${INDEX_USAGE}`);
@@ -43,6 +48,11 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     if (arg === "--help" || arg === "-h") return { help: INDEX_USAGE };
     if (arg === "--force") force = true;
     else if (arg === "--full") full = true;
+    else if (arg === "--parallel") {
+      const v = value(++i, arg);
+      if (!/^[123]$/.test(v)) throw new Error(`--parallel takes 1, 2 or 3.\n\n${INDEX_USAGE}`);
+      parallel = Number(v);
+    }
     else if (arg === "--workspace") workspace = path.resolve(cwd, value(++i, arg));
     else if (arg === "--org" || arg === "--project" || arg === "--repo") {
       if (target) throw new Error(`Give one of --org, --project or --repo.\n\n${INDEX_USAGE}`);
@@ -51,7 +61,8 @@ export function parseIndexArgs(argv: string[], env: NodeJS.ProcessEnv = process.
     } else throw new Error(`Unknown option "${arg}".\n\n${INDEX_USAGE}`);
   }
   if (!target) throw new Error(`Give --org, --project or --repo.\n\n${INDEX_USAGE}`);
-  return { target, workspace, force, full };
+  if (parallel !== undefined && target.kind !== "org") throw new Error(`--parallel only goes with --org.\n\n${INDEX_USAGE}`);
+  return { target, workspace, force, full, ...(parallel ? { parallel } : {}) };
 }
 
 /** The lines the command prints once a run is done. */
