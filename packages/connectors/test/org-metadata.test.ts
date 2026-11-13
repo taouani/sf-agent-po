@@ -620,13 +620,28 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     expect(await said()).toEqual(["A full run: there is no earlier retrieval"]);
     expect(await said()).toEqual([]);
     expect(await said({ full: true })).toEqual(["A full run: asked for"]);
-    org.Profile!.push("Support");
-    expect(await said()).toEqual(["A full run: the profile Support is new"]);
+    org.Profile!.push("Custom%3A Support");
+    expect(await said()).toEqual(["A full run: the profile Custom: Support is new"]);
+    const fresh = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, full: true, progress: (m) => m.startsWith("A full run") && expect(m).toBe("A full run: asked for") });
+    await fresh.cleared;
     // The note goes under the step it came in, and takes no time of its own.
     const timer = new StepTimer(() => 0);
     timer.mark("Reading when each component of dev last changed");
     timer.mark("A full run: asked for");
     expect(timer.lines()).toEqual(["Time per step:", "  Reading when each component of dev last changed: under a second", "    A full run: asked for", "  In all: under a second"]);
+  });
+
+  it("starts the next run while the last retrieval is still being removed", async () => {
+    const dir = tmp();
+    const sf = fakeSf({ ApexClass: ["A"] }, [], { dates: {} });
+    const first = await retrieveDone({ targetOrg: "dev", dir, sf });
+    // Not waited for: the next run starts at once, as a failed index would let it.
+    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    await Promise.all([second.cleared, third.cleared]);
+    expect(existsSync(first.dir)).toBe(false);
+    expect(readdirSync(dir).sort()).toEqual([path.basename(third.dir), `${ORG_ID}.json`].sort());
+    expect(current(dir)).toBe(path.basename(third.dir));
   });
 
   it("moves whole folders the tree lacks, and still rewrites the files that must change", async () => {

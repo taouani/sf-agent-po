@@ -392,8 +392,9 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
   const pointer = await readPointer(options.dir, orgId);
   const previous = pointer?.folder;
   await removeStale(options.dir, orgId, previous ? { keep: previous } : { workOnly: true });
-  // Work in a folder of its own, which becomes the retrieval: folders are never renamed,
-  // because Windows refuses to while an antivirus or an editor still holds new files in them.
+  // Work in a folder of its own, which becomes the retrieval: it is never renamed, because
+  // Windows refuses to while an antivirus or an editor still holds new files in it (the
+  // folders moved inside it, and the last retrieval set aside, fall back when refused).
   // The CLI is given relative paths only, so a user name with a space in the workspace path
   // never reaches a shell.
   const work = await mkdtemp(path.join(options.dir, `${orgId}-`));
@@ -432,7 +433,9 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     // antivirus) means a full run, as does a profile it has no copy of to merge into.
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
     const baseProfiles = base ? await profilesIn(base) : undefined;
-    const since = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : { why: previous ? "the last retrieval's files are gone" : "there is no earlier retrieval" };
+    const since = baseProfiles
+      ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped })
+      : { why: options.full ? "asked for" : !previous ? "there is no earlier retrieval" : pointer?.layout !== LAYOUT ? "the last retrieval was made by an earlier version" : "the last retrieval's files are gone" };
     const plan = "changed" in since ? since : undefined;
     // Said, since a full run takes much longer than one that retrieves what changed.
     if (!plan) progress(`A full run: ${"why" in since ? since.why : ""}`);
@@ -594,10 +597,10 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
           await mkdir(path.dirname(path.join(tree, rel)), { recursive: true });
           // Where Windows holds a file in it, the folder's files go one by one.
           const moved = await rename(path.join(work, part, folder), path.join(tree, rel)).then(() => true, () => false);
-          if (!moved) left.push(...inside);
+          if (!moved) for (const f of inside) left.push(f);
           continue;
         }
-        left.push(...(await moveFolders(part, inside, dirty, depth + 1)));
+        for (const f of await moveFolders(part, inside, dirty, depth + 1)) left.push(f);
       }
       return left;
     };
@@ -735,6 +738,15 @@ interface Pointer {
  * time), and what a standard object holds itself (its settings, overrides, search layouts),
  * which Salesforce does not date. The weekly full run, or `--full`, picks those up.
  */
+/** A member name as people write it: the listing encodes some characters ("Custom%3A Sales Profile"). */
+function readable(member: string): string {
+  try {
+    return decodeURIComponent(member);
+  } catch {
+    return member;
+  }
+}
+
 function changesSince(
   pointer: Pointer | undefined,
   entries: readonly ManifestEntry[],
@@ -754,8 +766,8 @@ function changesSince(
   for (const e of entries) {
     for (const m of e.members) {
       if (MERGED.has(e.type)) {
-        if (!before.has(`${e.type}\0${m}`)) return { why: `the ${e.type.toLowerCase()} ${m} is new` };
-        if (!baseProfiles.has(m)) return { why: `the last retrieval has no file for the ${e.type.toLowerCase()} ${m}` };
+        if (!before.has(`${e.type}\0${m}`)) return { why: `the ${e.type.toLowerCase()} ${readable(m)} is new` };
+        if (!baseProfiles.has(m)) return { why: `the last retrieval has no file for the ${e.type.toLowerCase()} ${readable(m)}` };
         continue;
       }
       if (ALWAYS.has(e.type)) continue;

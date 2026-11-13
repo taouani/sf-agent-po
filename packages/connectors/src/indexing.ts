@@ -320,8 +320,15 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
-        // The last retrieval was removed while the files were read.
-        await retrieved.cleared;
+        // The last retrieval was removed while the files were read; what is left of it is
+        // timed as a step of its own.
+        let cleared = false;
+        void retrieved.cleared.then(() => (cleared = true));
+        await Promise.resolve();
+        if (!cleared) {
+          options.progress?.("Removing the last retrieval");
+          await retrieved.cleared;
+        }
         options.progress?.("Writing the index");
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
       }),
