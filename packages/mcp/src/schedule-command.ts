@@ -100,7 +100,7 @@ export function parseScheduleArgs(argv: string[], env: NodeJS.ProcessEnv = proce
   if (name === undefined || !SET_NAME.test(name)) throw new Error(`A folder set needs --name: letters, digits, ".", "_" or "-", up to 40.\n\n${SCHEDULE_USAGE}`);
   if (action === "add" && !packages?.length) throw new Error(`A folder set needs --packages, as the index command takes them.\n\n${SCHEDULE_USAGE}`);
   if (action === "remove" && (packages || forOrg)) throw new Error(`--remove needs only the folder set's --project or --repo and --name.\n\n${SCHEDULE_USAGE}`);
-  if (forOrg !== undefined && (!ORG_ARG.test(forOrg) || forOrg.startsWith("-"))) throw new Error(`"${forOrg}" is not an org alias or username.`);
+  if (forOrg !== undefined && !/^org:00D[0-9A-Za-z]{15}$/.test(forOrg) && (!ORG_ARG.test(forOrg) || forOrg.startsWith("-"))) throw new Error(`"${forOrg}" is not an org alias or username, nor an org's source (org:00D...).`);
   for (const v of [project, repo, ...(packages ?? [])]) if (v !== undefined && (!QUOTABLE.test(v) || v.startsWith("-"))) throw new Error(`"${v}" cannot be scheduled: it holds a quote or a line break, or starts with "-".`);
   const set: ScheduledSet = { ...(project ? { project } : {}), ...(repo ? { repo } : {}), name, packages: packages ?? [], ...(forOrg ? { forOrg } : {}) };
   return { action, set, at, workspace };
@@ -155,12 +155,12 @@ const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
  * workspace's path is compared without case where its file system ignores it, and the files
  * carry a hash of the org, so that two orgs never share them (a@b.com, a+b.com; Prod, prod).
  */
-function names(workspace: string, what: { org?: string; set?: ScheduledSet }, platform: NodeJS.Platform) {
+function names(workspace: string, what: { org?: string; set?: ScheduledSet; where?: string }, platform: NodeJS.Platform) {
   const fold = (p: string) => (platform === "win32" || platform === "darwin" ? p.toLowerCase() : p);
   const ws = hash(fold(path.resolve(workspace)), 8);
   if (what.set) {
-    // A set is one name in one project or repository: both name its files.
-    const where = what.set.project ? fold(what.set.project) : what.set.repo!;
+    // A set is one name in one project or repository (by its source, however it was spelt): both name its files.
+    const where = what.set.project ? fold(path.resolve(what.set.project)) : what.where!;
     const h = hash(`${where}\0${what.set.name}`, 6);
     const file = `set-${what.set.name}-${h}`;
     return { file, task: `sf-agent-po index set ${what.set.name} ${h} ${ws}`, label: `com.sf-agent-po.index.${ws}.${file}`, marker: `# sf-agent-po index set ${what.set.name} ${h} ${ws}` };
@@ -182,8 +182,24 @@ function indexArgs(what: { org?: string; set?: ScheduledSet }): string[] {
   return [s.project ? "--project" : "--repo", (s.project ?? s.repo)!, "--packages", s.packages.join(","), "--name", s.name, ...(s.forOrg ? ["--for-org", s.forOrg] : [])];
 }
 
-/** What a schedule is about, in a sentence: the org, or the folder set. */
-const describe = (what: { org?: string; set?: ScheduledSet }) => (what.set ? `folder set ${what.set.name}` : what.org!);
+/** What a schedule is about, in a sentence: the org, or the folder set (with where it is, for a list). */
+const describe = (what: { org?: string; set?: ScheduledSet }, where = false) =>
+  what.set ? `folder set ${what.set.name}${where ? ` of ${what.set.project ?? what.set.repo}` : ""}` : what.org!;
+
+/**
+ * Checks a folder set as the index command will, before anything is written: a repository
+ * that would fail every night, or that carries a password or token in its URL (the script
+ * and the record are plain files), is refused. Returns the repository's source.
+ */
+async function checkSet(set: ScheduledSet, adding: boolean): Promise<string | undefined> {
+  const { checkFolderSet, parseRepoSpec, redactLocation, repoSource } = await import("@sf-agent-po/connectors");
+  if (adding) checkFolderSet({ name: set.name, packages: set.packages, ...(set.forOrg ? { forOrg: set.forOrg } : {}) });
+  if (!set.repo) return undefined;
+  const spec = parseRepoSpec(set.repo);
+  if (redactLocation(spec.location) !== spec.location) throw new Error("This repository's URL holds a password or token, which the schedule would write in plain files: sign in with gh auth login, glab auth login or your git credential manager, and give the URL without it.");
+  // The hash of where the repository is, which its spelling does not change (github:Acme/Mono, github:acme/mono).
+  return /#([0-9a-f]{8})$/.exec(repoSource(spec))?.[1] ?? repoSource(spec);
+}
 
 /** A scheduler's answer that the task was not there: nothing to remove. */
 const notThere = (err: unknown) => /cannot find|does not exist|not found|No such|Could not find/i.test((err as Error)?.message ?? "");
@@ -192,9 +208,10 @@ const notThere = (err: unknown) => /cannot find|does not exist|not found|No such
 export async function runSchedule(opts: ScheduleArgs, deps: ScheduleDeps): Promise<number> {
   const dir = path.join(opts.workspace, "schedule");
   if (opts.action === "list") return list(dir, deps);
+  const where = opts.set ? await checkSet(opts.set, opts.action === "add") : undefined;
   const what = { ...(opts.org ? { org: opts.org } : {}), ...(opts.set ? { set: opts.set } : {}) };
   const org = describe(what);
-  const n = names(opts.workspace, what, deps.platform);
+  const n = names(opts.workspace, { ...what, ...(where ? { where } : {}) }, deps.platform);
   const scheduler = deps.platform === "win32" ? "Task Scheduler" : deps.platform === "darwin" ? "launchd" : "cron";
   const recordFile = path.join(dir, `${n.file}.json`);
   const script = path.join(dir, `${n.file}${deps.platform === "win32" ? ".cmd" : ".sh"}`);
@@ -219,6 +236,14 @@ export async function runSchedule(opts: ScheduleArgs, deps: ScheduleDeps): Promi
   };
 
   if (opts.action === "remove") {
+    if (!previous && opts.set) {
+      // Not this spelling: name the workspace's sets of that name, rather than say it is done.
+      const others = (await readdir(dir).catch(() => [] as string[])).filter((f) => f.startsWith(`set-${opts.set!.name}-`) && f.endsWith(".json"));
+      if (others.length) {
+        const found = await Promise.all(others.map(async (f) => describe(JSON.parse(await readFile(path.join(dir, f), "utf8")) as Record_, true)));
+        throw new Error(`No schedule of ${org} of ${opts.set.project ?? opts.set.repo} is recorded in this workspace. Recorded: ${found.join("; ")}.`);
+      }
+    }
     await unregister();
     for (const f of [recordFile, script]) await rm(f, { force: true });
     deps.out(previous ? `The daily refresh of ${org} is removed.` : `${org} had no daily refresh recorded in this workspace; any ${scheduler} entry of it is removed.`);
@@ -228,7 +253,8 @@ export async function runSchedule(opts: ScheduleArgs, deps: ScheduleDeps): Promi
   await mkdir(dir, { recursive: true });
   const command = ["npx", "-y", "sf-agent-po@next", "index", ...indexArgs(what), "--workspace"];
   // In the .cmd file, an argument with a space or a sign cmd reads is put in double quotes.
-  const cmdArg = (a: string) => (/^[\w.@+:,\/-]+$/.test(a) ? a : `"${cmdq(a)}"`);
+  // Backslashes before the closing quote are doubled, so that D:\ does not end in \".
+  const cmdArg = (a: string) => (/^[\w.@+:,\/-]+$/.test(a) ? a : `"${cmdq(a).replace(/(\\+)$/, "$1$1")}"`);
   const env = carried(deps.env);
   if (deps.platform === "win32") {
     // A path with a letter outside ASCII must survive: cmd reads the lines after chcp as UTF-8.
@@ -242,7 +268,7 @@ export async function runSchedule(opts: ScheduleArgs, deps: ScheduleDeps): Promi
         `set "PATH=${cmdq(deps.pathEnv)}"`,
         ...env.map(([k, v]) => `set "${k}=${cmdq(v)}"`),
         `cd /d "${cmdq(deps.cwd)}"`,
-        `${command.map(cmdArg).join(" ")} "${cmdq(opts.workspace)}" > "${cmdq(log)}" 2>&1`,
+        `${[...command, opts.workspace].map((a, i, all) => (i === all.length - 1 ? `"${cmdq(a).replace(/(\\+)$/, "$1$1")}"` : cmdArg(a))).join(" ")} > "${cmdq(log)}" 2>&1`,
         "",
       ].join("\r\n"),
     );
@@ -373,7 +399,7 @@ async function list(dir: string, deps: ScheduleDeps): Promise<number> {
       const error = (timed > 0 ? lines[timed - 1] : lines.at(-1)) ?? "no output";
       how = indexed ? `; last run ${local(ran)}: ${indexed}` : timed >= 0 || lines.length ? `; last run ${local(ran)} failed or is still running: ${error}` : `; last run ${local(ran)}: no output`;
     }
-    deps.out(`${describe(r)}: every day at ${r.at} (${r.scheduler})${how || "; not run yet"}`);
+    deps.out(`${describe(r, true)}: every day at ${r.at} (${r.scheduler})${how || "; not run yet"}`);
   }
   return 0;
 }
