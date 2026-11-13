@@ -182,6 +182,21 @@ describe("metadata tools", () => {
     const listed = (await call("metadata_sources")).text;
     expect(listed).toContain("folder set extra (");
     expect(listed).not.toContain("Karim");
+
+    // The comparison of the pair, by presence.
+    const compared = (await call("metadata_compare", {})).text;
+    expect(compared).toMatch(new RegExp(`^Compared ${org} \\(indexed [^)]+\\) with folder set row \\(common-app, row-app\\) as `));
+    expect(compared).toContain("2 in both; 1 only in the org; 1 only in the folder set.");
+    expect(compared).toContain("- ApexClass: 2 / 1 / 1");
+    expect(compared).toMatch(/Not compared, since the org's index does not hold them: [^\n]*StaticResource \(1 in the set\)/);
+    expect(compared).toMatch(/Only in the org: [^\n]*\(1\):\n- ApexClass HandMade/);
+    expect(compared).toMatch(/Only in the folder set: [^\n]*\(1\):\n- ApexClass NotDeployed \(row-app\/force-app\/classes\/NotDeployed\.cls\)/);
+    expect((await call("metadata_compare", { source: org, types: ["Flow"] })).text).toContain("Nothing to compare for these types.");
+    expect((await call("metadata_compare", { source: set, limit: 1 })).text).toContain("- ApexClass HandMade");
+    const extra = /repo:sf-agent-mono-\w+:extra#[0-9a-f]{8}/.exec(listed)![0];
+    const none = await call("metadata_compare", { source: extra });
+    expect(none.isError).toBe(true);
+    expect(none.text).toContain(`${extra} has no indexed pair`);
     expect((await call("metadata_index", { project: root, packages: ["row-app"], set: "x", forOrg: "org:00D000000000001" })).text).toContain("18-character org id");
   });
 

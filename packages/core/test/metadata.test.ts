@@ -928,6 +928,19 @@ describe("scanProject on awkward projects", () => {
     expect((await scanProject(tmp)).components.filter((c) => c.type === "ApexClass").length).toBe(7);
   });
 
+  it("compares two snapshots by presence, without case, leaving out what is only referenced", async () => {
+    const index = fresh();
+    const c = (type: string, name: string, missing = false) => ({ type, name, attrs: {}, text: "", ...(missing ? { missing: true } : {}) }) as ParsedComponent;
+    const a = await index.build({ source: "org:a", kind: "org" }, async () => ({ components: [c("ApexClass", "Foo"), c("ApexClass", "OnlyOrg"), c("CustomObject", "Account", true)], edges: [], skipped: [] }));
+    const b = await index.build({ source: "repo:b", kind: "repo" }, async () => ({ components: [c("ApexClass", "foo"), c("ApexClass", "OnlyRepo"), c("Flow", "F"), c("CustomObject", "Account")], edges: [], skipped: [] }));
+    expect(index.presence(a.id, b.id)).toEqual([
+      { type: "ApexClass", both: 1, onlyA: ["OnlyOrg"], onlyB: ["OnlyRepo"] },
+      { type: "CustomObject", both: 0, onlyA: [], onlyB: ["Account"] },
+      { type: "Flow", both: 0, onlyA: [], onlyB: ["F"] },
+    ]);
+    expect(index.presence(a.id, b.id, ["Flow"])).toEqual([{ type: "Flow", both: 0, onlyA: [], onlyB: ["F"] }]);
+  });
+
   it("matches names without case, and links roll-ups and dependent picklists", async () => {
     write("objects/Policy__c.object", `<CustomObject>
       <fields><fullName>Holder__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></fields>

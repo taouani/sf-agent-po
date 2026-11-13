@@ -56,6 +56,8 @@ const MAX_SEARCHED_HITS = 200;
 /** A line of code is cut after this many characters, and one answer after about this many. */
 const MAX_LINE_CHARS = 400;
 const MAX_CODE_CHARS = 30_000;
+/** Components listed on each side of a comparison, at most. */
+const MAX_COMPARED = 300;
 
 /**
  * A component's details with long lists and maps cut to their first entries, and a count of
@@ -359,6 +361,69 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
         return text(out.join("\n\n"));
       },
     ),
+  );
+
+  server.registerTool(
+    "metadata_compare",
+    {
+      title: "Compare an org with its folder set",
+      description:
+        "Compares an org with the folder set of the repository it is deployed from (see metadata_index packages and forOrg), by presence: what is in both, what is only in the org (made by hand in the org, from another repository, or from a package), " +
+        "and what is only in the repository (not deployed yet, or deleted in the org and still in git). Counts by type, then the first components of each list. Content is not compared. " +
+        "Use it before a design or a release to say what the repository does not show, and narrow it with types.",
+      inputSchema: {
+        context: contextName,
+        source: sourceArg.describe("The org or the folder set, as metadata_sources lists it; needed when more than one pair is indexed."),
+        types: z.array(z.string()).optional().describe('Only these types, e.g. ["Flow", "ApexClass"].'),
+        limit: z.number().int().min(1).max(MAX_COMPARED).default(40).describe("How many components to list on each side."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    guard(async ({ context, source, types, limit }: { context: string; source?: string; types?: string[]; limit: number }) => {
+      const ready = readySources(index);
+      const pairs = (source ? [pick(index, source)] : ready.filter((s) => s.stats.target?.org))
+        .flatMap((s) => pairedSources(index, s).map((o) => (s.kind === "org" ? { org: s, set: o } : { org: o, set: s })))
+        .filter((p) => p.org.kind === "org" && p.set.stats.target);
+      if (!pairs.length) {
+        throw new Error(
+          source
+            ? `${source} has no indexed pair. Index the repository's folders for that org as a folder set (metadata_index with packages, set and forOrg), and the org itself.`
+            : "No org and folder set pair is indexed. Index the repository's folders for an org as a folder set (metadata_index with packages, set and forOrg), and the org itself.",
+        );
+      }
+      if (pairs.length > 1) throw new Error(`Name one side with source: ${pairs.map((p) => `${p.set.source} (for ${p.org.source})`).join(", ")}.`);
+      const { org, set } = pairs[0]!;
+      const pieces = new Pieces(kit.masker, context);
+      const rows = index.presence(org.id, set.id, types as ComponentType[] | undefined);
+      // The org is retrieved for some types only: a type it does not hold is not compared.
+      const covered = (t: string) => Boolean(org.stats.counts?.[t as ComponentType]);
+      const compared = rows.filter((r) => covered(r.type));
+      const skipped = rows.filter((r) => !covered(r.type) && r.onlyB.length);
+      const sum = (f: (r: (typeof rows)[number]) => number) => compared.reduce((n, r) => n + f(r), 0);
+      const folders = (await Promise.all(set.stats.target!.packages.map((p) => pieces.mask(p)))).join(", ");
+      const out = [
+        `Compared ${org.source} (indexed ${org.finishedAt ?? org.startedAt}) with folder set ${set.stats.target!.name} (${folders}) as ${set.source} (indexed ${set.finishedAt ?? set.startedAt}${set.revision ? `, commit ${set.revision.slice(0, 12)}` : ""}), by presence only.`,
+        `${sum((r) => r.both)} in both; ${sum((r) => r.onlyA.length)} only in the org; ${sum((r) => r.onlyB.length)} only in the folder set.`,
+      ];
+      if (!compared.length) out.push("Nothing to compare for these types.");
+      else out.push(`By type (in both / only in the org / only in the set):\n${compared.map((r) => `- ${r.type}: ${r.both} / ${r.onlyA.length} / ${r.onlyB.length}`).join("\n")}`);
+      if (skipped.length) out.push(`Not compared, since the org's index does not hold them: ${skipped.map((r) => `${r.type} (${r.onlyB.length} in the set)`).join(", ")}.`);
+      const list = async (which: "onlyA" | "onlyB", title: string, file: boolean) => {
+        const all = compared.flatMap((r) => r[which].map((name) => ({ type: r.type, name })));
+        if (!all.length) return;
+        const shown = await Promise.all(
+          all.slice(0, limit).map(async (c) => {
+            const at = file ? index.component(set.id, c.type, c.name)?.file : undefined;
+            return `- ${c.type} ${await pieces.name(c.type, c.name)}${at ? ` (${await pieces.mask(at)})` : ""}`;
+          }),
+        );
+        out.push(`${title} (${all.length}${all.length > shown.length ? `, first ${shown.length}` : ""}):\n${shown.join("\n")}`);
+      };
+      await list("onlyA", "Only in the org: made in the org, from another repository, or from a package (standard objects and fields the repository does not hold are here too)", false);
+      await list("onlyB", "Only in the folder set: not deployed yet, or deleted in the org and still in git", true);
+      out.push("A component in both may still differ: content is not compared. Open one on each side with metadata_component, or read its code with metadata_code.");
+      return text(out.join("\n\n"));
+    }),
   );
 
   server.registerTool(

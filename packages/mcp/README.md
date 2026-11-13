@@ -47,6 +47,8 @@ npx -y sf-agent-po@next index --project <folder> --packages common-app,row-app -
 The last form indexes the package folders one org is deployed from as a folder set of its
 own, linked to that org: the agents then say where an org's component is in the repository,
 or that it is only in the org, and a scope confirmed on one side applies on the other.
+`metadata_compare` lists, by type, what is only in the org, only in the set, or in both
+(presence only).
 
 A run reads only what changed since the last one: an org's components whose date changed
 (with profiles and permission sets every time), and the files whose content changed. An org
