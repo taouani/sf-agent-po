@@ -153,8 +153,8 @@ export function formatDuration(ms: number): string {
   return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
-/** Progress lines that say what was done ("Retrieved 14 parts, ..."), not what starts: notes. */
-const NOTE = /^Retrieved /;
+/** Progress lines that say what was done ("Retrieved 14 parts, ...") or why ("A full run: ..."), not what starts: notes. */
+const NOTE = /^(?:Retrieved |A full run: )/;
 /** The step a progress line starts: the parts of a retrieval, retrieved a few at a time, are one step. */
 const RETRIEVING = "Retrieving the metadata";
 const stepOf = (message: string) =>
@@ -320,6 +320,8 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
+        // The last retrieval was removed while the files were read.
+        await retrieved.cleared;
         options.progress?.("Writing the index");
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
       }),

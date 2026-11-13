@@ -9,6 +9,12 @@ import type { SfRunner } from "../src/salesforce.js";
 
 const ORG_ID = "00D000000000001AAA";
 
+/** A retrieval, once the last one is removed, as indexOrg waits for it. */
+const retrieveDone = async (options: Parameters<typeof retrieveOrgMetadata>[0]) => {
+  const r = await retrieveOrgMetadata(options);
+  await r.cleared;
+  return r;
+};
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** The folder an org's pointer file names as its last complete retrieval. */
 const current = (dir: string) => (JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { folder: string }).folder;
@@ -218,7 +224,7 @@ describe("retrieveOrgMetadata", () => {
     const dir = tmp();
     const calls: { args: string[]; cwd?: string }[] = [];
     const sf = fakeSf({ ApexClass: ["RenewalService"], CustomObject: ["Policy__c"], CustomField: ["Policy__c.Status__c"], EmailTemplate: ["x/y"] }, calls);
-    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const first = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(first).toMatchObject({ dir: expect.stringMatching(new RegExp(`^${escape(path.join(dir, ORG_ID))}-\\w+$`)), orgId: ORG_ID, alias: "dev", parts: 1, counts: { ApexClass: 1, CustomObject: 1, CustomField: 1 } });
     expect(JSON.stringify(first)).not.toContain("SECRET");
     const retrieve = calls.find((c) => c.args[1] === "retrieve")!;
@@ -232,7 +238,7 @@ describe("retrieveOrgMetadata", () => {
     expect(existsSync(path.join(first.dir, "metadata", "classes", "RenewalService.cls"))).toBe(true);
     expect(current(dir)).toBe(path.basename(first.dir));
     // A second retrieval replaces the first, without renaming a folder, and the first goes.
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(second.dir).not.toBe(first.dir);
     expect(readdirSync(dir).sort()).toEqual([path.basename(second.dir), `${ORG_ID}.json`].sort());
     expect(current(dir)).toBe(path.basename(second.dir));
@@ -240,7 +246,7 @@ describe("retrieveOrgMetadata", () => {
 
   it("keeps no secret, key, certificate, username or email in the retrieved files", async () => {
     const dir = tmp();
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ConnectedApp: ["Mobile"] }) });
+    const r = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf({ ConnectedApp: ["Mobile"] }) });
     const kept = readFileSync(path.join(r.dir, "metadata", "connectedApps", "Mobile.connectedApp"), "utf8");
     for (const gone of ["3MVG9", "SECRET", "CERTIFICATE", "jane.doe", "consumerKey"]) expect(kept).not.toContain(gone);
     expect(kept).toBe(`<?xml version="1.0"?>\n<ConnectedApp>\n    <label>Mobile</label>\n    <oauthConfig>\n        <callbackUrl>https://app.example.com/cb</callbackUrl>\n        <scopes>Api</scopes>\n    </oauthConfig>\n</ConnectedApp>\n`);
@@ -260,7 +266,7 @@ describe("retrieveOrgMetadata", () => {
 
   it("keeps only the values of custom metadata records that can name an object or field", async () => {
     const dir = tmp();
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ CustomMetadata: ["Map.Industry"] }) });
+    const r = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf({ CustomMetadata: ["Map.Industry"] }) });
     const kept = readFileSync(path.join(r.dir, "metadata", "customMetadata", "Map.Industry.md"), "utf8");
     for (const gone of ["Dupont", "AKIA", "jane.doe", "Key__c", "Empty__c", "label"]) expect(kept).not.toContain(gone);
     expect(kept).toBe(
@@ -286,7 +292,7 @@ describe("retrieveOrgMetadata", () => {
   it("merges a profile retrieved in several parts", async () => {
     const dir = tmp();
     const big = Array.from({ length: 30 }, (_, i) => `Obj${i}__c`);
-    const retrieved = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ CustomObject: big, Profile: ["Admin"] }), maxFilesPerRetrieve: 20 });
+    const retrieved = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf({ CustomObject: big, Profile: ["Admin"] }), maxFilesPerRetrieve: 20 });
     expect(retrieved.parts).toBe(2);
     const profiles = readdirSync(retrieved.dir, { recursive: true }).filter((f) => String(f).endsWith(".profile"));
     expect(profiles).toHaveLength(1);
@@ -306,7 +312,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const calls: { args: string[]; cwd?: string }[] = [];
     const asked: { type: string; members: string[] }[][] = [];
     const sf = fakeSf(org, calls, { dates, asked });
-    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const first = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(first.incremental).toBeUndefined();
     const tree = (r: { dir: string }) => path.join(r.dir, "metadata");
     const profile = (r: { dir: string }) => readFileSync(path.join(tree(r), "profiles", "Admin.profile"), "utf8");
@@ -314,7 +320,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
 
     // Nothing changed: only the profile is retrieved, and it keeps its access to everything.
     calls.length = 0;
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(second.incremental).toEqual({ retrieved: 1, deleted: 0 });
     expect(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")).toContain('"layout":2');
     expect(readdirSync(path.join(tree(second), "classes")).sort()).toEqual(["A.cls", "A.cls-meta.xml", "B.cls", "B.cls-meta.xml", "C.cls", "C.cls-meta.xml"]);
@@ -327,7 +333,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     org.ApexClass = ["A", "B"];
     org.CustomField = ["Policy__c.Status__c", "Policy__c.Premium__c"];
     asked.length = 0;
-    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const third = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(third.incremental).toEqual({ retrieved: 1 + 1 + 2 + 1, deleted: 1 });
     // B, the object with all its fields, and the profile; not A.
     expect(asked).toEqual([
@@ -350,18 +356,18 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const dir = tmp();
     const org: Record<string, string[]> = { ApexClass: ["A", "B"], Profile: ["Admin"] };
     const sf = fakeSf(org, [], { dates: {} });
-    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeDefined();
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, full: true })).incremental).toBeUndefined();
+    await retrieveDone({ targetOrg: "dev", dir, sf });
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf })).incremental).toBeDefined();
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf, full: true })).incremental).toBeUndefined();
     const file = path.join(dir, `${ORG_ID}.json`);
     const pointer = JSON.parse(readFileSync(file, "utf8")) as { fullAt: string };
     writeFileSync(file, JSON.stringify({ ...pointer, fullAt: new Date(Date.now() - 8 * 86_400_000).toISOString() }));
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
     org.Profile = ["Admin", "Sales"];
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
     // A retrieval by an earlier version (no layout) is redone in full too.
     writeFileSync(file, JSON.stringify({ folder: (JSON.parse(readFileSync(file, "utf8")) as { folder: string }).folder, retrievedAt: pointer.fullAt }));
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf })).incremental).toBeUndefined();
   });
 
   it("replaces permission sets, retrieves again what the org did not return, and runs in full without the last tree", async () => {
@@ -415,20 +421,20 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const calls: { args: string[]; cwd?: string }[] = [];
     const asked: { type: string; members: string[] }[][] = [];
     const sf = fakeSf(org, calls, { dates, asked });
-    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    const first = await retrieveDone({ targetOrg: "dev", dir, sf, maxReports: 2 });
     expect(calls.some((c) => c.args.includes("--folder") && c.args[c.args.indexOf("--folder") + 1] === "Sales")).toBe(true);
     expect(first.warnings).toContain("1 report was left out: only the 2 most recently changed are retrieved");
     expect(readdirSync(path.join(first.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
     expect(existsSync(path.join(first.dir, "metadata", "reports", "Sales-meta.xml"))).toBe(true);
     // Nothing changed: the reports keep their dates and are not retrieved again.
     asked.length = 0;
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf, maxReports: 2 });
     expect(second.incremental).toBeDefined();
     expect(asked.flat().find((e) => e.type === "Report")?.members ?? []).toEqual(["Sales"]);
     expect(readdirSync(path.join(second.dir, "metadata", "reports", "Sales")).sort()).toEqual(["B.report", "C.report"]);
     // A report the cap leaves out is not counted as deleted.
     dates["Report:Sales/A"] = "2026-11-10T00:00:00.000Z";
-    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, maxReports: 2 });
+    const third = await retrieveDone({ targetOrg: "dev", dir, sf, maxReports: 2 });
     expect(third.incremental?.deleted).toBe(0);
     expect(readdirSync(path.join(third.dir, "metadata", "reports", "Sales")).sort()).toEqual(["A.report", "B.report"]);
   });
@@ -452,14 +458,14 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const calls: { args: string[]; cwd?: string }[] = [];
     const asked: { type: string; members: string[] }[][] = [];
     const sf = fakeSf(org, calls, { dates: {}, asked, soql });
-    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(calls.filter((c) => c.args.includes("--folder"))).toEqual([]);
     expect(calls.filter((c) => c.args[0] === "data").length).toBe(3);
     const pointer = JSON.parse(readFileSync(path.join(dir, `${ORG_ID}.json`), "utf8")) as { dates: Record<string, Record<string, string>> };
     expect(pointer.dates.Report).toMatchObject({ "Sales/Q1/A": "2026-02-01T00:00:00.000+0000", "unfiled$public/U": "2026-02-02T00:00:00.000+0000" });
     // Nothing changed: no report or dashboard, nor their folders, is retrieved again.
     asked.length = 0;
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(second.incremental).toBeDefined();
     expect(asked.flat().filter((e) => e.type === "Report" || e.type === "Dashboard")).toEqual(
       // unfiled$public is no folder the query lists: it has no date, so it is asked again.
@@ -488,7 +494,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const calls: { args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }[] = [];
     const asked: { type: string; members: string[] }[][] = [];
     const sf = fakeSf(org, calls, { dates: {}, asked, soql });
-    const first = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const first = await retrieveDone({ targetOrg: "dev", dir, sf });
     // No listing per folder, and no cap of 10,000 rows on the queries.
     expect(calls.filter((c) => c.args.includes("EmailTemplate"))).toEqual([]);
     const queries = calls.filter((c) => c.args[0] === "data");
@@ -508,7 +514,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // One template changed: it alone is retrieved again; the others stay from the last run.
     soql.EmailTemplate![1]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
     asked.length = 0;
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(second.incremental).toBeDefined();
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Closed"] }]);
     expect(readdirSync(path.join(second.dir, "metadata", "email", "Care")).sort()).toEqual(["Closed.email", "Closed.email-meta.xml", "Sub", "Sub-meta.xml", "Welcome.email", "Welcome.email-meta.xml"]);
@@ -516,17 +522,17 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     org.EmailTemplate = org.EmailTemplate!.filter((m) => m !== "Care/Welcome").concat("Care/acme__Promo");
     soql.EmailTemplate = soql.EmailTemplate!.filter((t) => t.DeveloperName !== "Welcome").concat({ DeveloperName: "Promo", NamespacePrefix: "acme", FolderId: "00l1", LastModifiedDate: "2026-04-01T00:00:00.000+0000" });
     asked.length = 0;
-    const moved = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const moved = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(moved.incremental?.deleted).toBe(1);
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/acme__Promo"] }]);
     expect(readdirSync(path.join(moved.dir, "metadata", "email", "Care")).filter((f) => f.endsWith(".email")).sort()).toEqual(["Closed.email", "acme__Promo.email"]);
     // Without the queries, every template is retrieved again, and the run says so.
     delete soql.EmailTemplate;
     asked.length = 0;
-    const third = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const third = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
     // A full run retrieves every template anyway: nothing to say.
-    expect((await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, full: true })).warnings).toEqual([]);
+    expect((await retrieveDone({ targetOrg: "dev", dir, sf, full: true })).warnings).toEqual([]);
     expect(third.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
   });
 
@@ -549,7 +555,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const progress: string[] = [];
     // Ranges of more than 2 templates are too large here: the run halves them until they fit.
     const sf = fakeSf(org, calls, { dates: {}, asked, soql, maxRows: 2 });
-    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2, progress: (m) => progress.push(m) });
+    const run = await retrieveDone({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2, progress: (m) => progress.push(m) });
     expect(progress).toContain("Reading 5 email templates by query");
     // What the queries did not find (Care/Lost), and the folders, are retrieved.
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care", "Care/Lost", "unfiled$public"] }]);
@@ -574,7 +580,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     soql.EmailTemplate![0]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
     asked.length = 0;
     calls.length = 0;
-    const next = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2 });
+    const next = await retrieveDone({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2 });
     expect(next.incremental).toBeDefined();
     expect(calls.filter((c) => c.args.some((a) => a.startsWith("template-")))).toEqual([]);
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Html", "Care/Lost"] }]);
@@ -589,7 +595,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
       return result;
     };
     asked.length = 0;
-    const broken = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: failing, queryTemplatesFrom: 2 });
+    const broken = await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: failing, queryTemplatesFrom: 2 });
     expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
     expect(broken.warnings).toContain("The email templates could not be read by query, so they are retrieved");
     // The retrieved Html.email, not the queried one.
@@ -597,9 +603,44 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // Without the queries, the templates are retrieved, and the run says so.
     delete soql.EmailTemplate;
     asked.length = 0;
-    const again = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2 });
+    const again = await retrieveDone({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2 });
     expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
     expect(again.warnings).toContain("The email templates could not be read by query, so they are retrieved");
+  });
+
+  it("says why a run retrieves everything", async () => {
+    const dir = tmp();
+    const org: Record<string, string[]> = { ApexClass: ["A"], Profile: ["Admin"] };
+    const sf = fakeSf(org, [], { dates: {} });
+    const said = async (options: { full?: boolean } = {}) => {
+      const progress: string[] = [];
+      await retrieveDone({ targetOrg: "dev", dir, sf, progress: (m) => progress.push(m), ...options });
+      return progress.filter((m) => m.startsWith("A full run"));
+    };
+    expect(await said()).toEqual(["A full run: there is no earlier retrieval"]);
+    expect(await said()).toEqual([]);
+    expect(await said({ full: true })).toEqual(["A full run: asked for"]);
+    org.Profile!.push("Support");
+    expect(await said()).toEqual(["A full run: the profile Support is new"]);
+    // The note goes under the step it came in, and takes no time of its own.
+    const timer = new StepTimer(() => 0);
+    timer.mark("Reading when each component of dev last changed");
+    timer.mark("A full run: asked for");
+    expect(timer.lines()).toEqual(["Time per step:", "  Reading when each component of dev last changed: under a second", "    A full run: asked for", "  In all: under a second"]);
+  });
+
+  it("moves whole folders the tree lacks, and still rewrites the files that must change", async () => {
+    const dir = tmp();
+    const classes = Array.from({ length: 6 }, (_, i) => `C${i}`);
+    const org: Record<string, string[]> = { ApexClass: classes, CustomMetadata: ["Map.Industry"], ConnectedApp: ["Mobile"] };
+    // Three parts: the classes folder goes whole from the first, file by file from the others.
+    const r = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf(org, [], { dates: {} }), maxFilesPerRetrieve: 6 });
+    expect(r.parts).toBeGreaterThan(1);
+    const tree = path.join(r.dir, "metadata");
+    expect(readdirSync(path.join(tree, "classes")).filter((f) => f.endsWith(".cls")).sort()).toEqual(classes.map((c) => `${c}.cls`));
+    expect(readFileSync(path.join(tree, "customMetadata", "Map.Industry.md"), "utf8")).not.toContain("Jeanne Dupont");
+    expect(readFileSync(path.join(tree, "connectedApps", "Mobile.connectedApp"), "utf8")).not.toContain("consumerSecret>");
+    expect(readdirSync(r.dir)).toEqual(["metadata"]);
   });
 
   it("reads the bodies of many templates a few ranges at once", async () => {
@@ -634,7 +675,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
         running--;
       }
     };
-    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2, templatesPerQuery: 5 });
+    const run = await retrieveDone({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2, templatesPerQuery: 5 });
     // 12 templates in ranges of at most 5, three read at once, each to a file of its own; the
     // private templates between them are in no range.
     expect(spans.map((r) => r.replace(/^-/, "0-")).sort()).toEqual(["0-4", "5-5", "66-70", "71-71"].sort());
@@ -655,9 +696,9 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     // As the CLI returns past its row limit: fewer records than the org holds.
     const sf: SfRunner = async (args, opts) =>
       args[0] === "data" ? { records: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }], totalSize: 20_000, done: true } : base(args, opts);
-    await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    await retrieveDone({ targetOrg: "dev", dir, sf });
     calls.length = 0;
-    const second = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const second = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(second.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
     // Reports are listed folder by folder instead.
     expect(calls.filter((c) => c.args.includes("--folder")).map((c) => c.args[c.args.indexOf("--folder") + 1])).toEqual(["Sales"]);
@@ -691,7 +732,7 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
   it("reports what the org could not return, and fails when it returns nothing", async () => {
     const dir = tmp();
     const sf = fakeSf({ ApexClass: ["A"] }, [], { messages: [{ problem: "Entity of type 'ApexClass' named 'Gone' cannot be found" }] });
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const r = await retrieveDone({ targetOrg: "dev", dir, sf });
     expect(r.warnings).toEqual(["Entity of type 'ApexClass' named 'Gone' cannot be found"]);
     const empty = fakeSf({ ApexClass: ["A"] }, [], { empty: true, messages: [{ problem: "INSUFFICIENT_ACCESS" }] });
     await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: empty })).rejects.toThrow(/returned nothing for part 1: INSUFFICIENT_ACCESS/);
@@ -705,7 +746,7 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     const dir = tmp();
     const calls: { args: string[]; cwd?: string }[] = [];
     const sf = fakeSf({ ApexClass: ["A", "B", "C", "D"] }, calls, { limit: 2 });
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", org: { id: ORG_ID }, dir, sf });
+    const r = await retrieveDone({ targetOrg: "dev", org: { id: ORG_ID }, dir, sf });
     expect(r.parts).toBe(2);
     expect(calls.some((c) => c.args[1] === "display")).toBe(false);
     expect(calls.find((c) => c.args[1] === "generate")!.args).toContain("unlocked");
@@ -736,7 +777,7 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     const two = slow();
     const progress: string[] = [];
     // A part per class: the profile goes with each, and is merged back.
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: two.sf, maxFilesPerRetrieve: 2, progress: (m) => progress.push(m) });
+    const r = await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: two.sf, maxFilesPerRetrieve: 2, progress: (m) => progress.push(m) });
     expect(r.parts).toBe(6);
     expect(two.state.most).toBe(2);
     expect(progress).toContain("Retrieved 6 parts, 2 at a time; the longest took 0s");
@@ -744,14 +785,14 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     const profile = readFileSync(path.join(r.dir, "metadata", "profiles", "Admin.profile"), "utf8");
     for (const c of org.ApexClass) expect(profile).toContain(`<apexClass>${c}</apexClass>`);
     const one = slow();
-    await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: one.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 1 });
+    await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: one.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 1 });
     expect(one.state.most).toBe(1);
     // A setting that is not a whole number falls back to the default.
     const odd = slow();
-    await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: odd.sf, maxFilesPerRetrieve: 2, parallelRetrieves: Number.NaN });
+    await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: odd.sf, maxFilesPerRetrieve: 2, parallelRetrieves: Number.NaN });
     expect(odd.state.most).toBe(2);
     const many = slow();
-    await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: many.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 9 });
+    await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: many.sf, maxFilesPerRetrieve: 2, parallelRetrieves: 9 });
     expect(many.state.most).toBe(3);
     // A part that fails: the one running beside it ends before the run fails and its folder goes.
     const failing = slow("B");
@@ -768,7 +809,7 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     const classes = ["A", "B", "C", "D", "E", "F", "G", "H"];
     const split = slow(undefined, { ApexClass: classes, Profile: ["Admin"] }, { limit: 3 });
     const said: string[] = [];
-    const s = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf: split.sf, progress: (m) => said.push(m) });
+    const s = await retrieveDone({ targetOrg: "dev", dir: tmp(), sf: split.sf, progress: (m) => said.push(m) });
     expect(split.state.most).toBe(2);
     expect(said).toContain("Part 1 is too large for one retrieve, so it is retrieved in 2 pieces");
     expect(said.some((m) => /^Retrieving part 1\.\d+(\.\d+)*$/.test(m))).toBe(true);
@@ -790,9 +831,9 @@ describe("retrieveOrgMetadata, when things go wrong", () => {
     await expect(retrieveOrgMetadata({ targetOrg: "dev", dir, sf: failing })).rejects.toThrow("INVALID_SESSION_ID");
     expect(readdirSync(dir).sort()).toEqual([ORG_ID, `${ORG_ID}-dead`, "00D000000000002AAA-x"].sort());
     // A run that completes removes the earlier version's folder; a dead run's goes at the next start.
-    const r = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
+    const r = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
     expect(readdirSync(dir).sort()).toEqual([`${ORG_ID}-dead`, "00D000000000002AAA-x", path.basename(r.dir), `${ORG_ID}.json`].sort());
-    const again = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
+    const again = await retrieveDone({ targetOrg: "dev", dir, sf: fakeSf({ ApexClass: ["A"] }) });
     expect(readdirSync(dir).sort()).toEqual(["00D000000000002AAA-x", path.basename(again.dir), `${ORG_ID}.json`].sort());
   });
 

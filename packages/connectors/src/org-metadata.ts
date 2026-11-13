@@ -294,6 +294,12 @@ export interface OrgRetrieval {
   retrievedAt: string;
   /** For a run that retrieved only what changed: how many members it retrieved, and how many were deleted. */
   incremental?: { retrieved: number; deleted: number };
+  /**
+   * The removal of the last retrieval, set aside and removed while the caller reads this one
+   * (tens of thousands of files take minutes on Windows). It never fails; awaiting it makes
+   * sure it is done.
+   */
+  cleared: Promise<void>;
 }
 
 export interface RetrieveOptions {
@@ -426,7 +432,10 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     // antivirus) means a full run, as does a profile it has no copy of to merge into.
     const base = previous ? path.join(options.dir, previous, RETRIEVAL_TREE) : undefined;
     const baseProfiles = base ? await profilesIn(base) : undefined;
-    const plan = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : undefined;
+    const since = baseProfiles ? changesSince(pointer, entries, dates, types, baseProfiles, { full: options.full, now: Date.now(), leftOut: capped.dropped }) : { why: previous ? "the last retrieval's files are gone" : "there is no earlier retrieval" };
+    const plan = "changed" in since ? since : undefined;
+    // Said, since a full run takes much longer than one that retrieves what changed.
+    if (!plan) progress(`A full run: ${"why" in since ? since.why : ""}`);
     // Said only when it costs something: a full run retrieves every template anyway.
     if (plan && !dates.EmailTemplate && entries.some((e) => e.type === "EmailTemplate")) warnings.push("The dates of email templates could not be read, so all of them are retrieved again");
     let wanted = plan ? entries.map((e) => ({ type: e.type, members: e.members.filter((m) => ALWAYS.has(e.type) || plan.changed.has(groupOf(e.type, m))) })).filter((e) => e.members.length) : entries;
@@ -555,9 +564,43 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       heartbeat();
       progress("Putting the retrieved files together");
     }
-    // Most files are moved as they are, a few at once: tens of thousands of files read and
-    // written again one by one took minutes on Windows. A file the run must change (custom
-    // metadata, secrets, access merged with the last run) is read and written.
+    // Files are moved as they are: tens of thousands of files read and written again one by
+    // one took minutes on Windows. A folder the tree does not have yet goes whole, unless a
+    // file in it must change; other files go one by one, a few at once. A file the run must
+    // change (custom metadata, secrets, access merged with the last run) is read and written.
+    const inTree = (f: string) => (f === "unpackaged" ? "" : f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f);
+    const mustChange = (rel: string) => {
+      const kind = classifyFile(rel)?.type;
+      return kind !== undefined && (kind === "CustomMetadata" || Object.hasOwn(SECRET_ELEMENTS, kind) || Object.hasOwn(USER_ELEMENTS, kind) || (plan !== undefined && MERGED.has(kind)));
+    };
+    const exists = (p: string) => stat(p).then(() => true, () => false);
+    /** Moves the folders of `files` (from `depth` segments down) the tree lacks; returns the files left to move. */
+    const moveFolders = async (part: string, files: string[], dirty: ReadonlySet<string>, depth: number): Promise<string[]> => {
+      const left: string[] = [];
+      const byFolder = new Map<string, string[]>();
+      for (const f of files) {
+        const segments = f.split("/");
+        if (segments.length <= depth) left.push(f);
+        else {
+          const folder = segments.slice(0, depth).join("/");
+          const inside = byFolder.get(folder);
+          if (inside) inside.push(f);
+          else byFolder.set(folder, [f]);
+        }
+      }
+      for (const [folder, inside] of byFolder) {
+        const rel = inTree(folder);
+        if (rel && !dirty.has(folder) && !(await exists(path.join(tree, rel)))) {
+          await mkdir(path.dirname(path.join(tree, rel)), { recursive: true });
+          // Where Windows holds a file in it, the folder's files go one by one.
+          const moved = await rename(path.join(work, part, folder), path.join(tree, rel)).then(() => true, () => false);
+          if (!moved) left.push(...inside);
+          continue;
+        }
+        left.push(...(await moveFolders(part, inside, dirty, depth + 1)));
+      }
+      return left;
+    };
     const made = new Set<string>();
     const folderFor = async (target: string) => {
       const dir = path.dirname(target);
@@ -587,7 +630,14 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text) : withoutSecrets(kind!, text));
     };
     for (const part of [...parts, ...(queried ? [QUERIED] : [])]) {
-      const files = (await filesUnder(path.join(work, part))).filter((f) => f !== "package.xml" && f !== "unpackaged/package.xml");
+      const all = (await filesUnder(path.join(work, part))).filter((f) => f !== "package.xml" && f !== "unpackaged/package.xml");
+      // The folders holding a file that must change, which do not go whole.
+      const dirty = new Set<string>();
+      for (const f of all) {
+        if (!mustChange(inTree(f))) continue;
+        for (let i = f.indexOf("/"); i > 0; i = f.indexOf("/", i + 1)) dirty.add(f.slice(0, i));
+      }
+      const files = await moveFolders(part, all, dirty, 1);
       let at = 0;
       let stopped = false;
       const mover = async () => {
@@ -643,7 +693,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       dates: keptDates,
     };
     await writeRetrying(pointerFile(options.dir, orgId), JSON.stringify(next));
-    await removeStale(options.dir, orgId, { only: previous });
+    const cleared = setAside(options.dir, orgId, previous);
     return {
       dir: work,
       orgId,
@@ -653,6 +703,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       warnings,
       retrievedAt,
       ...(plan ? { incremental: { retrieved: retrievedCount, deleted: plan.deleted } } : {}),
+      cleared,
     };
   } catch (err) {
     await remove(work).catch(() => {});
@@ -691,17 +742,20 @@ function changesSince(
   types: readonly string[],
   baseProfiles: Set<string>,
   { full, now, leftOut }: { full?: boolean; now: number; /** Reports the cap left out: their files go, but they were not deleted. */ leftOut?: ReadonlySet<string> },
-): { changed: Set<string>; deleted: number } | undefined {
-  if (full || !pointer || pointer.layout !== LAYOUT || !pointer.fullAt || !pointer.members || !pointer.dates) return undefined;
+): { changed: Set<string>; deleted: number } | { why: string } {
+  if (full) return { why: "asked for" };
+  if (!pointer || !pointer.fullAt || !pointer.members || !pointer.dates) return { why: "no earlier retrieval says what it holds" };
+  if (pointer.layout !== LAYOUT) return { why: "the last retrieval was made by an earlier version" };
   // An unreadable date counts as old.
-  if (!(now - Date.parse(pointer.fullAt) < FULL_RETRIEVE_AFTER_MS)) return undefined;
-  if ([...(pointer.types ?? [])].sort().join() !== [...types].sort().join()) return undefined;
+  if (!(now - Date.parse(pointer.fullAt) < FULL_RETRIEVE_AFTER_MS)) return { why: "the last full run is a week old or more" };
+  if ([...(pointer.types ?? [])].sort().join() !== [...types].sort().join()) return { why: "the types retrieved changed" };
   const before = new Set(Object.entries(pointer.members).flatMap(([type, members]) => members.map((m) => `${type}\0${m}`)));
   const changed = new Set<string>();
   for (const e of entries) {
     for (const m of e.members) {
       if (MERGED.has(e.type)) {
-        if (!before.has(`${e.type}\0${m}`) || !baseProfiles.has(m)) return undefined;
+        if (!before.has(`${e.type}\0${m}`)) return { why: `the ${e.type.toLowerCase()} ${m} is new` };
+        if (!baseProfiles.has(m)) return { why: `the last retrieval has no file for the ${e.type.toLowerCase()} ${m}` };
         continue;
       }
       if (ALWAYS.has(e.type)) continue;
@@ -1106,6 +1160,23 @@ async function removeStale(dir: string, orgId: string, which: { keep: string } |
       "workOnly" in which ? work : "only" in which ? f === which.only || f === orgId || work : work || f === orgId || (f.startsWith(`${orgId}-`) && f !== which.keep);
     if (stale) await remove(path.join(dir, f)).catch(() => {});
   }
+}
+
+/**
+ * Removes the last retrieval once a new one is complete: renamed out of the way at once (an
+ * old folder, which nothing holds any more), then removed with an earlier version's folder
+ * and old work folders, which the next run's start removes too if this one is cut short.
+ * Where Windows refuses the rename, the folder is removed where it is.
+ */
+async function setAside(dir: string, orgId: string, previous: string | undefined): Promise<void> {
+  if (previous) {
+    const moved = await rename(path.join(dir, previous), path.join(dir, `.old-${previous}`)).then(
+      () => true,
+      () => false,
+    );
+    if (!moved) await remove(path.join(dir, previous)).catch(() => {});
+  }
+  await removeStale(dir, orgId, { only: undefined }).catch(() => {});
 }
 
 /**
