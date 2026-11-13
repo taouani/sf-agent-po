@@ -50,6 +50,8 @@ const formatMinutes = (ms: number) => {
 };
 /** One retrieve may return 10,000 files; a little room is kept. */
 export const MAX_FILES_PER_RETRIEVE = 9_000;
+/** Files moved or written at once when the parts are put together. */
+const FILES_AT_ONCE = 16;
 /** Elements a profile lists per component: what a retrieve in several parts must merge. */
 const PROFILE_LISTS = [
   "applicationVisibilities", "classAccesses", "customMetadataTypeAccesses", "customPermissions", "customSettingAccesses",
@@ -327,6 +329,8 @@ export interface RetrieveOptions {
   parallelRetrieves?: number;
   /** From this many email templates to retrieve, they are read by query (QUERY_TEMPLATES_FROM by default). */
   queryTemplatesFrom?: number;
+  /** Email templates read by one query at first (TEMPLATES_PER_QUERY by default). */
+  templatesPerQuery?: number;
 }
 
 /** The org id from `sf org display`, checked. */
@@ -439,7 +443,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     if (templates.length >= (options.queryTemplatesFrom ?? QUERY_TEMPLATES_FROM) && templates.length * 2 >= all.length) {
       progress(`Reading ${templates.length.toLocaleString("en")} email templates by query`);
       const out = path.join(work, QUERIED);
-      const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat).catch(async () => {
+      const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat, options.templatesPerQuery).catch(async () => {
         await remove(out);
         return undefined;
       });
@@ -551,23 +555,57 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
       heartbeat();
       progress("Putting the retrieved files together");
     }
+    // Most files are moved as they are, a few at once: tens of thousands of files read and
+    // written again one by one took minutes on Windows. A file the run must change (custom
+    // metadata, secrets, access merged with the last run) is read and written.
+    const made = new Set<string>();
+    const folderFor = async (target: string) => {
+      const dir = path.dirname(target);
+      if (made.has(dir)) return;
+      await mkdir(dir, { recursive: true });
+      made.add(dir);
+    };
+    const place = async (from: string, rel: string) => {
+      const target = path.join(tree, rel);
+      const kind = classifyFile(rel)?.type;
+      const changes = kind === "CustomMetadata" || (kind !== undefined && (Object.hasOwn(SECRET_ELEMENTS, kind) || Object.hasOwn(USER_ELEMENTS, kind)));
+      if (plan && kind && MERGED.has(kind)) {
+        const last = await readFile(target, "utf8").catch(() => undefined);
+        if (last !== undefined) {
+          await writeFile(target, mergeAccess(last, await readFile(from, "utf8"), (type, member) => plan.changed.has(groupOf(type, member))));
+          return;
+        }
+      }
+      await folderFor(target);
+      if (!changes) {
+        // A move may fail where Windows or a virus scanner holds the file: it is copied then.
+        if (await rename(from, target).then(() => true, () => false)) return;
+        await writeFile(target, await readFile(from));
+        return;
+      }
+      const text = await readFile(from, "utf8");
+      await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text) : withoutSecrets(kind!, text));
+    };
     for (const part of [...parts, ...(queried ? [QUERIED] : [])]) {
-      for (const f of await filesUnder(path.join(work, part))) {
-        const rel = f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f;
-        if (rel === "package.xml") continue;
-        const target = path.join(tree, rel);
-        const kind = classifyFile(rel)?.type;
-        const text = await readFile(path.join(work, part, f));
-        if (plan && kind && MERGED.has(kind)) {
-          const last = await readFile(target, "utf8").catch(() => undefined);
-          if (last !== undefined) {
-            await writeFile(target, mergeAccess(last, text.toString("utf8"), (type, member) => plan.changed.has(groupOf(type, member))));
-            continue;
+      const files = (await filesUnder(path.join(work, part))).filter((f) => f !== "package.xml" && f !== "unpackaged/package.xml");
+      let at = 0;
+      let stopped = false;
+      const mover = async () => {
+        while (!stopped && at < files.length) {
+          const f = files[at++]!;
+          try {
+            await place(path.join(work, part, f), f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f);
+          } catch (err) {
+            stopped = true;
+            throw err;
           }
         }
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, kind === "CustomMetadata" ? recordNamesOnly(text.toString("utf8")) : kind && (Object.hasOwn(SECRET_ELEMENTS, kind) || Object.hasOwn(USER_ELEMENTS, kind)) ? withoutSecrets(kind, text.toString("utf8")) : text);
-      }
+      };
+      // Every mover is waited for, so that none still writes when the folder goes.
+      const moved = await Promise.allSettled(Array.from({ length: Math.min(FILES_AT_ONCE, files.length) }, mover));
+      const refused = moved.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (refused) throw refused.reason;
+      heartbeat();
       await remove(path.join(work, part));
     }
     // Only the tree is kept. The project file must go, as it would steer the scan to its
@@ -808,20 +846,26 @@ async function soqlRows(sf: SfRunner, targetOrg: string, name: string, soql: str
 
 /** From this many email templates to retrieve, they are read by query rather than retrieved. */
 export const QUERY_TEMPLATES_FROM = 500;
-/** Templates read by one query at first: halved while the CLI's output is too large. */
-const TEMPLATES_PER_QUERY = 2_000;
+/** Templates read by one query at first: a range too large for the CLI's output is halved. */
+const TEMPLATES_PER_QUERY = 500;
+/** Template queries run at once: each mostly waits for Salesforce and the network. */
+const TEMPLATE_QUERIES_AT_ONCE = 3;
+/** Templates not wanted, one after another, at which a range of wanted ones ends. */
+const UNWANTED_GAP = 50;
 /** An error from output too large to take in one piece. */
 const tooMuchOutput = (err: unknown) => /maxBuffer|unexpected output|EXCEEDED_MAX_SIZE_REQUEST|response size|Invalid string length|heap out of memory/i.test((err as Error)?.message ?? "");
 /** A record id, as it may be quoted in a query. */
 const RECORD_ID = /^[A-Za-z0-9]{15,18}$/;
 
 /**
- * Email templates read with paged queries instead of a retrieve, and written where a retrieve
+ * Email templates read with queries instead of a retrieve, and written where a retrieve
  * puts them (email/<folder>/<name>.email and its -meta.xml) with what the index reads of
  * them: the body (Visualforce markup, HTML or text), the subject and the plain text. Tens of
- * thousands of templates take many retrieves of 9,000 files, and a query reads a few
- * thousand at a time. Only `wanted` members are written; returns those written. A template the
- * queries do not find (one of another namespace's folders, say) is left to the retrieve.
+ * thousands of templates take many retrieves of 9,000 files. A first query lists the
+ * templates without their bodies; the bodies of those wanted are then read by ranges of ids,
+ * a few queries at once, and a range whose output is too large is read in two halves. Only
+ * `wanted` members are written; returns those written. A template the queries do not find
+ * (one of another namespace's folders, say) is left to the retrieve.
  */
 async function queryTemplates(
   sf: SfRunner,
@@ -830,56 +874,100 @@ async function queryTemplates(
   out: string,
   run: { cwd: string; timeoutMs: number },
   heartbeat: () => void,
+  perQuery = TEMPLATES_PER_QUERY,
 ): Promise<Set<string>> {
   const pathOf = folderPaths(await folderQuery(sf, targetOrg, "emailFolders", run));
+  // In the order of the org's ids, which the ranges below follow.
+  const listed = await soqlRows(sf, targetOrg, "template-ids", "SELECT Id, DeveloperName, NamespacePrefix, FolderId FROM EmailTemplate ORDER BY Id", run);
+  heartbeat();
+  const memberOf = new Map<string, string>();
+  for (const t of listed) {
+    const name = apiName(t);
+    const folder = pathOf(t.FolderId) ?? (typeof t.FolderId === "string" && t.FolderId.startsWith("00D") ? "unfiled$public" : undefined);
+    const member = name && folder ? `${folder}/${name}` : undefined;
+    if (typeof t.Id === "string" && RECORD_ID.test(t.Id) && member && wanted.has(member) && /^[\w$]+(?:\/[\w$]+)+$/.test(member)) memberOf.set(t.Id, member);
+  }
+  // Ranges are cut from the listing, wanted or not: a query returns every template between
+  // its two ids. A range holds `perQuery` templates at most, and ends before a long run of
+  // templates not wanted (a managed package's, say), which no query reads.
+  const ids = listed.map((t) => t.Id).filter((id): id is string => typeof id === "string" && RECORD_ID.test(id));
+  const isWanted = (i: number) => memberOf.has(ids[i]!);
+  const size = Number.isFinite(perQuery) ? Math.max(1, Math.floor(perQuery)) : TEMPLATES_PER_QUERY;
+  const ranges: [number, number][] = [];
+  let start = -1;
+  let last = -1;
+  for (let i = 0; i < ids.length; i++) {
+    if (!isWanted(i)) continue;
+    if (start >= 0 && (i - start + 1 > size || i - last > UNWANTED_GAP)) {
+      ranges.push([start, last]);
+      start = -1;
+    }
+    if (start < 0) start = i;
+    last = i;
+  }
+  if (start >= 0) ranges.push([start, last]);
   const written = new Set<string>();
+  // Taken before the first write, so that no two workers write the same files.
+  const claimed = new Set<string>();
   const text = (v: unknown) => (typeof v === "string" ? v : "");
-  let after = "";
-  let size = TEMPLATES_PER_QUERY;
-  let fits = 0;
-  for (;;) {
-    const soql = `SELECT Id, DeveloperName, NamespacePrefix, FolderId, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate${after ? ` WHERE Id > '${after}'` : ""} ORDER BY Id LIMIT ${size}`;
+  const write = async (t: Row) => {
+    const member = typeof t.Id === "string" ? memberOf.get(t.Id) : undefined;
+    if (!member || claimed.has(member)) return;
+    claimed.add(member);
+    // What a retrieve puts in the .email file: the markup, the text, or the HTML, by the
+    // template's type; else whichever is there.
+    const type = text(t.TemplateType).toLowerCase();
+    const body = (type === "visualforce" ? text(t.Markup) : type === "text" ? text(t.Body) : type ? text(t.HtmlValue) : "") || text(t.Markup) || text(t.HtmlValue) || text(t.Body);
+    const plain = body === text(t.Body) ? "" : text(t.Body);
+    const file = path.join(out, "email", ...member.split("/"));
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(`${file}.email`, body);
+    await writeFile(
+      `${file}.email-meta.xml`,
+      `<?xml version="1.0" encoding="UTF-8"?>\n<EmailTemplate xmlns="http://soap.sforce.com/2006/04/metadata">\n${text(t.Subject) ? `    <subject>${escapeXml(text(t.Subject))}</subject>\n` : ""}${plain ? `    <textOnly>${escapeXml(plain)}</textOnly>\n` : ""}${text(t.TemplateType) ? `    <type>${escapeXml(text(t.TemplateType))}</type>\n` : ""}</EmailTemplate>\n`,
+    );
+    written.add(member);
+  };
+  // Each worker writes its query to a file of its own.
+  let failed = false;
+  const read = async ([a, b]: [number, number], worker: number): Promise<void> => {
+    if (failed) return;
+    const soql = `SELECT Id, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate WHERE Id >= '${ids[a]}' AND Id <= '${ids[b]}' ORDER BY Id`;
     let rows: Row[];
     try {
-      rows = await soqlRows(sf, targetOrg, "templates-page", soql, run);
+      rows = await soqlRows(sf, targetOrg, `template-bodies-${worker}`, soql, run);
     } catch (err) {
-      if (size > 1 && tooMuchOutput(err)) {
-        size = Math.ceil(size / 2);
-        fits = 0;
-        continue;
+      if (b > a && tooMuchOutput(err)) {
+        // Halved by the templates listed, each half from and to a wanted one.
+        const mid = Math.floor((a + b) / 2);
+        let left = mid;
+        while (left > a && !isWanted(left)) left--;
+        let right = mid + 1;
+        while (right < b && !isWanted(right)) right++;
+        await read([a, left], worker);
+        return read([right, b], worker);
       }
       throw err;
     }
+    if (failed) return;
     heartbeat();
-    for (const t of rows) {
-      const name = apiName(t);
-      const folder = pathOf(t.FolderId) ?? (typeof t.FolderId === "string" && t.FolderId.startsWith("00D") ? "unfiled$public" : undefined);
-      const member = name && folder ? `${folder}/${name}` : undefined;
-      if (!member || !wanted.has(member) || !/^[\w$]+(?:\/[\w$]+)+$/.test(member)) continue;
-      // What a retrieve puts in the .email file: the markup, the text, or the HTML, by the
-      // template's type; else whichever is there.
-      const type = text(t.TemplateType).toLowerCase();
-      const body = (type === "visualforce" ? text(t.Markup) : type === "text" ? text(t.Body) : type ? text(t.HtmlValue) : "") || text(t.Markup) || text(t.HtmlValue) || text(t.Body);
-      const plain = body === text(t.Body) ? "" : text(t.Body);
-      const file = path.join(out, "email", ...member.split("/"));
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(`${file}.email`, body);
-      await writeFile(
-        `${file}.email-meta.xml`,
-        `<?xml version="1.0" encoding="UTF-8"?>\n<EmailTemplate xmlns="http://soap.sforce.com/2006/04/metadata">\n${text(t.Subject) ? `    <subject>${escapeXml(text(t.Subject))}</subject>\n` : ""}${plain ? `    <textOnly>${escapeXml(plain)}</textOnly>\n` : ""}${text(t.TemplateType) ? `    <type>${escapeXml(text(t.TemplateType))}</type>\n` : ""}</EmailTemplate>\n`,
-      );
-      written.add(member);
+    for (const t of rows) await write(t);
+  };
+  let next = 0;
+  const worker = async (n: number) => {
+    while (!failed && next < ranges.length) {
+      const range = ranges[next++]!;
+      try {
+        await read(range, n);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
-    const last = rows.at(-1)?.Id;
-    if (rows.length < size || typeof last !== "string" || !RECORD_ID.test(last)) break;
-    after = last;
-    // A page halved for a few large templates: after a few pages that fit, the next ones are
-    // tried in a larger one again.
-    if (++fits >= 4 && size < TEMPLATES_PER_QUERY) {
-      size = Math.min(TEMPLATES_PER_QUERY, size * 2);
-      fits = 0;
-    }
-  }
+  };
+  const results = await Promise.allSettled(Array.from({ length: Math.min(TEMPLATE_QUERIES_AT_ONCE, ranges.length) }, (_, i) => worker(i + 1)));
+  const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (rejected) throw rejected.reason;
   return written;
 }
 

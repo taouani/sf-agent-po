@@ -110,22 +110,36 @@ const MAX_WARNING_LINES = 50;
 
 /**
  * The CLI's retrieve warnings, with the many "cannot be found" ones (components the org lists
- * but does not return, such as list views of some standard objects) counted by type.
+ * but does not return, such as list views of some standard objects) and the "load of metadata
+ * from db failed" ones (connected apps installed from elsewhere) counted by type.
  */
 export function summarizeWarnings(warnings: readonly string[]): string[] {
   const missing = new Map<string, string[]>();
+  const unreadable = new Map<string, string[]>();
   const other: string[] = [];
+  const add = (to: Map<string, string[]>, type: string, name: string) => {
+    const names = to.get(type) ?? [];
+    if (!names.includes(name)) names.push(name);
+    to.set(type, names);
+  };
   for (const w of warnings) {
     const m = /^Entity of type '([^']+)' named '([^']+)' cannot be found/.exec(w);
-    if (m) missing.set(m[1]!, [...(missing.get(m[1]!) ?? []), m[2]!]);
+    // Connected apps installed from elsewhere (the Salesforce CLI's, say), which Salesforce
+    // lists but cannot give.
+    const u = /Load of metadata from db failed for metadata of type:\s*(\w+) and file name:\s*([^\s,;]+?)\.?(?=[\s,;]|$)/i.exec(w);
+    if (m) add(missing, m[1]!, m[2]!);
+    else if (u) add(unreadable, u[1]!, u[2]!);
     else other.push(w);
   }
-  const counted = [...missing].sort(([, a], [, b]) => b.length - a.length).map(([type, names]) =>
-    names.length === 1 ? `${type} ${names[0]} was listed but not returned` : `${names.length} ${type} components were listed but not returned, such as ${names.slice(0, 3).join(", ")}`,
-  );
+  const counted = (to: Map<string, string[]>, one: string, many: string) =>
+    [...to].sort(([, a], [, b]) => b.length - a.length).map(([type, names]) => (names.length === 1 ? `${type} ${names[0]} ${one}` : `${names.length} ${type} components ${many}, such as ${names.slice(0, 3).join(", ")}`));
+  const lines = [
+    ...counted(missing, "was listed but not returned", "were listed but not returned"),
+    ...counted(unreadable, "was listed but Salesforce could not read it", "were listed but Salesforce could not read them"),
+    ...new Set(other),
+  ];
   // The same problem comes back once per part; and the lines stay well under the index's cap
   // on listed problems, so that they are all counted apart from unreadable files.
-  const lines = [...counted, ...new Set(other)];
   return lines.length > MAX_WARNING_LINES ? [...lines.slice(0, MAX_WARNING_LINES - 1), `and ${lines.length - MAX_WARNING_LINES + 1} more problems`] : lines;
 }
 
