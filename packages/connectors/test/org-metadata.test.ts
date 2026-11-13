@@ -55,6 +55,13 @@ function fakeSf(
       const after = /Id > '(\w+)'/.exec(query)?.[1];
       const limit = /LIMIT (\d+)/.exec(query)?.[1];
       if (/ORDER BY Id/.test(query)) records = records.filter((r) => !after || String(r.Id) > after).sort((a, b) => (String(a.Id) < String(b.Id) ? -1 : 1));
+      // A range: "WHERE Id >= '...' AND Id <= '...'", too large with more than maxRows bodies.
+      const from_ = /Id >= '(\w+)'/.exec(query)?.[1];
+      const to = /Id <= '(\w+)'/.exec(query)?.[1];
+      if (from_ && to) {
+        records = records.filter((r) => String(r.Id) >= from_ && String(r.Id) <= to);
+        if (behaviour.maxRows && /Body/.test(query) && records.length > behaviour.maxRows) throw new Error("sf data query returned unexpected output: {\"status\":0,");
+      }
       if (limit) {
         if (behaviour.maxRows && Number(limit) > behaviour.maxRows) throw new Error("sf data query returned unexpected output: {\"status\":0,");
         records = records.slice(0, Number(limit));
@@ -523,7 +530,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     expect(third.warnings).toEqual(["The dates of email templates could not be read, so all of them are retrieved again"]);
   });
 
-  it("reads many email templates by query, page by page, and retrieves what the queries did not find", async () => {
+  it("reads many email templates by query, range by range, and retrieves what the queries did not find", async () => {
     const dir = tmp();
     const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", "Care/Html", "Care/Text", "Care/Vf", "Care/Lost", "unfiled$public", "unfiled$public/U"] };
     const soql: Record<string, Record<string, unknown>[]> = {
@@ -540,7 +547,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const calls: { args: string[]; cwd?: string }[] = [];
     const asked: { type: string; members: string[] }[][] = [];
     const progress: string[] = [];
-    // Pages of 2,000 rows are too large here: the run halves them until they fit.
+    // Ranges of more than 2 templates are too large here: the run halves them until they fit.
     const sf = fakeSf(org, calls, { dates: {}, asked, soql, maxRows: 2 });
     const run = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2, progress: (m) => progress.push(m) });
     expect(progress).toContain("Reading 5 email templates by query");
@@ -560,22 +567,22 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const scanned = await scanProject(run.dir);
     const reads = scanned.components.filter((c) => c.type === "EmailTemplate").flatMap((c) => (c.refs ?? []).map((r) => ("path" in r && r.path ? `${r.object}.${r.path}` : undefined))).filter(Boolean);
     expect(reads).toEqual(expect.arrayContaining(["Case.Claim_Ref__c", "Case.Plain__c", "Contact.Nickname__c", "Policy__c.Premium__c", "Account.Tier__c"]));
-    // Pages of 2 rows, once halved: each page asks for the next, after the last id.
-    const pages = calls.filter((c) => c.args[0] === "data" && c.args.includes("templates-page.soql"));
-    expect(pages.length).toBe(10 + 3);
+    // One listing, then the 4 wanted templates in one range (too large), its halves of 2.
+    expect(calls.filter((c) => c.args[0] === "data" && c.args.includes("template-ids.soql"))).toHaveLength(1);
+    expect(calls.filter((c) => c.args[0] === "data" && c.args.some((a) => /^template-bodies-\d+\.soql$/.test(a)))).toHaveLength(3);
     // An incremental run with few templates changed retrieves them: the queries would read them all.
     soql.EmailTemplate![0]!.LastModifiedDate = "2026-03-01T00:00:00.000+0000";
     asked.length = 0;
     calls.length = 0;
     const next = await retrieveOrgMetadata({ targetOrg: "dev", dir, sf, queryTemplatesFrom: 2 });
     expect(next.incremental).toBeDefined();
-    expect(calls.filter((c) => c.args.includes("templates-page.soql"))).toEqual([]);
+    expect(calls.filter((c) => c.args.some((a) => a.startsWith("template-")))).toEqual([]);
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care/Html", "Care/Lost"] }]);
     expect(readdirSync(path.join(next.dir, "metadata", "email", "Care")).filter((f) => f.endsWith(".email")).sort()).toEqual(["Html.email", "Lost.email", "Text.email", "Vf.email"]);
     // A query that fails after some pages were written: none of them is kept, all are retrieved.
     let served = 0;
     const failing: SfRunner = async (args, opts) => {
-      const page = args.includes("templates-page.soql");
+      const page = args.some((a) => /^template-bodies-\d+\.soql$/.test(a));
       if (page && served >= 1) throw new Error("sf data query failed: QUERY_TIMEOUT");
       const result: unknown = await sf(args, opts);
       if (page) served++;
@@ -593,6 +600,43 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const again = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2 });
     expect(asked.flat().find((e) => e.type === "EmailTemplate")?.members).toHaveLength(7);
     expect(again.warnings).toContain("The email templates could not be read by query, so they are retrieved");
+  });
+
+  it("reads the bodies of many templates a few ranges at once", async () => {
+    const names = Array.from({ length: 1_200 }, (_, i) => `T${String(i).padStart(4, "0")}`);
+    const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", ...names.map((n) => `Care/${n}`)] };
+    const soql: Record<string, Record<string, unknown>[]> = {
+      Folder: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }],
+      EmailTemplate: names.map((n, i) => ({ Id: `00X${String(i).padStart(12, "0")}`, DeveloperName: n, FolderId: "00l1", TemplateType: "text", Body: `{!Case.${n}__c}`, LastModifiedDate: "2026-02-01T00:00:00.000+0000" })),
+    };
+    const asked: { type: string; members: string[] }[][] = [];
+    const base = fakeSf(org, [], { dates: {}, asked, soql });
+    let running = 0;
+    let most = 0;
+    const ranges: string[] = [];
+    const sf: SfRunner = async (args, opts) => {
+      const range = args.find((a) => /^template-bodies-\d+\.soql$/.test(a));
+      if (!range) return base(args, opts);
+      ranges.push(range);
+      running++;
+      most = Math.max(most, running);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      try {
+        return await base(args, opts);
+      } finally {
+        running--;
+      }
+    };
+    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf });
+    // 1,200 templates: three ranges of at most 500, read at once, each to a file of its own.
+    expect(ranges).toHaveLength(3);
+    expect(new Set(ranges).size).toBe(3);
+    expect(most).toBe(3);
+    const care = path.join(run.dir, "metadata", "email", "Care");
+    expect(readdirSync(care).filter((f) => f.endsWith(".email"))).toHaveLength(1_200);
+    expect(readFileSync(path.join(care, "T1199.email"), "utf8")).toBe("{!Case.T1199__c}");
+    // Only the folder is retrieved.
+    expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care"] }]);
   });
 
   it("does not take a query the CLI cut short", async () => {
@@ -932,6 +976,14 @@ describe("retrieve warnings and unretrievable members", () => {
       "CustomField C.z__c was listed but not returned",
       "Some other problem",
     ]);
+  });
+
+  it("counts the connected apps Salesforce lists but cannot read", () => {
+    const failed = (name: string) => `Metadata API received improper input. Please ensure file name and capitalization is correct.Load of metadata from db failed for metadata of type:ConnectedApp and file name:${name}.`;
+    expect(summarizeWarnings([failed("Salesforce_CLI"), failed("Insights"), failed("Salesforce_CLI"), failed("Fivetran_Data_Loader"), failed("Microsoft_Power_Query")])).toEqual([
+      "4 ConnectedApp components were listed but Salesforce could not read them, such as Salesforce_CLI, Insights, Fivetran_Data_Loader",
+    ]);
+    expect(summarizeWarnings([failed("Salesforce_CLI")])).toEqual(["ConnectedApp Salesforce_CLI was listed but Salesforce could not read it"]);
   });
 
   it("says a problem repeated by every part once, and caps the lines", () => {
