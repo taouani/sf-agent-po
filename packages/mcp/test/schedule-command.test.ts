@@ -65,8 +65,79 @@ describe("schedule command", () => {
     expect(() => parseScheduleArgs([], {}, cwd)).toThrow(/Give --org/);
     expect(() => parseScheduleArgs(["--org", "prod", "--at", "24:00"], {}, cwd)).toThrow(/time of day/);
     expect(() => parseScheduleArgs(["--org", "prod; rm -rf ~"], {}, cwd)).toThrow(/not an org alias/);
-    expect(() => parseScheduleArgs(["--list", "--org", "prod"], {}, cwd)).toThrow(/leave out --org/);
+    expect(() => parseScheduleArgs(["--list", "--org", "prod"], {}, cwd)).toThrow(/leave out the other options/);
     expect(() => parseScheduleArgs(["--org", "prod", "--daily"], {}, cwd)).toThrow(/Unknown option "--daily"/);
+  });
+
+  it("reads a folder set as the index command takes it", () => {
+    expect(parseScheduleArgs(["--project", "mono repo", "--packages", "common-app, row-app", "--name", "row", "--for-org", "prod", "--at", "06:00"], {}, cwd)).toEqual({
+      action: "add",
+      set: { project: path.join(cwd, "mono repo"), name: "row", packages: ["common-app", "row-app"], forOrg: "prod" },
+      at: { hour: 6, minute: 0 },
+      workspace: path.join(cwd, ".sf-agent"),
+    });
+    expect(parseScheduleArgs(["--repo", "github:acme/mono#main", "--packages", "row-app", "--name", "row"], {}, cwd)).toMatchObject({ set: { repo: "github:acme/mono#main", name: "row", packages: ["row-app"] } });
+    expect(parseScheduleArgs(["--remove", "--project", "mono", "--name", "row"], {}, cwd)).toMatchObject({ action: "remove", set: { name: "row", packages: [] } });
+    expect(() => parseScheduleArgs(["--org", "prod", "--name", "row"], {}, cwd)).toThrow(/not both/);
+    expect(() => parseScheduleArgs(["--project", "a", "--repo", "github:a/b", "--name", "row", "--packages", "x"], {}, cwd)).toThrow(/one of --project or --repo/);
+    expect(() => parseScheduleArgs(["--project", "a", "--packages", "x"], {}, cwd)).toThrow(/needs --name/);
+    expect(() => parseScheduleArgs(["--project", "a", "--name", "bad name", "--packages", "x"], {}, cwd)).toThrow(/needs --name/);
+    expect(() => parseScheduleArgs(["--project", "a", "--name", "row"], {}, cwd)).toThrow(/needs --packages/);
+    expect(() => parseScheduleArgs(["--remove", "--project", "a", "--name", "row", "--packages", "x"], {}, cwd)).toThrow(/--remove needs only/);
+    expect(() => parseScheduleArgs(["--project", "a", "--name", "row", "--packages", 'x"&calc'], {}, cwd)).toThrow(/cannot be scheduled/);
+    expect(() => parseScheduleArgs(["--project", "a", "--name", "row", "--packages", "x", "--for-org", "a;b"], {}, cwd)).toThrow(/not an org alias/);
+  });
+
+  it("schedules a folder set on Windows and on Linux, with its folder quoted, and lists it", async () => {
+    const win = computer("win32");
+    const workspace = path.join(win.root, "my project", ".sf-agent");
+    const project = path.join(win.root, "mono repo 100%");
+    const set = { project, name: "row", packages: ["common-app", "row-app"], forOrg: "prod" };
+    await runSchedule({ action: "add", set, at: { hour: 6, minute: 0 }, workspace }, win.deps);
+    const task = win.calls.find((c) => c.cmd === "schtasks")!.args[2]!;
+    expect(task).toMatch(/^sf-agent-po index set row [0-9a-f]{6} [0-9a-f]{8}$/);
+    const files = readdirSync(path.join(workspace, "schedule"));
+    const cmdFile = files.find((f) => /^set-row-[0-9a-f]{6}\.cmd$/.test(f))!;
+    const cmd = readFileSync(path.join(workspace, "schedule", cmdFile), "utf8");
+    expect(cmd).toContain(`\r\nnpx -y sf-agent-po@next index --project "${project.replace("%", "%%")}" --packages common-app,row-app --name row --for-org prod --workspace "${workspace}" > `);
+    expect(win.out[0]).toMatch(/^folder set row is indexed every day at 06:00 by Task Scheduler/);
+    // The org's schedule and the set's are apart.
+    await runSchedule({ action: "add", org: "prod", at: { hour: 2, minute: 0 }, workspace }, win.deps);
+    win.out.length = 0;
+    await runSchedule({ action: "list", at: { hour: 2, minute: 0 }, workspace }, win.deps);
+    expect(win.out.sort()).toEqual([`folder set row of ${project}: every day at 06:00 (Task Scheduler); not run yet`, "prod: every day at 02:00 (Task Scheduler); not run yet"]);
+    // Another folder's set of that name is not this one: named, not reported as removed.
+    await expect(runSchedule({ action: "remove", set: { project: path.join(win.root, "elsewhere"), name: "row", packages: [] }, at: { hour: 2, minute: 0 }, workspace }, win.deps)).rejects.toThrow(
+      `Recorded: folder set row of ${project}.`,
+    );
+    await runSchedule({ action: "remove", set: { project, name: "row", packages: [] }, at: { hour: 2, minute: 0 }, workspace }, win.deps);
+    expect(win.out.at(-1)).toBe("The daily refresh of folder set row is removed.");
+    expect(readdirSync(path.join(workspace, "schedule")).filter((f) => f.startsWith("set-"))).toEqual([]);
+
+    const linux = computer("linux");
+    const ws = path.join(linux.root, "ws");
+    await runSchedule({ action: "add", set: { repo: "github:acme/mono#main", name: "row", packages: ["row-app"] }, at: { hour: 6, minute: 30 }, workspace: ws }, linux.deps);
+    const sh = readdirSync(path.join(ws, "schedule")).find((f) => f.endsWith(".sh"))!;
+    expect(readFileSync(path.join(ws, "schedule", sh), "utf8")).toContain(`'npx' '-y' 'sf-agent-po@next' 'index' '--repo' 'github:acme/mono#main' '--packages' 'row-app' '--name' 'row' '--workspace' '${ws}'`);
+    expect(linux.crontab()).toMatch(/^30 6 \* \* \* \/bin\/sh .+ # sf-agent-po index set row [0-9a-f]{6} [0-9a-f]{8}\n$/);
+    // The same repository spelt otherwise is the same schedule, and removes it.
+    await runSchedule({ action: "remove", set: { repo: "github:Acme/Mono#main", name: "row", packages: [] }, at: { hour: 2, minute: 0 }, workspace: ws }, linux.deps);
+    expect(linux.out.at(-1)).toBe("The daily refresh of folder set row is removed.");
+    expect(linux.crontab()).toBe("\n");
+    // A token in the URL would be written in plain files; a repository index cannot read fails now, not every night.
+    const at = { hour: 2, minute: 0 };
+    const user = "me";
+    const secret = ["ghp", "x".repeat(20)].join("_");
+    await expect(runSchedule({ action: "add", set: { repo: `git:https://${user}:${secret}@host/x.git`, name: "row", packages: ["a"] }, at, workspace: ws }, linux.deps)).rejects.toThrow(/password or token/);
+    await expect(runSchedule({ action: "add", set: { repo: "nonsense", name: "row", packages: ["a"] }, at, workspace: ws }, linux.deps)).rejects.toThrow();
+    expect(readdirSync(path.join(ws, "schedule")).join(" ")).not.toContain(secret);
+    // An org's source is taken as index takes it; a folder at a drive root keeps its closing quote.
+    expect(parseScheduleArgs(["--project", "a", "--name", "row", "--packages", "x", "--for-org", "org:00D000000000001AAA"], {}, cwd)).toMatchObject({ set: { forOrg: "org:00D000000000001AAA" } });
+    const root = computer("win32");
+    const rws = path.join(root.root, "ws");
+    await runSchedule({ action: "add", set: { project: "D:\\", name: "row", packages: ["a"] }, at, workspace: rws }, root.deps);
+    const rcmd = readdirSync(path.join(rws, "schedule")).find((f) => f.endsWith(".cmd"))!;
+    expect(readFileSync(path.join(rws, "schedule", rcmd), "utf8")).toContain('--project "D:\\\\" --packages a');
   });
 
   it("registers a Windows task from a task file, so that spaces in paths need no quoting", async () => {
@@ -177,7 +248,7 @@ describe("schedule command", () => {
     const pc = computer("linux");
     const workspace = path.join(pc.root, "ws");
     await runSchedule({ action: "list", at: { hour: 2, minute: 0 }, workspace }, pc.deps);
-    expect(pc.out.at(-1)).toBe("No org is indexed on a schedule in this workspace.");
+    expect(pc.out.at(-1)).toBe("Nothing is indexed on a schedule in this workspace.");
     await runSchedule({ action: "add", org: "prod", at: { hour: 2, minute: 0 }, workspace }, pc.deps);
     await runSchedule({ action: "add", org: "uat", at: { hour: 2, minute: 30 }, workspace }, pc.deps);
     await runSchedule({ action: "add", org: "dev", at: { hour: 3, minute: 0 }, workspace }, pc.deps);
