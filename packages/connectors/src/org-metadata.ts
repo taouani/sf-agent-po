@@ -589,13 +589,22 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     for (const part of [...parts, ...(queried ? [QUERIED] : [])]) {
       const files = (await filesUnder(path.join(work, part))).filter((f) => f !== "package.xml" && f !== "unpackaged/package.xml");
       let at = 0;
+      let stopped = false;
       const mover = async () => {
-        while (at < files.length) {
+        while (!stopped && at < files.length) {
           const f = files[at++]!;
-          await place(path.join(work, part, f), f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f);
+          try {
+            await place(path.join(work, part, f), f.startsWith("unpackaged/") ? f.slice("unpackaged/".length) : f);
+          } catch (err) {
+            stopped = true;
+            throw err;
+          }
         }
       };
-      await Promise.all(Array.from({ length: Math.min(FILES_AT_ONCE, files.length) }, mover));
+      // Every mover is waited for, so that none still writes when the folder goes.
+      const moved = await Promise.allSettled(Array.from({ length: Math.min(FILES_AT_ONCE, files.length) }, mover));
+      const refused = moved.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (refused) throw refused.reason;
       heartbeat();
       await remove(path.join(work, part));
     }
@@ -841,6 +850,8 @@ export const QUERY_TEMPLATES_FROM = 500;
 const TEMPLATES_PER_QUERY = 500;
 /** Template queries run at once: each mostly waits for Salesforce and the network. */
 const TEMPLATE_QUERIES_AT_ONCE = 3;
+/** Templates not wanted, one after another, at which a range of wanted ones ends. */
+const UNWANTED_GAP = 50;
 /** An error from output too large to take in one piece. */
 const tooMuchOutput = (err: unknown) => /maxBuffer|unexpected output|EXCEEDED_MAX_SIZE_REQUEST|response size|Invalid string length|heap out of memory/i.test((err as Error)?.message ?? "");
 /** A record id, as it may be quoted in a query. */
@@ -876,15 +887,33 @@ async function queryTemplates(
     const member = name && folder ? `${folder}/${name}` : undefined;
     if (typeof t.Id === "string" && RECORD_ID.test(t.Id) && member && wanted.has(member) && /^[\w$]+(?:\/[\w$]+)+$/.test(member)) memberOf.set(t.Id, member);
   }
-  const ids = [...memberOf.keys()];
-  const ranges: string[][] = [];
-  const size = Math.max(1, Math.floor(perQuery));
-  for (let i = 0; i < ids.length; i += size) ranges.push(ids.slice(i, i + size));
+  // Ranges are cut from the listing, wanted or not: a query returns every template between
+  // its two ids. A range holds `perQuery` templates at most, and ends before a long run of
+  // templates not wanted (a managed package's, say), which no query reads.
+  const ids = listed.map((t) => t.Id).filter((id): id is string => typeof id === "string" && RECORD_ID.test(id));
+  const isWanted = (i: number) => memberOf.has(ids[i]!);
+  const size = Number.isFinite(perQuery) ? Math.max(1, Math.floor(perQuery)) : TEMPLATES_PER_QUERY;
+  const ranges: [number, number][] = [];
+  let start = -1;
+  let last = -1;
+  for (let i = 0; i < ids.length; i++) {
+    if (!isWanted(i)) continue;
+    if (start >= 0 && (i - start + 1 > size || i - last > UNWANTED_GAP)) {
+      ranges.push([start, last]);
+      start = -1;
+    }
+    if (start < 0) start = i;
+    last = i;
+  }
+  if (start >= 0) ranges.push([start, last]);
   const written = new Set<string>();
+  // Taken before the first write, so that no two workers write the same files.
+  const claimed = new Set<string>();
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   const write = async (t: Row) => {
     const member = typeof t.Id === "string" ? memberOf.get(t.Id) : undefined;
-    if (!member || written.has(member)) return;
+    if (!member || claimed.has(member)) return;
+    claimed.add(member);
     // What a retrieve puts in the .email file: the markup, the text, or the HTML, by the
     // template's type; else whichever is there.
     const type = text(t.TemplateType).toLowerCase();
@@ -901,19 +930,26 @@ async function queryTemplates(
   };
   // Each worker writes its query to a file of its own.
   let failed = false;
-  const read = async (range: string[], worker: number): Promise<void> => {
-    const soql = `SELECT Id, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate WHERE Id >= '${range[0]}' AND Id <= '${range.at(-1)}' ORDER BY Id`;
+  const read = async ([a, b]: [number, number], worker: number): Promise<void> => {
+    if (failed) return;
+    const soql = `SELECT Id, TemplateType, Subject, Body, HtmlValue, Markup FROM EmailTemplate WHERE Id >= '${ids[a]}' AND Id <= '${ids[b]}' ORDER BY Id`;
     let rows: Row[];
     try {
       rows = await soqlRows(sf, targetOrg, `template-bodies-${worker}`, soql, run);
     } catch (err) {
-      if (range.length > 1 && tooMuchOutput(err) && !failed) {
-        const half = Math.ceil(range.length / 2);
-        await read(range.slice(0, half), worker);
-        return read(range.slice(half), worker);
+      if (b > a && tooMuchOutput(err)) {
+        // Halved by the templates listed, each half from and to a wanted one.
+        const mid = Math.floor((a + b) / 2);
+        let left = mid;
+        while (left > a && !isWanted(left)) left--;
+        let right = mid + 1;
+        while (right < b && !isWanted(right)) right++;
+        await read([a, left], worker);
+        return read([right, b], worker);
       }
       throw err;
     }
+    if (failed) return;
     heartbeat();
     for (const t of rows) await write(t);
   };

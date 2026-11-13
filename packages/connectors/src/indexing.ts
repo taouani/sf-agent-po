@@ -126,7 +126,7 @@ export function summarizeWarnings(warnings: readonly string[]): string[] {
     const m = /^Entity of type '([^']+)' named '([^']+)' cannot be found/.exec(w);
     // Connected apps installed from elsewhere (the Salesforce CLI's, say), which Salesforce
     // lists but cannot give.
-    const u = /Load of metadata from db failed for metadata of type:\s*(\w+) and file name:\s*([^\s,;]+?)\.?(?:\s|$)/i.exec(w);
+    const u = /Load of metadata from db failed for metadata of type:\s*(\w+) and file name:\s*([^\s,;]+?)\.?(?=[\s,;]|$)/i.exec(w);
     if (m) add(missing, m[1]!, m[2]!);
     else if (u) add(unreadable, u[1]!, u[2]!);
     else other.push(w);

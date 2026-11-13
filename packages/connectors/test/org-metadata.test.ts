@@ -607,17 +607,24 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", ...names.map((n) => `Care/${n}`)] };
     const soql: Record<string, Record<string, unknown>[]> = {
       Folder: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }],
-      EmailTemplate: names.map((n, i) => ({ Id: `00X${String(i).padStart(12, "0")}`, DeveloperName: n, FolderId: "00l1", TemplateType: "text", Body: `{!Case.${n}__c}`, LastModifiedDate: "2026-02-01T00:00:00.000+0000" })),
+      // Between the first 6 and the last 6, 60 templates of a user's private folder, not wanted.
+      EmailTemplate: [
+        ...names.map((n, i) => ({ Id: `00X${String(i < 6 ? i : i + 60).padStart(12, "0")}`, DeveloperName: n, FolderId: "00l1", TemplateType: "text", Body: `{!Case.${n}__c}`, LastModifiedDate: "2026-02-01T00:00:00.000+0000" })),
+        ...Array.from({ length: 60 }, (_, i) => ({ Id: `00X${String(i + 6).padStart(12, "0")}`, DeveloperName: `Mine${i}`, FolderId: "005000000000001", TemplateType: "text", Body: "x", LastModifiedDate: "2026-02-01T00:00:00.000+0000" })),
+      ],
     };
     const asked: { type: string; members: string[] }[][] = [];
     const base = fakeSf(org, [], { dates: {}, asked, soql });
     let running = 0;
     let most = 0;
     const ranges: string[] = [];
+    const spans: string[] = [];
     const sf: SfRunner = async (args, opts) => {
       const range = args.find((a) => /^template-bodies-\d+\.soql$/.test(a));
       if (!range) return base(args, opts);
       ranges.push(range);
+      const query = readFileSync(path.join(opts!.cwd!, range), "utf8");
+      spans.push(/Id >= '00X0*(\d+)' AND Id <= '00X0*(\d+)'/.exec(query)!.slice(1).join("-"));
       running++;
       most = Math.max(most, running);
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -628,8 +635,9 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
       }
     };
     const run = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2, templatesPerQuery: 5 });
-    // 12 templates: three ranges of at most 5, read at once, each to a file of its own.
-    expect(ranges).toHaveLength(3);
+    // 12 templates in ranges of at most 5, three read at once, each to a file of its own; the
+    // private templates between them are in no range.
+    expect(spans.map((r) => r.replace(/^-/, "0-")).sort()).toEqual(["0-4", "5-5", "66-70", "71-71"].sort());
     expect(new Set(ranges).size).toBe(3);
     expect(most).toBe(3);
     const care = path.join(run.dir, "metadata", "email", "Care");
@@ -984,6 +992,7 @@ describe("retrieve warnings and unretrievable members", () => {
       "4 ConnectedApp components were listed but Salesforce could not read them, such as Salesforce_CLI, Insights, Fivetran_Data_Loader",
     ]);
     expect(summarizeWarnings([failed("Salesforce_CLI")])).toEqual(["ConnectedApp Salesforce_CLI was listed but Salesforce could not read it"]);
+    expect(summarizeWarnings(["Load of metadata from db failed for metadata of type:ConnectedApp and file name:Insights, try again"])).toEqual(["ConnectedApp Insights was listed but Salesforce could not read it"]);
   });
 
   it("says a problem repeated by every part once, and caps the lines", () => {
