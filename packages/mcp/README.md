@@ -61,6 +61,7 @@ Windows, while you are logged in):
 npx -y sf-agent-po@next schedule --org <alias or username> --at 02:00
 npx -y sf-agent-po@next schedule --list
 npx -y sf-agent-po@next schedule --remove --org <alias or username>
+npx -y sf-agent-po@next schedule --repo github:owner/repo --packages common-app,row-app --name row --for-org <alias>
 ```
 
 The workspace (one SQLite database per project, in `.sf-agent`, or `SF_AGENT_WORKSPACE`)
