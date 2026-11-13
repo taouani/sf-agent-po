@@ -5,7 +5,7 @@
 // which can name people or clients, so they are masked before they are returned.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EDGE_KINDS, type ComponentType, type IndexedComponent, type Masker, type MetadataIndex, type Related, type SnapshotInfo } from "@sf-agent-po/core";
+import { COMPONENT_TYPES, EDGE_KINDS, type ComponentType, type IndexedComponent, type Masker, type MetadataIndex, type Related, type SnapshotInfo } from "@sf-agent-po/core";
 import type { BackgroundIndexer, IndexJob } from "@sf-agent-po/connectors";
 import { z } from "zod";
 import type { CallContext } from "./review.js";
@@ -58,6 +58,28 @@ const MAX_LINE_CHARS = 400;
 const MAX_CODE_CHARS = 30_000;
 /** Components listed on each side of a comparison, at most. */
 const MAX_COMPARED = 300;
+/** Reports an org's index keeps at most, the most recently changed (MAX_REPORTS in the connectors). */
+const REPORTS_KEPT = 5_000;
+
+/**
+ * Whether an org's index can say a component of this type is not in the org: it retrieves
+ * some types only, and of reports only the most recent ones.
+ */
+const orgHolds = (org: SnapshotInfo, type: string) => {
+  const n = org.stats.counts?.[type as ComponentType] ?? 0;
+  return n > 0 && !(type === "Report" && n >= REPORTS_KEPT);
+};
+
+/**
+ * A component a repository can hold that an org's index lists only as a reference, if at all:
+ * a managed package's (ns__Name__c), a standard object, or a standard field.
+ */
+const definedOutside = (type: string, name: string) => {
+  const [object, child] = name.split(".");
+  if (/^[A-Za-z0-9]+__\w+__[A-Za-z]+$/.test(object ?? "")) return true;
+  if (type === "CustomObject") return !name.includes("__");
+  return type === "CustomField" && child !== undefined && !child.includes("__");
+};
 
 /**
  * A component's details with long lists and maps cut to their first entries, and a count of
@@ -322,11 +344,13 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
           for (const other of pairedSources(index, snap)) {
             const there = index.component(other.id, c.type, c.name);
             const found = there && !there.missing;
-            const covered = other.kind === "repo" || Boolean(other.stats.counts?.[c.type]);
+            const covered = other.kind === "repo" || orgHolds(other, c.type);
             const where = found
               ? other.kind === "repo" ? `in the folder set${there.file ? `, at ${await pieces.mask(there.file)}` : ""}` : "in the org too"
-              : !covered
-                ? `its index has no ${c.type}, so it cannot say whether the org has it`
+              : other.kind === "org" && (there?.missing || definedOutside(c.type, c.name))
+                ? "only referenced in the org's index (a standard component, or one from a managed package, which the index does not hold)"
+                : !covered
+                ? `its index ${c.type === "Report" && other.stats.counts?.Report ? "holds only the most recently changed reports" : `has no ${c.type}`}, so it cannot say whether the org has it`
                 : other.kind === "repo"
                   ? "not in the folder set (made in the org, or from another repository or a package)"
                   : "not in the org (not deployed yet, or deleted in the org and still in the repository)";
@@ -374,12 +398,14 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       inputSchema: {
         context: contextName,
         source: sourceArg.describe("The org or the folder set, as metadata_sources lists it; needed when more than one pair is indexed."),
-        types: z.array(z.string()).optional().describe('Only these types, e.g. ["Flow", "ApexClass"].'),
-        limit: z.number().int().min(1).max(MAX_COMPARED).default(40).describe("How many components to list on each side."),
+        types: z.array(z.string()).max(50).optional().describe('Only these types, spelt as metadata_summary lists them, e.g. ["Flow", "ApexClass"].'),
+        limit: z.number().int().min(1).max(MAX_COMPARED).default(40).describe("How many components to list on each side, a few of each type in turn."),
       },
       annotations: { readOnlyHint: true },
     },
     guard(async ({ context, source, types, limit }: { context: string; source?: string; types?: string[]; limit: number }) => {
+      const unknown = (types ?? []).filter((t) => !(COMPONENT_TYPES as readonly string[]).includes(t));
+      if (unknown.length) throw new Error(`Unknown type(s): ${unknown.join(", ")}. Spell them as metadata_summary lists them, e.g. Flow, ApexClass, CustomField.`);
       const ready = readySources(index);
       const pairs = (source ? [pick(index, source)] : ready.filter((s) => s.stats.target?.org))
         .flatMap((s) => pairedSources(index, s).map((o) => (s.kind === "org" ? { org: s, set: o } : { org: o, set: s })))
@@ -391,14 +417,20 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
             : "No org and folder set pair is indexed. Index the repository's folders for an org as a folder set (metadata_index with packages, set and forOrg), and the org itself.",
         );
       }
-      if (pairs.length > 1) throw new Error(`Name one side with source: ${pairs.map((p) => `${p.set.source} (for ${p.org.source})`).join(", ")}.`);
+      if (pairs.length > 1) throw new Error(`Several folder sets are paired: name the folder set with source, one of ${pairs.map((p) => `${p.set.source} (for ${p.org.source})`).join(", ")}.`);
       const { org, set } = pairs[0]!;
       const pieces = new Pieces(kit.masker, context);
-      const rows = index.presence(org.id, set.id, types as ComponentType[] | undefined);
-      // The org is retrieved for some types only: a type it does not hold is not compared.
-      const covered = (t: string) => Boolean(org.stats.counts?.[t as ComponentType]);
+      const raw = index.presence(org.id, set.id, types as ComponentType[] | undefined);
+      // What the org's index lists only as a reference, if at all (standard, managed packages): apart.
+      const rows = raw.map((r) => {
+        const outside = [...r.referencedInA, ...r.onlyB.filter((n) => definedOutside(r.type, n))];
+        return { ...r, onlyB: r.onlyB.filter((n) => !definedOutside(r.type, n)), outside };
+      });
+      // The org is retrieved for some types only, and the most recent reports: those are not compared.
+      const covered = (t: string) => orgHolds(org, t);
       const compared = rows.filter((r) => covered(r.type));
-      const skipped = rows.filter((r) => !covered(r.type) && r.onlyB.length);
+      const skipped = rows.filter((r) => !covered(r.type) && (r.onlyB.length || r.outside.length));
+      const outside = compared.reduce((n, r) => n + r.outside.length, 0);
       const sum = (f: (r: (typeof rows)[number]) => number) => compared.reduce((n, r) => n + f(r), 0);
       const folders = (await Promise.all(set.stats.target!.packages.map((p) => pieces.mask(p)))).join(", ");
       const out = [
@@ -407,19 +439,28 @@ export function registerMetadataTools(server: McpServer, kit: MetadataKit): void
       ];
       if (!compared.length) out.push("Nothing to compare for these types.");
       else out.push(`By type (in both / only in the org / only in the set):\n${compared.map((r) => `- ${r.type}: ${r.both} / ${r.onlyA.length} / ${r.onlyB.length}`).join("\n")}`);
-      if (skipped.length) out.push(`Not compared, since the org's index does not hold them: ${skipped.map((r) => `${r.type} (${r.onlyB.length} in the set)`).join(", ")}.`);
+      if (skipped.length) {
+        out.push(
+          `Not compared, since the org's index does not hold them all: ${skipped.map((r) => `${r.type} (${r.onlyB.length + r.outside.length} in the set${r.type === "Report" && org.stats.counts?.Report ? "; the org's index keeps only the most recently changed reports" : ""})`).join(", ")}.`,
+        );
+      }
+      if (outside) out.push(`${outside} component(s) of the set are standard or from a managed package (${compared.filter((r) => r.outside.length).map((r) => `${r.type} ${r.outside.length}`).join(", ")}): the org's index lists them only as references, if at all, so they are not counted as missing.`);
       const list = async (which: "onlyA" | "onlyB", title: string, file: boolean) => {
-        const all = compared.flatMap((r) => r[which].map((name) => ({ type: r.type, name })));
-        if (!all.length) return;
+        // A few of each type in turn, so that one type does not fill the list.
+        const queues = compared.map((r) => r[which].map((name) => ({ type: r.type, name }))).filter((q) => q.length);
+        const total = queues.reduce((n, q) => n + q.length, 0);
+        if (!total) return;
+        const all: { type: ComponentType; name: string }[] = [];
+        for (let i = 0; all.length < Math.min(limit, total); i++) for (const q of queues) if (q[i] && all.length < limit) all.push(q[i]!);
         const shown = await Promise.all(
-          all.slice(0, limit).map(async (c) => {
+          all.map(async (c) => {
             const at = file ? index.component(set.id, c.type, c.name)?.file : undefined;
             return `- ${c.type} ${await pieces.name(c.type, c.name)}${at ? ` (${await pieces.mask(at)})` : ""}`;
           }),
         );
-        out.push(`${title} (${all.length}${all.length > shown.length ? `, first ${shown.length}` : ""}):\n${shown.join("\n")}`);
+        out.push(`${title} (${total}${total > shown.length ? `, ${shown.length} shown, a few of each type` : ""}):\n${shown.join("\n")}`);
       };
-      await list("onlyA", "Only in the org: made in the org, from another repository, or from a package (standard objects and fields the repository does not hold are here too)", false);
+      await list("onlyA", "Only in the org: made in the org, from another repository, or from an unlocked package (standard objects and fields the repository does not hold are here too; managed packages are not indexed)", false);
       await list("onlyB", "Only in the folder set: not deployed yet, or deleted in the org and still in git", true);
       out.push("A component in both may still differ: content is not compared. Open one on each side with metadata_component, or read its code with metadata_code.");
       return text(out.join("\n\n"));

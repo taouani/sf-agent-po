@@ -362,12 +362,18 @@ export class MetadataIndex {
 
   /**
    * What is in one snapshot and not in another, by type and name (without case), of the
-   * components each holds itself (not those only referenced), by type. `types` limits it.
+   * components each holds itself (not those only referenced), by type. Of what only B holds,
+   * `referencedInA` is what A knows only as a reference (a standard field, a managed
+   * package's object). `types` limits it.
    */
-  presence(a: number, b: number, types?: readonly ComponentType[]): { type: ComponentType; both: number; onlyA: string[]; onlyB: string[] }[] {
-    const read = (snapshot: number) => {
+  presence(
+    a: number,
+    b: number,
+    types?: readonly ComponentType[],
+  ): { type: ComponentType; both: number; onlyA: string[]; onlyB: string[]; referencedInA: string[] }[] {
+    const read = (snapshot: number, present = 1) => {
       const filter = types?.length ? `AND type IN (${types.map(() => "?").join(", ")})` : "";
-      const rows = this.db.prepare(`SELECT type, name FROM component WHERE snapshot = ? AND present = 1 ${filter}`).all(snapshot, ...(types ?? [])) as { type: ComponentType; name: string }[];
+      const rows = this.db.prepare(`SELECT type, name FROM component WHERE snapshot = ? AND present = ? ${filter}`).all(snapshot, present, ...(types ?? [])) as { type: ComponentType; name: string }[];
       const out = new Map<ComponentType, Map<string, string>>();
       for (const r of rows) {
         let m = out.get(r.type);
@@ -378,16 +384,19 @@ export class MetadataIndex {
     };
     const inA = read(a);
     const inB = read(b);
+    const referenced = read(a, 0);
     const all = [...new Set([...inA.keys(), ...inB.keys()])].sort();
     return all.map((type) => {
       const x = inA.get(type) ?? new Map<string, string>();
       const y = inB.get(type) ?? new Map<string, string>();
+      const r = referenced.get(type) ?? new Map<string, string>();
       const sorted = (names: string[]) => names.sort((p, q) => p.localeCompare(q));
       return {
         type,
         both: [...x.keys()].filter((k) => y.has(k)).length,
         onlyA: sorted([...x].filter(([k]) => !y.has(k)).map(([, n]) => n)),
-        onlyB: sorted([...y].filter(([k]) => !x.has(k)).map(([, n]) => n)),
+        onlyB: sorted([...y].filter(([k]) => !x.has(k) && !r.has(k)).map(([, n]) => n)),
+        referencedInA: sorted([...y].filter(([k]) => !x.has(k) && r.has(k)).map(([, n]) => n)),
       };
     });
   }

@@ -933,12 +933,13 @@ describe("scanProject on awkward projects", () => {
     const c = (type: string, name: string, missing = false) => ({ type, name, attrs: {}, text: "", ...(missing ? { missing: true } : {}) }) as ParsedComponent;
     const a = await index.build({ source: "org:a", kind: "org" }, async () => ({ components: [c("ApexClass", "Foo"), c("ApexClass", "OnlyOrg"), c("CustomObject", "Account", true)], edges: [], skipped: [] }));
     const b = await index.build({ source: "repo:b", kind: "repo" }, async () => ({ components: [c("ApexClass", "foo"), c("ApexClass", "OnlyRepo"), c("Flow", "F"), c("CustomObject", "Account")], edges: [], skipped: [] }));
+    // Account is only a reference in the org: not counted as missing from it.
     expect(index.presence(a.id, b.id)).toEqual([
-      { type: "ApexClass", both: 1, onlyA: ["OnlyOrg"], onlyB: ["OnlyRepo"] },
-      { type: "CustomObject", both: 0, onlyA: [], onlyB: ["Account"] },
-      { type: "Flow", both: 0, onlyA: [], onlyB: ["F"] },
+      { type: "ApexClass", both: 1, onlyA: ["OnlyOrg"], onlyB: ["OnlyRepo"], referencedInA: [] },
+      { type: "CustomObject", both: 0, onlyA: [], onlyB: [], referencedInA: ["Account"] },
+      { type: "Flow", both: 0, onlyA: [], onlyB: ["F"], referencedInA: [] },
     ]);
-    expect(index.presence(a.id, b.id, ["Flow"])).toEqual([{ type: "Flow", both: 0, onlyA: [], onlyB: ["F"] }]);
+    expect(index.presence(a.id, b.id, ["Flow"])).toEqual([{ type: "Flow", both: 0, onlyA: [], onlyB: ["F"], referencedInA: [] }]);
   });
 
   it("matches names without case, and links roll-ups and dependent picklists", async () => {
