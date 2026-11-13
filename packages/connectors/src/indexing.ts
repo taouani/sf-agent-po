@@ -313,9 +313,16 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         });
         if (retrieved.incremental) options.progress?.(`Retrieved ${retrieved.incremental.retrieved} changed or always retrieved components; ${retrieved.incremental.deleted} deleted since the last run`);
         options.progress?.("Reading the retrieved metadata");
-        const parsed = await scanProject(retrieved.dir, { cache });
+        // A read that fails still waits for the removal of the last retrieval, under the lease.
+        const parsed = await scanProject(retrieved.dir, { cache }).catch(async (err: unknown) => {
+          await retrieved.cleared;
+          throw err;
+        });
         // Files came back, but nothing the index reads: the retrieval went wrong somewhere.
-        if (!parsed.components.some((c) => !c.missing)) throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
+        if (!parsed.components.some((c) => !c.missing)) {
+          await retrieved.cleared;
+          throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
+        }
         // What the org could not return is reported with what could not be read.
         const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);

@@ -378,7 +378,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
     const skip = new Set<string>();
     const asked: { type: string; members: string[] }[][] = [];
     const sf = fakeSf(org, [], { dates, asked, permissionSets, skip, messages: [] });
-    const run = () => retrieveOrgMetadata({ targetOrg: "dev", dir, sf });
+    const run = () => retrieveDone({ targetOrg: "dev", dir, sf });
     const tree = (r: { dir: string }) => path.join(r.dir, "metadata");
     await run();
 
