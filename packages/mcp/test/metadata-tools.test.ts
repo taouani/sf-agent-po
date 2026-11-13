@@ -134,7 +134,10 @@ describe("metadata tools", () => {
     w("row-app/force-app/classes/NotDeployed.cls", "public class NotDeployed {}");
     w("sfoa-app/force-app/classes/SfoaOnly.cls", "public class SfoaOnly {}");
     w("row-app/force-app/staticresources/Logo.resource-meta.xml", "<StaticResource/>");
-    w("row-app/force-app/objects/Policy__c/fields/Region__c.field-meta.xml", "<CustomField><fullName>Region__c</fullName><type>Lookup</type><referenceTo>Account</referenceTo></CustomField>");
+    w("row-app/force-app/objects/Policy__c/fields/Region__c.field-meta.xml", "<CustomField><fullName>Region__c</fullName><type>Lookup</type><referenceTo>Contact</referenceTo></CustomField>");
+    // A standard field and a managed package's field, which an org's index lists only as references.
+    w("row-app/force-app/objects/Account/fields/Industry.field-meta.xml", "<CustomField><fullName>Industry</fullName><type>Picklist</type></CustomField>");
+    w("row-app/force-app/objects/ns__Policy__c/fields/Foo__c.field-meta.xml", "<CustomField><fullName>Foo__c</fullName><type>Text</type></CustomField>");
     // The org: what the set deploys, a class made by hand, and nothing of NotDeployed.
     const orgDir = mkdtempSync(path.join(tmpdir(), "sf-agent-org-"));
     dirs.push(orgDir);
@@ -142,6 +145,8 @@ describe("metadata tools", () => {
       mkdirSync(path.join(orgDir, "classes"), { recursive: true });
       writeFileSync(path.join(orgDir, "classes", `${c}.cls`), `public class ${c} {}`);
     }
+    mkdirSync(path.join(orgDir, "objects"), { recursive: true });
+    writeFileSync(path.join(orgDir, "objects", "Policy__c.object"), "<CustomObject><fields><fullName>Status__c</fullName><type>Text</type></fields></CustomObject>");
     const org = "org:00D000000000001AAA";
     await index.build({ source: org, kind: "org" }, () => scanProject(orgDir));
 
@@ -172,7 +177,7 @@ describe("metadata tools", () => {
     // A type the org's index does not hold: no claim either way.
     expect((await call("metadata_component", { source: set, type: "StaticResource", name: "Logo" })).text).toContain(`${org}: its index has no StaticResource, so it cannot say whether the org has it.`);
     // Only referenced: no pair line, and a standard field stays among the reasons.
-    const referenced = (await call("metadata_component", { source: set, type: "CustomObject", name: "Account" })).text;
+    const referenced = (await call("metadata_component", { source: set, type: "CustomObject", name: "Contact" })).text;
     expect(referenced).toContain("only referenced (a standard object or field, one in a folder outside the set, or one only in the org)");
     expect(referenced).not.toContain(`${org}:`);
     // Folders are masked like any text.
@@ -182,6 +187,34 @@ describe("metadata tools", () => {
     const listed = (await call("metadata_sources")).text;
     expect(listed).toContain("folder set extra (");
     expect(listed).not.toContain("Karim");
+
+    // The comparison of the pair, by presence.
+    const compared = (await call("metadata_compare", {})).text;
+    expect(compared).toMatch(new RegExp(`^Compared ${org} \\(indexed [^)]+\\) with folder set row \\(common-app, row-app\\) as `));
+    expect(compared).toContain("3 in both; 2 only in the org; 2 only in the folder set.");
+    expect(compared).toContain("- ApexClass: 2 / 1 / 1\n- CustomField: 0 / 1 / 1\n- CustomObject: 1 / 0 / 0");
+    expect(compared).toMatch(/Not compared, since the org's index does not hold them all: [^\n]*StaticResource \(1 in the set\)/);
+    expect(compared).toContain("4 component(s) of the set are standard or from a managed package (CustomField 2, CustomObject 2)");
+    // A few of each type in turn.
+    expect(compared).toMatch(/Only in the org: [^\n]*\(2\):\n- ApexClass HandMade\n- CustomField Policy__c\.Status__c/);
+    expect(compared).toMatch(/Only in the folder set: [^\n]*\(2\):\n- ApexClass NotDeployed \([^)]+\)\n- CustomField Policy__c\.Region__c/);
+    const unknown = await call("metadata_compare", { types: ["flow"] });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.text).toContain("Unknown type(s): flow.");
+    // The component view says the same of a standard field.
+    expect((await call("metadata_component", { source: set, type: "CustomField", name: "Account.Industry" })).text).toContain(`${org}: only referenced in the org's index (a standard component, or one from a managed package`);
+    expect(compared).toContain("- ApexClass NotDeployed (row-app/force-app/classes/NotDeployed.cls)");
+    expect((await call("metadata_compare", { source: org, types: ["Flow"] })).text).toContain("Nothing to compare for these types.");
+    expect((await call("metadata_compare", { source: set, limit: 1 })).text).toContain("- ApexClass HandMade");
+    const extra = /repo:sf-agent-mono-\w+:extra#[0-9a-f]{8}/.exec(listed)![0];
+    const none = await call("metadata_compare", { source: extra });
+    expect(none.isError).toBe(true);
+    expect(none.text).toContain(`${extra} has no indexed pair`);
+    // Two sets for one org: the folder set is named, not the org again.
+    await call("metadata_index", { project: root, packages: ["sfoa-app"], set: "sfoa", forOrg: org });
+    await indexer.settle();
+    for (const args of [{}, { source: org }]) expect((await call("metadata_compare", args)).text).toContain("Several folder sets are paired: name the folder set with source");
+    expect((await call("metadata_compare", { source: set })).isError).toBeFalsy();
     expect((await call("metadata_index", { project: root, packages: ["row-app"], set: "x", forOrg: "org:00D000000000001" })).text).toContain("18-character org id");
   });
 
