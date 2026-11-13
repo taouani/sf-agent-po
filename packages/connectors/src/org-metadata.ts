@@ -329,6 +329,8 @@ export interface RetrieveOptions {
   parallelRetrieves?: number;
   /** From this many email templates to retrieve, they are read by query (QUERY_TEMPLATES_FROM by default). */
   queryTemplatesFrom?: number;
+  /** Email templates read by one query at first (TEMPLATES_PER_QUERY by default). */
+  templatesPerQuery?: number;
 }
 
 /** The org id from `sf org display`, checked. */
@@ -441,7 +443,7 @@ export async function retrieveOrgMetadata(options: RetrieveOptions): Promise<Org
     if (templates.length >= (options.queryTemplatesFrom ?? QUERY_TEMPLATES_FROM) && templates.length * 2 >= all.length) {
       progress(`Reading ${templates.length.toLocaleString("en")} email templates by query`);
       const out = path.join(work, QUERIED);
-      const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat).catch(async () => {
+      const found = await queryTemplates(sf, targetOrg, new Set(templates), out, { cwd: work, timeoutMs: wait * 60_000 }, heartbeat, options.templatesPerQuery).catch(async () => {
         await remove(out);
         return undefined;
       });
@@ -861,6 +863,7 @@ async function queryTemplates(
   out: string,
   run: { cwd: string; timeoutMs: number },
   heartbeat: () => void,
+  perQuery = TEMPLATES_PER_QUERY,
 ): Promise<Set<string>> {
   const pathOf = folderPaths(await folderQuery(sf, targetOrg, "emailFolders", run));
   // In the order of the org's ids, which the ranges below follow.
@@ -875,7 +878,8 @@ async function queryTemplates(
   }
   const ids = [...memberOf.keys()];
   const ranges: string[][] = [];
-  for (let i = 0; i < ids.length; i += TEMPLATES_PER_QUERY) ranges.push(ids.slice(i, i + TEMPLATES_PER_QUERY));
+  const size = Math.max(1, Math.floor(perQuery));
+  for (let i = 0; i < ids.length; i += size) ranges.push(ids.slice(i, i + size));
   const written = new Set<string>();
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   const write = async (t: Row) => {

@@ -603,7 +603,7 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
   });
 
   it("reads the bodies of many templates a few ranges at once", async () => {
-    const names = Array.from({ length: 1_200 }, (_, i) => `T${String(i).padStart(4, "0")}`);
+    const names = Array.from({ length: 12 }, (_, i) => `T${String(i).padStart(2, "0")}`);
     const org: Record<string, string[]> = { ApexClass: ["X"], EmailTemplate: ["Care", ...names.map((n) => `Care/${n}`)] };
     const soql: Record<string, Record<string, unknown>[]> = {
       Folder: [{ Id: "00l1", DeveloperName: "Care", ParentId: null, Type: "Email", LastModifiedDate: "2026-01-01T00:00:00.000+0000" }],
@@ -627,14 +627,14 @@ describe("retrieveOrgMetadata, from one run to the next", () => {
         running--;
       }
     };
-    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf });
-    // 1,200 templates: three ranges of at most 500, read at once, each to a file of its own.
+    const run = await retrieveOrgMetadata({ targetOrg: "dev", dir: tmp(), sf, queryTemplatesFrom: 2, templatesPerQuery: 5 });
+    // 12 templates: three ranges of at most 5, read at once, each to a file of its own.
     expect(ranges).toHaveLength(3);
     expect(new Set(ranges).size).toBe(3);
     expect(most).toBe(3);
     const care = path.join(run.dir, "metadata", "email", "Care");
-    expect(readdirSync(care).filter((f) => f.endsWith(".email"))).toHaveLength(1_200);
-    expect(readFileSync(path.join(care, "T1199.email"), "utf8")).toBe("{!Case.T1199__c}");
+    expect(readdirSync(care).filter((f) => f.endsWith(".email"))).toHaveLength(12);
+    expect(readFileSync(path.join(care, "T11.email"), "utf8")).toBe("{!Case.T11__c}");
     // Only the folder is retrieved.
     expect(asked.flat().filter((e) => e.type === "EmailTemplate")).toEqual([{ type: "EmailTemplate", members: ["Care"] }]);
   });
