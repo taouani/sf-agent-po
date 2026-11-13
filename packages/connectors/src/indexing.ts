@@ -153,8 +153,8 @@ export function formatDuration(ms: number): string {
   return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
-/** Progress lines that say what was done ("Retrieved 14 parts, ..."), not what starts: notes. */
-const NOTE = /^Retrieved /;
+/** Progress lines that say what was done ("Retrieved 14 parts, ...") or why ("A full run: ..."), not what starts: notes. */
+const NOTE = /^(?:Retrieved |A full run: )/;
 /** The step a progress line starts: the parts of a retrieval, retrieved a few at a time, are one step. */
 const RETRIEVING = "Retrieving the metadata";
 const stepOf = (message: string) =>
@@ -313,13 +313,29 @@ export async function indexOrg(index: MetadataIndex, targetOrg: string, options:
         });
         if (retrieved.incremental) options.progress?.(`Retrieved ${retrieved.incremental.retrieved} changed or always retrieved components; ${retrieved.incremental.deleted} deleted since the last run`);
         options.progress?.("Reading the retrieved metadata");
-        const parsed = await scanProject(retrieved.dir, { cache });
+        // A read that fails still waits for the removal of the last retrieval, under the lease.
+        const parsed = await scanProject(retrieved.dir, { cache }).catch(async (err: unknown) => {
+          await retrieved.cleared;
+          throw err;
+        });
         // Files came back, but nothing the index reads: the retrieval went wrong somewhere.
-        if (!parsed.components.some((c) => !c.missing)) throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
+        if (!parsed.components.some((c) => !c.missing)) {
+          await retrieved.cleared;
+          throw new Error(`Nothing could be read from what ${targetOrg} returned.`);
+        }
         // What the org could not return is reported with what could not be read.
         const warnings = summarizeWarnings(retrieved.warnings).map((reason) => ({ file: "(retrieve)", reason }));
         const skipped = [...warnings, ...parsed.skipped].slice(0, MAX_SKIPPED_LISTED);
         const total = warnings.length + (parsed.skippedCount ?? parsed.skipped.length);
+        // The last retrieval was removed while the files were read; what is left of it is
+        // timed as a step of its own.
+        let cleared = false;
+        void retrieved.cleared.then(() => (cleared = true));
+        await Promise.resolve();
+        if (!cleared) {
+          options.progress?.("Removing the last retrieval");
+          await retrieved.cleared;
+        }
         options.progress?.("Writing the index");
         return { ...parsed, skipped, ...(total > skipped.length ? { skippedCount: total } : {}) };
       }),
