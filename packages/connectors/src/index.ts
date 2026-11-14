@@ -5,6 +5,7 @@ export {
   atlassianConfigFromEnv,
   confluencePageId,
   type AtlassianConfig,
+  type CreateField,
   type IssueState,
   type JiraStory,
 } from "./atlassian.js";

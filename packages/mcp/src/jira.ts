@@ -4,7 +4,7 @@
 // what Jira holds now (summaries, labels, the project's name) is shown on the page only.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { adfToText, AtlassianError, type AtlassianClient, type IssueState } from "@sf-agent-po/connectors";
+import { adfToText, AtlassianError, type AtlassianClient, type CreateField, type IssueState } from "@sf-agent-po/connectors";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
 import { type Artifact, type ArtifactMeta, getArtifact, hash, type JiraMapping, updateArtifactMeta } from "./artifacts.js";
@@ -33,6 +33,37 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
 type BacklogMeta = ArtifactMeta & { backlog?: Backlog };
 
+/** Fields a project requires on create, by level, as the user gave them: kept per project in the context. */
+type LevelFields = Partial<Record<"epic" | "story" | "subtask", Record<string, unknown>>>;
+
+/** Fields that may be set on create: custom fields and the standard ones a project may require. */
+const SETTABLE_FIELD = /^(customfield_\d+|components|fixVersions|versions|priority|duedate|environment|assignee|reporter|security)$/;
+const levelFields = z
+  .record(z.string().regex(SETTABLE_FIELD, "must be a custom field id such as customfield_10100, or components, fixVersions, versions, priority, duedate, environment, assignee, reporter or security"), z.unknown())
+  .refine((o) => Object.keys(o).length <= 20, "at most 20 fields");
+const fieldsArg = z
+  .object({ epic: levelFields.optional(), story: levelFields.optional(), subtask: levelFields.optional() })
+  .strict()
+  .describe(
+    'Fields the project requires when an issue is created, by level, in Jira\'s REST format: {"epic": {"customfield_10011": "{summary}"}, "story": {"customfield_10100": {"value": "CRM Team"}, "components": [{"name": "Salesforce"}]}}. ' +
+      'Find them with jira_fields. "{summary}" stands for the issue\'s summary. Set only on create; kept for the project, so later publishes reuse them when this is left out. Pass {} to forget them.',
+  );
+
+/** The fields kept for a project in a context. */
+function savedFields(contexts: PublishKit["contexts"], context: string, projectKey: string): LevelFields | undefined {
+  const all = contexts.get(context)?.settings.jiraFields as Record<string, LevelFields> | undefined;
+  const kept = all?.[projectKey];
+  return kept && typeof kept === "object" ? kept : undefined;
+}
+
+/** A field value with each string's pseudonyms put back, and "{summary}" made the issue's summary. */
+function fieldValue(value: unknown, reveal: (t: string) => string, summary: string): unknown {
+  if (typeof value === "string") return reveal(value).split("{summary}").join(summary);
+  if (Array.isArray(value)) return value.map((v) => fieldValue(v, reveal, summary));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fieldValue(v, reveal, summary)]));
+  return value;
+}
+
 type JiraTarget = {
   context: string;
   artifactId: string;
@@ -40,6 +71,7 @@ type JiraTarget = {
   epicIssueType: string;
   storyIssueType: string;
   storyPointsField?: string;
+  fields?: LevelFields;
   subtasks: boolean;
   detailedDesignId?: string;
   subtaskIssueType?: string;
@@ -402,6 +434,51 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
   };
 
   server.registerTool(
+    "jira_fields",
+    {
+      title: "Required Jira fields",
+      description:
+        "Lists the fields a Jira project requires when an epic, a story or a sub-task is created, with the values Jira allows, and the fields that may hold story points. " +
+        "Ask the user which value to use for each, then pass them to jira_publish as fields. Names and values are masked.",
+      inputSchema: {
+        context: contextName,
+        projectKey: z.string().regex(/^[A-Z][A-Z0-9_]+$/, "must be a Jira project key such as PORT"),
+        issueTypes: z.array(z.string().min(1)).min(1).max(5).default(["Epic", "Story"]).describe("The issue types to look at, as jira_publish names them (epicIssueType, storyIssueType, subtaskIssueType)."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    guard(async ({ context, projectKey, issueTypes }: { context: string; projectKey: string; issueTypes: string[] }) => {
+      if (!kit.atlassian) throw new Error("Jira is not set up for this server.");
+      const client = kit.atlassian();
+      // Set by jira_publish itself, or by Jira.
+      const own = new Set(["summary", "description", "project", "issuetype", "parent", "labels"]);
+      const sections: string[] = [];
+      for (const type of issueTypes) {
+        const fields: CreateField[] = await jira(`list the fields of ${type} in ${projectKey}`, () => client.createFields(projectKey, type));
+        const required = fields.filter((f) => f.required && !f.hasDefault && !own.has(f.id));
+        const points = fields.filter((f) => /story ?points?|points? d'histoire|estimation/i.test(f.name) && f.type === "number");
+        const lines = required.map((f) => {
+          const values = f.allowed.length ? `; allowed: ${f.allowed.map((v) => (v.id ? `${v.name} (id ${v.id})` : v.name)).join(", ")}${f.allowedCount > f.allowed.length ? `, and ${f.allowedCount - f.allowed.length} more` : ""}` : "";
+          const epicName = /^epic name$/i.test(f.name) ? ' (pass "{summary}" to use the epic\'s summary)' : "";
+          return `- ${f.id} "${f.name}" (${f.type})${epicName}${values}`;
+        });
+        sections.push(
+          [
+            `${type}: ${required.length ? `${required.length} required field(s) Jira does not fill itself:` : "no required field beyond what jira_publish sets."}`,
+            ...lines,
+            ...(points.length ? [`Story points field: ${points.map((f) => `${f.id} "${f.name}"`).join(", ")} (pass it as storyPointsField).`] : []),
+          ].join("\n"),
+        );
+      }
+      const masked = await masker.maskOutputs(context, sections);
+      return text(
+        `${masked.texts.join("\n\n")}\n\n` +
+          'Pass the values as fields to jira_publish, by level, in Jira\'s format: an option as {"value": "name"} or {"id": "10001"}, several as [{"name": "..."}], a user as {"accountId": "..."}. Ask the user for any value you cannot tell.',
+      );
+    }),
+  );
+
+  server.registerTool(
     "jira_publish",
     {
       title: "Publish to Jira",
@@ -427,6 +504,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           .describe("Give each story one sub-task per component change in the deployment list of the detailed design that builds this backlog."),
         detailedDesignId: z.string().optional().describe("The detailed design to take the sub-tasks from. Left out: the newest one whose stories come from this backlog."),
         subtaskIssueType: z.string().optional().describe("The sub-task issue type. Left out: the project's own, read from Jira."),
+        fields: fieldsArg.optional(),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
@@ -549,6 +627,19 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           const body = [`Labels: ${labels.join(", ")}`, ...points, "", adfToText(w.fields.description).trim()].join("\n");
           return [head, indent(body, `${pad}  | `), ""];
         });
+        // Fields the project requires on create: given now, or kept from an earlier publish.
+        const extra: LevelFields = args.fields ?? savedFields(contexts, context, args.projectKey) ?? {};
+        const extraFor = (i: PlannedItem, summary: string) => {
+          const given = extra[i.level];
+          return given ? (fieldValue(given, reveal, summary) as Record<string, unknown>) : {};
+        };
+        const levelName = { epic: args.epicIssueType, story: args.storyIssueType, subtask: subtaskType ?? "Sub-task" } as const;
+        const extraLines = (["epic", "story", "subtask"] as const).flatMap((level) => {
+          const given = extra[level];
+          if (!given || !Object.keys(given).length) return [];
+          const shown = fieldValue(given, reveal, "<the issue's summary>") as Record<string, unknown>;
+          return [`Set when ${levelName[level]} issues are created: ${Object.entries(shown).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(", ")}`];
+        });
         const req: PublishRequest = {
           kind: "publish",
           target:
@@ -557,6 +648,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
             (count("update") ? ". Updating replaces the summary and description of those issues, and story points when set; labels added in Jira, status, assignee and comments are kept" : ""),
           title,
           body: [
+            ...(extraLines.length ? [...extraLines, ""] : []),
             ...(design && subtaskType ? [`Sub-tasks (${subtaskType}) come from the detailed design "${reveal(design.title)}" and are listed under their story.`, ""] : []),
             ...lines,
             ...(links.length ? ["Dependency links (the first blocks the second):", ...links.map((l) => `- ${l.blocker} blocks ${l.blocked}`), ""] : []),
@@ -579,6 +671,14 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           return text(`Nothing was written: the user ${why}.${await comment()}`);
         }
 
+        // Kept for the project once the user approved a publish with them; {} forgets them.
+        if (args.fields)
+          contexts.updateSettings(context, (current) => {
+            const all = { ...((current.jiraFields as Record<string, LevelFields> | undefined) ?? {}) };
+            if (Object.values(args.fields!).some((f) => f && Object.keys(f).length)) all[args.projectKey] = args.fields!;
+            else delete all[args.projectKey];
+            return { ...current, jiraFields: all };
+          });
         const done: string[] = [];
         const save = () => updateArtifactMeta(contexts, context, doc, () => ({ jira: { ...mapping } }));
         // Best effort: the timestamp only feeds the "edited in Jira" warning, so failing to read it must not fail the publish.
@@ -604,7 +704,10 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           try {
             return await run();
           } catch (err) {
-            const why = err instanceof AtlassianError ? `Jira refused to ${what} (HTTP ${err.status}).` : (err as Error).message;
+            // What Jira said is wrong (a required field, an unknown value), masked: it may quote a value.
+            const said = err instanceof AtlassianError && err.detail?.length ? ` Jira says: ${(await masker.maskOutput(context, err.detail.join("; "))).text}` : "";
+            const hint = /is required|required field/i.test(said) ? " Find the project's required fields with jira_fields, then publish again with fields." : "";
+            const why = err instanceof AtlassianError ? `Jira refused to ${what} (HTTP ${err.status}).${said}${hint}` : (err as Error).message;
             throw new PartialPublishError(
               why,
               `\nCompleted before the failure:\n${done.map((d) => `- ${d}`).join("\n") || "- nothing"}\n\n` +
@@ -621,7 +724,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           const parent = parentKey && (item.action === "create" || item.move) ? { parent: { key: parentKey } } : {};
           if (item.action === "create") {
             const result = await step(`create ${item.id}`, () =>
-              client.createIssue({ project: { key: args.projectKey }, issuetype: { name: issueType(item) }, ...w.fields, labels: w.labels, ...parent }),
+              client.createIssue({ ...extraFor(item, w.fields.summary), project: { key: args.projectKey }, issuetype: { name: issueType(item) }, ...w.fields, labels: w.labels, ...parent }),
             );
             await record(item, result.key, result.url);
             done.push(`Created ${result.key} ${item.summary}`);

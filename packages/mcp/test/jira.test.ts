@@ -22,14 +22,27 @@ function fakeJira() {
   const links: string[] = [];
   let next = 1;
   let clock = 0;
-  const fail: { on?: (op: string, fields: Record<string, any>) => boolean; noSubtasks?: boolean } = {};
+  const fail: { on?: (op: string, fields: Record<string, any>) => boolean; noSubtasks?: boolean; requireTeam?: boolean } = {};
   const client = {
     getProject: async (key: string) => {
       if (key !== "PORT") throw new AtlassianError("No project", 404);
       return { key, name: "Portal", issueTypes: ["Epic", "Story", "Task"], subtaskTypes: fail.noSubtasks ? [] : ["Sub-task"] };
     },
+    createFields: async (project: string, type: string) => {
+      if (project !== "PORT") throw new AtlassianError("No project", 404);
+      const base = [
+        { id: "summary", name: "Summary", required: true, hasDefault: false, type: "string", allowed: [], allowedCount: 0 },
+        { id: "reporter", name: "Reporter", required: true, hasDefault: true, type: "user", allowed: [], allowedCount: 0 },
+        { id: "customfield_10016", name: "Story Points", required: false, hasDefault: false, type: "number", allowed: [], allowedCount: 0 },
+      ];
+      const team = { id: "customfield_10100", name: "Team", required: true, hasDefault: false, type: "option", allowed: [{ id: "1", name: "CRM" }, { id: "2", name: "Lea Martin's squad" }], allowedCount: 2 };
+      const epicName = { id: "customfield_10011", name: "Epic Name", required: true, hasDefault: false, type: "string", allowed: [], allowedCount: 0 };
+      return type === "Epic" ? [...base, epicName] : [...base, team];
+    },
     createIssue: async (fields: Record<string, any>) => {
       if (fail.on?.("create", fields)) throw new AtlassianError(`Bad request: summary "${fields.summary}" is invalid`, 400);
+      if (fail.requireTeam && fields.issuetype?.name === "Story" && !fields.customfield_10100)
+        throw new AtlassianError("Bad request", 400, [`customfield_10100: Team is required. Ask Karim Benali.`]);
       const key = `PORT-${next++}`;
       issues.set(key, { fields: structuredClone(fields), updated: ++clock });
       writes.push({ op: "create", key, fields });
@@ -275,6 +288,45 @@ describe("publishing to Jira", () => {
     expect(again.text).toContain("Created PORT-3 Set the VIP flag");
     expect(again.text).not.toContain("Created PORT-1");
     expect([...jira.issues.keys()]).toEqual(["PORT-1", "PORT-2", "PORT-3"]);
+  });
+
+  it("lists the fields a project requires, masked, and sets the ones given on create, kept for the project", async () => {
+    const { call, jira, input, seen } = await connect();
+    const listed = await call("jira_fields", { context: "acme", projectKey: "PORT" });
+    expect(listed.isError).toBeFalsy();
+    expect(listed.text).toContain('- customfield_10011 "Epic Name" (string) (pass "{summary}"');
+    expect(listed.text).toContain('- customfield_10100 "Team" (option); allowed: CRM (id 1)');
+    expect(listed.text).toContain('Story points field: customfield_10016 "Story Points"');
+    expect(listed.text).not.toContain("Lea Martin");
+    expect(listed.text).not.toContain("reporter");
+    // Without the field, Jira's reason comes back, masked, with the way out.
+    jira.fail.requireTeam = true;
+    const { id } = await saveBacklog(call, backlog(input.id));
+    const failed = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(failed.text).toMatch(/Jira refused to create S1 \(HTTP 400\)\. Jira says: customfield_10100: Team is required\. Ask \[[A-Z]+_\d+\]\./);
+    expect(failed.text).toContain("Find the project's required fields with jira_fields");
+    expect(failed.text).not.toContain("Karim");
+    const fields = { epic: { customfield_10011: "{summary}" }, story: { customfield_10100: { value: "CRM" } } };
+    const ok = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", fields });
+    expect(ok.isError).toBeFalsy();
+    expect(seen.at(-1)!.body).toContain('Set when Epic issues are created: customfield_10011 = "<the issue\'s summary>"');
+    expect(seen.at(-1)!.body).toContain('Set when Story issues are created: customfield_10100 = {"value":"CRM"}');
+    const created = jira.writes.filter((w) => w.op === "create");
+    // The epic was created by the failed publish: its stories now, with the team.
+    expect(created.filter((w) => w.fields.issuetype.name === "Story").every((w) => w.fields.customfield_10100?.value === "CRM")).toBe(true);
+    // Kept: a new story of a later publish gets them without asking again, and a new epic its own summary as Epic Name.
+    const more = backlog(input.id, (b) => {
+      b.epics.push({ id: "E2", summary: "VIP reports", outcome: "Managers see VIPs.", priority: "should", stories: [{ id: "S4", type: "story", summary: "Count VIPs", persona: "Sales manager", want: "a count", benefit: "I plan", acceptanceCriteria: [{ given: "VIPs", when: "I open the report", then: "the count shows" }] }] });
+    });
+    const { id: id2 } = await saveBacklog(call, more);
+    expect(id2).toBe(id);
+    const again = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(again.isError).toBeFalsy();
+    const epic2 = jira.writes.find((w) => w.op === "create" && w.fields.summary === "VIP reports")!;
+    expect(epic2.fields.customfield_10011).toBe("VIP reports");
+    expect(jira.writes.find((w) => w.op === "create" && w.fields.summary === "Count VIPs")!.fields.customfield_10100).toEqual({ value: "CRM" });
+    // Updates leave them as they are in Jira.
+    expect(jira.writes.filter((w) => w.op === "update").some((w) => "customfield_10100" in w.fields)).toBe(false);
   });
 
   it("creates again an issue deleted in Jira", async () => {

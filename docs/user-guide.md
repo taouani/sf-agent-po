@@ -288,6 +288,7 @@ You rarely call tools by name; this list helps when you want to be precise.
 | `trace_show` | The traceability matrix |
 | `design_save`, `backlog_save`, `backlog_get`, `backlog_check` | Save and check designs and backlogs (the workflows use them) |
 | `confluence_publish`, `jira_publish` | Publish, after your approval |
+| `jira_fields` | The fields a Jira project requires on create (epic, story, sub-task), with the values it allows, and its story points field. `jira_publish` takes them as `fields` and keeps them for the project |
 | `feedback_jira_diff`, `feedback_review`, `feedback_summary` | Feedback on published work |
 | `industry_guidance` | Guidance for one industry |
 | `server_status` | The `doctor` checks, from inside the server |
