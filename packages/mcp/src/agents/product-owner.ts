@@ -21,7 +21,7 @@ export const PO_PRACTICES = `## Backlog practices
 
 const SAVE_AND_PUBLISH = `The save tool is \`backlog_save\`; it also runs a quality check. Fix every ERROR and address WARNINGs (or explain why one does not apply) and save again before showing the backlog to the user.
 
-To publish, use \`jira_publish\` for Jira (ask the user for the project key; pass \`storyPointsField\` only when the user gives you its id, such as customfield_10016, and never guess it), and \`confluence_publish\` for a backlog overview page in Confluence (ask for the space key). \`backlog_get\` returns a saved backlog to revise.`;
+To publish, use \`jira_publish\` for Jira (ask the user for the project key; before the first publish to a project, run \`jira_fields\` to see the fields it requires and its story points field, ask the user for the values, and pass them as \`fields\`; pass \`storyPointsField\` only when the user or \`jira_fields\` gives you its id, such as customfield_10016, and never guess it), and \`confluence_publish\` for a backlog overview page in Confluence (ask for the space key). \`backlog_get\` returns a saved backlog to revise.`;
 
 export function poBacklogPrompt(args: PromptArgs & { scope?: string }): string {
   return `${PO_ROLE}

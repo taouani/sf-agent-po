@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AtlassianClient, AtlassianError, adfToText, atlassianConfigFromEnv, confluencePageId } from "../src/atlassian.js";
+import { AtlassianClient, AtlassianError, adfToText, atlassianConfigFromEnv, confluencePageId, jiraErrorDetail } from "../src/atlassian.js";
 
 describe("Atlassian helpers", () => {
   it("converts ADF to text", () => {
@@ -90,6 +90,45 @@ describe("AtlassianClient", () => {
     }) as typeof fetch;
     return { calls, client: new AtlassianClient({ siteUrl: "https://x.atlassian.net", email: "me@example.com", apiToken: "tok" }, fakeFetch) };
   };
+
+  it("passes on what Jira says is wrong, and reads the fields an issue type requires", async () => {
+    const { client } = site({
+      "POST /rest/api/3/issue": { status: 400, body: { errorMessages: [], errors: { customfield_10100: "Team is required.", components: "Component/s is required." } } },
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes/10001": {
+        body: {
+          total: 2,
+          fields: [
+            { fieldId: "customfield_10100", name: "Team", required: true, hasDefaultValue: false, schema: { type: "option" }, allowedValues: [{ id: "1", value: "CRM" }] },
+            { fieldId: "components", name: "Component/s", required: true, hasDefaultValue: false, schema: { type: "array", items: "component" }, allowedValues: [{ id: "7", name: "Salesforce" }] },
+          ],
+        },
+      },
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes": { body: { issueTypes: [{ id: "10000", name: "Epic" }, { id: "10001", name: "Story" }] } },
+    });
+    const err = await client.createIssue({ summary: "x" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AtlassianError);
+    expect((err as AtlassianError).detail).toEqual(["customfield_10100: Team is required.", "components: Component/s is required."]);
+    expect(jiraErrorDetail("<html>Bad gateway</html>")).toBeUndefined();
+    expect(await client.createFields("PORT", "Story")).toEqual([
+      { id: "customfield_10100", name: "Team", required: true, hasDefault: false, type: "option", allowed: [{ id: "1", name: "CRM" }], allowedCount: 1 },
+      { id: "components", name: "Component/s", required: true, hasDefault: false, type: "array of component", allowed: [{ id: "7", name: "Salesforce" }], allowedCount: 1 },
+    ]);
+    await expect(client.createFields("PORT", "Feature")).rejects.toThrow('Project PORT has no issue type "Feature". Available: Epic, Story.');
+  });
+
+  it("pages the fields of an issue type, and stops when Jira gives no total and repeats a page", async () => {
+    const many = Array.from({ length: 200 }, (_, n) => ({ fieldId: `customfield_${n}`, name: `F${n}`, schema: { type: "string" } }));
+    const { calls, client } = site({
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes/10001": { body: { fields: many } },
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes": { body: { createMetaIssueType: [{ id: "10001", name: "Story" }], isLast: true } },
+    });
+    expect(await client.createFields("PORT", "Story")).toHaveLength(200);
+    expect(calls.map((c) => c.path)).toEqual([
+      "/rest/api/3/issue/createmeta/PORT/issuetypes?maxResults=200&startAt=0",
+      "/rest/api/3/issue/createmeta/PORT/issuetypes/10001?maxResults=200&startAt=0",
+      "/rest/api/3/issue/createmeta/PORT/issuetypes/10001?maxResults=200&startAt=200",
+    ]);
+  });
 
   it("reads the site settings from the environment", () => {
     expect(atlassianConfigFromEnv({ ATLASSIAN_SITE_URL: "https://x.atlassian.net//", ATLASSIAN_EMAIL: "e", ATLASSIAN_API_TOKEN: "t" })).toEqual({

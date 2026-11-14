@@ -20,9 +20,41 @@ export class AtlassianError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** What Jira said was wrong, one line per problem ("customfield_10100: Team is required."), when it said. */
+    readonly detail?: string[],
   ) {
     super(message);
   }
+}
+
+/** The problems a Jira error body names: its error messages, and each field's message. */
+export function jiraErrorDetail(body: string): string[] | undefined {
+  try {
+    const r = JSON.parse(body) as { errorMessages?: unknown; errors?: unknown };
+    const lines = [
+      ...(Array.isArray(r.errorMessages) ? r.errorMessages.filter((m): m is string => typeof m === "string") : []),
+      ...(r.errors && typeof r.errors === "object" ? Object.entries(r.errors as Record<string, unknown>).filter(([, m]) => typeof m === "string").map(([f, m]) => `${f}: ${m as string}`) : []),
+    ]
+      .map((l) => l.replace(/\s+/g, " ").trim().slice(0, 300))
+      .filter(Boolean);
+    return lines.length ? lines.slice(0, 20) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A field Jira asks for when an issue of a type is created in a project. */
+export interface CreateField {
+  id: string;
+  name: string;
+  required: boolean;
+  /** Jira fills it when it is left out. */
+  hasDefault: boolean;
+  /** "string", "number", "option", "array of option", "user"... */
+  type: string;
+  /** The values Jira allows, by name, when it lists them (at most 30). */
+  allowed: { id?: string; name: string }[];
+  allowedCount: number;
 }
 
 export interface IssueState {
@@ -67,7 +99,8 @@ export class AtlassianClient {
       headers: { Authorization: `Basic ${auth}`, Accept: "application/json", ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...init.headers },
     });
     if (!res.ok) {
-      throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status);
+      const body = await res.text();
+      throw new AtlassianError(`Atlassian request ${path} failed with ${res.status}: ${body.slice(0, 500)}`, res.status, jiraErrorDetail(body));
     }
     // Updates and links answer 204 or 201 with an empty body.
     const body = await res.text();
@@ -119,6 +152,45 @@ export class AtlassianClient {
     const r = await this.request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`);
     const types = (r.issueTypes ?? []) as { name: string; subtask?: boolean }[];
     return { key: r.key, name: r.name, issueTypes: types.filter((t) => !t.subtask).map((t) => t.name), subtaskTypes: types.filter((t) => t.subtask).map((t) => t.name) };
+  }
+
+  /** Every entry of a paged createmeta listing, by id once; stops on the last page even when Jira gives no total. */
+  private async pages<T extends { id?: string; fieldId?: string }>(path: string, entries: (r: any) => unknown): Promise<T[]> {
+    const PAGE = 200;
+    const out = new Map<string, T>();
+    for (let startAt = 0; startAt < 1_000; ) {
+      const r = await this.request(`${path}?maxResults=${PAGE}&startAt=${startAt}`);
+      const page = (Array.isArray(entries(r)) ? entries(r) : []) as T[];
+      const before = out.size;
+      for (const e of page) out.set(String(e.fieldId ?? e.id ?? out.size), e);
+      startAt += page.length;
+      const total = typeof r.total === "number" ? r.total : undefined;
+      if (!page.length || out.size === before || r.isLast === true || (total !== undefined ? startAt >= total : page.length < (r.maxResults ?? PAGE))) break;
+    }
+    return [...out.values()];
+  }
+
+  /** The fields Jira asks for when an issue of `issueType` is created in a project. */
+  async createFields(projectKey: string, issueType: string): Promise<CreateField[]> {
+    const project = encodeURIComponent(projectKey);
+    const base = `/rest/api/3/issue/createmeta/${project}/issuetypes`;
+    const list = await this.pages<{ id: string; name: string }>(base, (r) => r.issueTypes ?? r.createMetaIssueType ?? r.values ?? r.results);
+    const type = list.find((t) => t.name === issueType);
+    if (!type) throw new Error(`Project ${projectKey} has no issue type "${issueType}". Available: ${list.map((t) => t.name).join(", ")}.`);
+    const fields = await this.pages<any>(`${base}/${encodeURIComponent(type.id)}`, (r) => r.fields ?? r.values ?? r.results);
+    return fields.map((f) => {
+      const schema = f.schema ?? {};
+      const values = (Array.isArray(f.allowedValues) ? f.allowedValues : []) as any[];
+      return {
+        id: String(f.fieldId ?? f.key ?? ""),
+        name: String(f.name ?? ""),
+        required: f.required === true,
+        hasDefault: f.hasDefaultValue === true,
+        type: schema.type === "array" ? `array of ${schema.items ?? "value"}` : String(schema.type ?? "unknown"),
+        allowed: values.slice(0, 30).map((v) => ({ ...(v.id !== undefined ? { id: String(v.id) } : {}), name: String(v.name ?? v.value ?? v.key ?? v.id ?? "") })),
+        allowedCount: values.length,
+      };
+    });
   }
 
   async createIssue(fields: Record<string, unknown>): Promise<{ key: string; url: string }> {
