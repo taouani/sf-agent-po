@@ -109,7 +109,7 @@ export const scopeStep: StepDefinition<ScopeAnswer> = {
     const sources = kit.index ? readySources(kit.index) : [];
     const stored = storedScope(kit.contexts, context);
     return [
-      "Propose the Salesforce objects this work touches, so the design looks closely at them and what is linked to them.",
+      "Propose the Salesforce objects this work touches, so the design or the backlog looks closely at them and what is linked to them.",
       sources.length
         ? `Indexed: ${sources.map((s) => s.source).join(", ")}. Find the objects with metadata_summary and metadata_search, from the confirmed requirements.`
         : "Nothing is indexed. Ask the user whether to index the org or a project folder with metadata_index; if they say no, skip this step and say why.",
@@ -124,7 +124,7 @@ export const scopeStep: StepDefinition<ScopeAnswer> = {
     if ("skip" in answer) {
       if (sources.length) return { kind: "retry", attempt: true, findings: [error("answer", `${sources.map((s) => s.source).join(", ")} ${sources.length === 1 ? "is" : "are"} indexed: propose the objects instead of skipping.`)] };
       const why = (await kit.masker.maskOutput(context, answer.skip)).text;
-      return { kind: "passed", findings: [{ level: "warning", where: "scope", message: `No org or project is indexed, so the design cannot be checked against the existing metadata: ${why}` }], summary: "Skipped: nothing indexed." };
+      return { kind: "passed", findings: [{ level: "warning", where: "scope", message: `No org or project is indexed, so the work cannot be checked against the existing metadata: ${why}` }], summary: "Skipped: nothing indexed." };
     }
     if ("keep" in answer) {
       const stored = storedScope(kit.contexts, context);
@@ -228,9 +228,10 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
     id: "po_backlog",
     title: WORKFLOWS.po_backlog.title,
     next: "Show the user the backlog, and offer to publish it to Jira with jira_publish.",
-    steps: () => [requirementsStep, ...backlogSteps] as StepDefinition[],
-    // A run started before the backlog had its steps ends the old way, with a saved backlog.
-    optional: [methodStep("po_backlog", { kind: "backlog" }) as StepDefinition],
+    steps: (kit) => [requirementsStep, ...withScope(kit), ...backlogSteps] as StepDefinition[],
+    // A run started before the backlog had its steps ends the old way, with a saved backlog;
+    // one started before it had a scope step goes on without it.
+    optional: [scopeStep as StepDefinition, methodStep("po_backlog", { kind: "backlog" }) as StepDefinition],
   },
   po_review_stories: {
     id: "po_review_stories",

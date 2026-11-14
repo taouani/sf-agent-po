@@ -224,8 +224,8 @@ describe("workflow tools", () => {
     const skipped = await call("workflow_submit", { ...wf, step: "scope", answer: { skip: "The user has no org access yet." } });
     expect(skipped.text).toContain('Step "scope" passed with warnings');
     expect(skipped.text).toContain("Step 3 of 12: Stories in scope");
-    // The backlog has no scope step.
-    expect((await call("workflow_start", { ...wf, workflow: "po_backlog" })).text).toContain("Step 1 of 4: Requirements");
+    // The backlog has one too.
+    expect((await call("workflow_start", { ...wf, workflow: "po_backlog" })).text).toContain("Step 1 of 5: Requirements");
   });
 
   it("resumes a run with a scope step on a server without metadata, where the step can be skipped", async () => {
@@ -252,6 +252,15 @@ describe("workflow tools", () => {
     const ok = await call("workflow_submit", { ...wf, step: "scope", answer: { objects: ["Policy__c"], reason: "Renewals change policies." } });
     expect(ok.text).toContain('Step "scope" passed. Scope confirmed: Policy__c.');
     expect(ok.text).toContain("Step 3 of 12: Stories in scope");
+    // The backlog keeps that scope, and its epics look up the org.
+    const pb = { context: "renewals", workflow: "po_backlog" };
+    await call("workflow_start", pb);
+    const scope = await call("workflow_submit", { ...pb, step: "requirements", answer: { keep: true } });
+    expect(scope.text).toContain("Step 2 of 5: Scope");
+    const epics = await call("workflow_submit", { ...pb, step: "scope", answer: { keep: true } });
+    expect(epics.text).toContain("Step 3 of 5: Epics");
+    expect(epics.text).toMatch(/Confirmed scope in repo:[^\n]*: Policy__c/);
+    expect(epics.text).toContain("Salesforce enabler work, in an epic of its own");
   });
 
   it("refuses a record built on a step that moved meanwhile", async () => {

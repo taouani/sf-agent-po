@@ -173,7 +173,7 @@ The repository's [`examples/insurance-renewal`](../examples/insurance-renewal) h
 3. Start the Solution Architect: `/sa-hld renewal` in Claude Code (or the equivalent in your tool), with "industry insurance".
 4. The first step extracts the requirements. A page opens with them; change, remove or add requirements, then confirm. Then the agent proposes the scope (the objects the work touches), which you confirm the same way.
 5. The agent writes the design section by section. The server checks each section against the requirements, the index and the template, and sends it back when something is missing; you see the steps in the chat. The last step saves the design.
-6. Start the Product Owner: `/po-backlog renewal`. It reads the requirements you confirmed and the SA's design, then writes the epics, then the stories of each epic, then checks the whole backlog: INVEST, testable Given/When/Then criteria, story points, dependencies, and that every security requirement is covered.
+6. Start the Product Owner: `/po-backlog renewal`. It reads the requirements you confirmed and the SA's design, proposes the scope when an org or project is indexed (as the SA does), then writes the epics, then the stories of each epic, then checks the whole backlog: INVEST, testable Given/When/Then criteria, story points, dependencies, and that every security requirement is covered.
 7. Ask "show the traceability matrix for renewal": each requirement with its inputs, the design sections that address it and the stories that deliver it.
 
 The sample's [`rubric.md`](../examples/insurance-renewal/rubric.md) lists what a good design and backlog contain, if you want to judge the result.
@@ -199,7 +199,7 @@ Input review can be turned off for a context ("turn input review off for renewal
 | --- | --- | --- |
 | `sa_high_level_design` | Solution Architect | Requirements, scope (when an index exists), each section of the high-level design template, then the whole design |
 | `sa_detailed_design` | Solution Architect | Requirements, scope, each section of the detailed design (fitted to the existing metadata, with every acceptance criterion mapped to components and tests), then the whole design |
-| `po_backlog` | Product Owner | Requirements, epics, the stories of each epic, then the whole backlog |
+| `po_backlog` | Product Owner | Requirements, scope (when an index exists), epics, the stories of each epic, then the whole backlog. With an index, epics and stories look up the org: stories name existing components by API name and mark the rest as new, and what the org lacks becomes enabler work |
 | `po_review_stories` | Product Owner | Reviews the Jira stories in the context for readiness and proposes rewrites and splits |
 
 Things worth knowing:

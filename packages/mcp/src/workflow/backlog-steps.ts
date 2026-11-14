@@ -24,6 +24,8 @@ import {
 } from "../backlog.js";
 import { contextLanguage } from "../checks.js";
 import { maskDeep } from "../design/mask.js";
+import { readySources } from "../metadata-tools.js";
+import { storedScope } from "../scope-tools.js";
 import { requirementsToText } from "../requirements.js";
 import { confirmedOf, NO_UNSEEN_COMPONENTS, plural } from "./design-steps.js";
 import type { StepDefinition, StepOutcome, StepState } from "./engine.js";
@@ -92,6 +94,22 @@ function earlierWork(s: StepState): string[] {
   ];
 }
 
+/**
+ * The indexed org or project, when there is one: the backlog names what exists and what is new,
+ * instead of leaving the org to the design (a design from Confluence never looked at it).
+ */
+function orgBlock(s: StepState, what: "epics" | "stories"): string[] {
+  const sources = s.kit.index ? readySources(s.kit.index) : [];
+  if (!sources.length) return [];
+  const stored = storedScope(s.kit.contexts, s.context);
+  const scope = stored ? `Confirmed scope in ${stored.source}: ${stored.objects.join(", ")} (read it with scope_show).` : `Indexed: ${sources.map((x) => x.source).join(", ")}.`;
+  return [
+    what === "epics"
+      ? `${scope} Look up what the requirements touch with metadata_search and metadata_component: what the org lacks and several epics need (a field, an object, a permission set, an integration) is Salesforce enabler work, in an epic of its own or in the epic that needs it first.`
+      : `${scope} Before writing a story's technical notes, look up the components it changes with metadata_component (metadata_search to find them): name an existing one by its API name as the index has it, and say "new" for one the index does not hold. Where a design says otherwise than the org, follow the design and raise an open question.`,
+  ];
+}
+
 const requirementsBlock = (confirmed: readonly Requirement[], what: string) =>
   confirmed.length
     ? `Confirmed requirements (cite the ids ${what} delivers; only these):\n${requirementsToText(confirmed)}`
@@ -125,6 +143,7 @@ export const epicsStep: StepDefinition<EpicsAnswer> = {
       ...[industryBlock(s.industry).trim()].filter(Boolean),
       requirementsBlock(confirmed, "each epic"),
       ...earlierWork(s),
+      ...orgBlock(s, "epics"),
       `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
     ].join("\n\n");
   },
@@ -178,6 +197,7 @@ export const storiesStep: StepDefinition<StoriesAnswer> = {
       ...[industryBlock(s.industry).trim()].filter(Boolean),
       requirementsBlock(confirmed, "each story"),
       ...earlierWork(s),
+      ...orgBlock(s, "stories"),
       `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
       NO_UNSEEN_COMPONENTS,
     ].join("\n\n");
