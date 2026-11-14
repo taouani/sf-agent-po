@@ -28,6 +28,7 @@ import { readySources } from "../metadata-tools.js";
 import { storedScope } from "../scope-tools.js";
 import { requirementsToText } from "../requirements.js";
 import { confirmedOf, NO_UNSEEN_COMPONENTS, plural } from "./design-steps.js";
+import { INDEXED_TYPES } from "../design/checks.js";
 import type { StepDefinition, StepOutcome, StepState } from "./engine.js";
 
 /** One practice of PO_PRACTICES, by its bold heading. */
@@ -101,12 +102,16 @@ function earlierWork(s: StepState): string[] {
 function orgBlock(s: StepState, what: "epics" | "stories"): string[] {
   const sources = s.kit.index ? readySources(s.kit.index) : [];
   if (!sources.length) return [];
+  // A scope confirmed in a source no longer indexed is not shown as confirmed.
   const stored = storedScope(s.kit.contexts, s.context);
-  const scope = stored ? `Confirmed scope in ${stored.source}: ${stored.objects.join(", ")} (read it with scope_show).` : `Indexed: ${sources.map((x) => x.source).join(", ")}.`;
+  const kept = stored && sources.some((x) => x.source === stored.source) ? stored : undefined;
+  const scope = kept
+    ? `Confirmed scope in ${kept.source}: ${kept.objects.join(", ")} (read it with scope_show).${sources.length > 1 ? ` Pass source "${kept.source}" to the metadata tools.` : ""}`
+    : `Indexed: ${sources.map((x) => x.source).join(", ")}.`;
   return [
     what === "epics"
-      ? `${scope} Look up what the requirements touch with metadata_search and metadata_component: what the org lacks and several epics need (a field, an object, a permission set, an integration) is Salesforce enabler work, in an epic of its own or in the epic that needs it first.`
-      : `${scope} Before writing a story's technical notes, look up the components it changes with metadata_component (metadata_search to find them): name an existing one by its API name as the index has it, and say "new" for one the index does not hold. Where a design says otherwise than the org, follow the design and raise an open question.`,
+      ? `${scope} Look up what the requirements touch with metadata_search and metadata_component. A field or object the org lacks belongs in the epic whose stories need it first; shared enabler work (permission sets, integration setup, data migration) may be an epic of its own.`
+      : `${scope} Before writing a story's technical notes, look up the components it changes with metadata_component (metadata_search to find them), and name an existing one by its API name as the index has it. Say "new" only for one that neither the index, an input nor the design shows; for a type the index does not hold (${INDEXED_TYPES.join(", ")} are held), go by the inputs and the design. Where a design says otherwise than the org, follow the design and raise an open question.`,
   ];
 }
 
@@ -145,6 +150,7 @@ export const epicsStep: StepDefinition<EpicsAnswer> = {
       ...earlierWork(s),
       ...orgBlock(s, "epics"),
       `Context documents (read them with context_read):\n${docs.length ? docs.map(docLine).join("\n") : "- none"}`,
+      NO_UNSEEN_COMPONENTS,
     ].join("\n\n");
   },
   async submit(answer, s): Promise<StepOutcome> {

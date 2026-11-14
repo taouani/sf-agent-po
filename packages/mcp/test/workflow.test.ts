@@ -260,7 +260,32 @@ describe("workflow tools", () => {
     const epics = await call("workflow_submit", { ...pb, step: "scope", answer: { keep: true } });
     expect(epics.text).toContain("Step 3 of 5: Epics");
     expect(epics.text).toMatch(/Confirmed scope in repo:[^\n]*: Policy__c/);
-    expect(epics.text).toContain("Salesforce enabler work, in an epic of its own");
+    expect(epics.text).toContain("A field or object the org lacks belongs in the epic whose stories need it first");
+    // The stories look up each component, and say "new" only for what nothing shows.
+    const reqs = (await call("workflow_status", pb)).text;
+    const id = /\b(R\d+)\b/.exec(reqs)?.[1] ?? "R1";
+    const stories = await call("workflow_submit", { ...pb, step: "epics", answer: { epics: [{ id: "E1", summary: "Renewal letters", outcome: "Clients renew on time.", priority: "must", requirementIds: [id] }] } });
+    expect(stories.text).toContain("Stories and acceptance criteria");
+    expect(stories.text).toMatch(/Confirmed scope in repo:[^\n]*: Policy__c/);
+    expect(stories.text).toContain('Say "new" only for one that neither the index, an input nor the design shows');
+    expect(stories.text.indexOf("Before writing a story's technical notes")).toBeLessThan(stories.text.lastIndexOf("do not state that an org component"));
+  });
+
+  it("names the indexed sources in the backlog when no scope is confirmed, and nothing without an index", async () => {
+    // A run started before the backlog had a scope step goes on without it.
+    const { call, notes, runs, store: st } = await connect({ metadata: true });
+    await indexProject(st.index, project());
+    const pb = { context: "renewals", workflow: "po_backlog" };
+    runs.start("renewals", "po_backlog", ["requirements", "epics", "stories", "backlog"]);
+    const epics = await call("workflow_submit", { ...pb, step: "requirements", answer: proposal(notes.id) });
+    expect(epics.text).toContain("Step 2 of 4: Epics");
+    expect(epics.text).toMatch(/Indexed: repo:/);
+    expect(epics.text).not.toContain("Confirmed scope in");
+    const plain = await connect();
+    await plain.call("workflow_start", pb);
+    const brief = await plain.call("workflow_submit", { ...pb, step: "requirements", answer: proposal(plain.notes.id) });
+    expect(brief.text).toContain("Step 2 of 4: Epics");
+    expect(brief.text).not.toContain("metadata_search");
   });
 
   it("refuses a record built on a step that moved meanwhile", async () => {
