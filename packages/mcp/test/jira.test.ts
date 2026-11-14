@@ -304,7 +304,7 @@ describe("publishing to Jira", () => {
     const { id } = await saveBacklog(call, backlog(input.id));
     const failed = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
     expect(failed.text).toMatch(/Jira refused to create S1 \(HTTP 400\)\. Jira says: customfield_10100: Team is required\. Ask \[[A-Z]+_\d+\]\./);
-    expect(failed.text).toContain("Find the project's required fields with jira_fields");
+    expect(failed.text).toContain("Check the project's fields with jira_fields");
     expect(failed.text).not.toContain("Karim");
     const fields = { epic: { customfield_10011: "{summary}" }, story: { customfield_10100: { value: "CRM" } } };
     const ok = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", fields });
@@ -327,6 +327,47 @@ describe("publishing to Jira", () => {
     expect(jira.writes.find((w) => w.op === "create" && w.fields.summary === "Count VIPs")!.fields.customfield_10100).toEqual({ value: "CRM" });
     // Updates leave them as they are in Jira.
     expect(jira.writes.filter((w) => w.op === "update").some((w) => "customfield_10100" in w.fields)).toBe(false);
+  });
+
+  it("keeps fields only once an issue was created with them, level by level, and never a person", async () => {
+    const { call, contexts, jira, input } = await connect([{ status: "rejected" }]);
+    const kept = () => (contexts.get("acme")!.settings.jiraFields as Record<string, unknown> | undefined)?.PORT;
+    const { id } = await saveBacklog(call, backlog(input.id));
+    const publish = (fields: unknown) => call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", fields });
+    for (const fields of [{ story: { customfield_10200: { accountId: "5b10ac8d82e05b22cc7d4ef5" } } }, { story: { assignee: { id: "1" } } }]) {
+      const r = await publish(fields);
+      expect(r.isError).toBe(true);
+      expect(jira.writes).toHaveLength(0);
+    }
+    const epic = { customfield_10011: "{summary}" };
+    // Rejected: nothing kept.
+    expect((await publish({ epic })).text).toContain("Nothing was written");
+    expect(kept()).toBeUndefined();
+    // Jira refuses the stories: the epic level is kept, the story value Jira refused is not.
+    jira.fail.on = (op, f) => op === "create" && f.issuetype?.name === "Story";
+    expect((await publish({ epic, story: { customfield_10100: { value: "Nope" } } })).isError).toBe(true);
+    expect(kept()).toEqual({ epic });
+    jira.fail.on = undefined;
+    // A level given replaces that level only.
+    expect((await publish({ story: { customfield_10100: { value: "CRM" } } })).isError).toBeFalsy();
+    expect(kept()).toEqual({ epic, story: { customfield_10100: { value: "CRM" } } });
+    const addStory = async (sid: string) => {
+      await saveBacklog(
+        call,
+        backlog(input.id, (b) => {
+          for (const extra of ["S5", "S6"].slice(0, ["S5", "S6"].indexOf(sid) + 1))
+            b.epics[0]!.stories.push({ id: extra, type: "story", summary: `Story ${extra}`, persona: "Sales manager", want: "a list", benefit: "I plan", acceptanceCriteria: [{ given: "VIPs", when: "I open it", then: "it shows" }] });
+        }),
+      );
+    };
+    // A level as {} forgets it; {} forgets them all.
+    await addStory("S5");
+    expect((await publish({ story: {} })).isError).toBeFalsy();
+    expect(kept()).toEqual({ epic });
+    expect(jira.writes.find((w) => w.op === "create" && w.fields.summary === "Story S5")!.fields.customfield_10100).toBeUndefined();
+    await addStory("S6");
+    expect((await publish({})).isError).toBeFalsy();
+    expect(kept()).toBeUndefined();
   });
 
   it("creates again an issue deleted in Jira", async () => {

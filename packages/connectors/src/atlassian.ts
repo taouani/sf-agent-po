@@ -154,21 +154,30 @@ export class AtlassianClient {
     return { key: r.key, name: r.name, issueTypes: types.filter((t) => !t.subtask).map((t) => t.name), subtaskTypes: types.filter((t) => t.subtask).map((t) => t.name) };
   }
 
+  /** Every entry of a paged createmeta listing, by id once; stops on the last page even when Jira gives no total. */
+  private async pages<T extends { id?: string; fieldId?: string }>(path: string, entries: (r: any) => unknown): Promise<T[]> {
+    const PAGE = 200;
+    const out = new Map<string, T>();
+    for (let startAt = 0; startAt < 1_000; ) {
+      const r = await this.request(`${path}?maxResults=${PAGE}&startAt=${startAt}`);
+      const page = (Array.isArray(entries(r)) ? entries(r) : []) as T[];
+      const before = out.size;
+      for (const e of page) out.set(String(e.fieldId ?? e.id ?? out.size), e);
+      startAt += page.length;
+      const total = typeof r.total === "number" ? r.total : undefined;
+      if (!page.length || out.size === before || r.isLast === true || (total !== undefined ? startAt >= total : page.length < (r.maxResults ?? PAGE))) break;
+    }
+    return [...out.values()];
+  }
+
   /** The fields Jira asks for when an issue of `issueType` is created in a project. */
   async createFields(projectKey: string, issueType: string): Promise<CreateField[]> {
     const project = encodeURIComponent(projectKey);
-    const types = await this.request(`/rest/api/3/issue/createmeta/${project}/issuetypes?maxResults=200`);
-    const list = (types.issueTypes ?? types.values ?? []) as { id: string; name: string }[];
+    const base = `/rest/api/3/issue/createmeta/${project}/issuetypes`;
+    const list = await this.pages<{ id: string; name: string }>(base, (r) => r.issueTypes ?? r.createMetaIssueType ?? r.values ?? r.results);
     const type = list.find((t) => t.name === issueType);
     if (!type) throw new Error(`Project ${projectKey} has no issue type "${issueType}". Available: ${list.map((t) => t.name).join(", ")}.`);
-    const fields: any[] = [];
-    for (let startAt = 0; startAt < 1_000; ) {
-      const r = await this.request(`/rest/api/3/issue/createmeta/${project}/issuetypes/${encodeURIComponent(type.id)}?maxResults=200&startAt=${startAt}`);
-      const page = (r.fields ?? r.values ?? []) as any[];
-      fields.push(...page);
-      startAt += page.length;
-      if (!page.length || (typeof r.total === "number" && startAt >= r.total)) break;
-    }
+    const fields = await this.pages<any>(`${base}/${encodeURIComponent(type.id)}`, (r) => r.fields ?? r.values ?? r.results);
     return fields.map((f) => {
       const schema = f.schema ?? {};
       const values = (Array.isArray(f.allowedValues) ? f.allowedValues : []) as any[];

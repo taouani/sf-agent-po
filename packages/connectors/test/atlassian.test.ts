@@ -116,6 +116,20 @@ describe("AtlassianClient", () => {
     await expect(client.createFields("PORT", "Feature")).rejects.toThrow('Project PORT has no issue type "Feature". Available: Epic, Story.');
   });
 
+  it("pages the fields of an issue type, and stops when Jira gives no total and repeats a page", async () => {
+    const many = Array.from({ length: 200 }, (_, n) => ({ fieldId: `customfield_${n}`, name: `F${n}`, schema: { type: "string" } }));
+    const { calls, client } = site({
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes/10001": { body: { fields: many } },
+      "GET /rest/api/3/issue/createmeta/PORT/issuetypes": { body: { createMetaIssueType: [{ id: "10001", name: "Story" }], isLast: true } },
+    });
+    expect(await client.createFields("PORT", "Story")).toHaveLength(200);
+    expect(calls.map((c) => c.path)).toEqual([
+      "/rest/api/3/issue/createmeta/PORT/issuetypes?maxResults=200&startAt=0",
+      "/rest/api/3/issue/createmeta/PORT/issuetypes/10001?maxResults=200&startAt=0",
+      "/rest/api/3/issue/createmeta/PORT/issuetypes/10001?maxResults=200&startAt=200",
+    ]);
+  });
+
   it("reads the site settings from the environment", () => {
     expect(atlassianConfigFromEnv({ ATLASSIAN_SITE_URL: "https://x.atlassian.net//", ATLASSIAN_EMAIL: "e", ATLASSIAN_API_TOKEN: "t" })).toEqual({
       siteUrl: "https://x.atlassian.net",
