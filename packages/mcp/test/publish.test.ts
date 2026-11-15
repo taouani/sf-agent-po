@@ -121,6 +121,7 @@ describe("adding Confluence pages", () => {
     ]);
     expect(pages[0]!.content).not.toContain("Karim");
     expect((await call("context_add_confluence", { context: "acme", pages: ["1"], kind: "plan" })).isError).toBe(true);
+    expect((await call("context_add_confluence", { context: "acme", pages: ["1"], kind: "org" })).isError).toBe(true);
   });
 });
 

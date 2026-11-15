@@ -367,7 +367,11 @@ export function createServer(opts: ServerOptions): McpServer {
       inputSchema: {
         context: contextName,
         pages: z.array(z.string()).min(1),
-        kind: kind.optional().describe('Document kind for every page given, such as "design" or "meeting-notes". Default "confluence".'),
+        // Not "org" or "metadata": those kinds are not treated as inputs, so a page added under them could not be cited.
+        kind: kind
+          .exclude(["org", "metadata"])
+          .optional()
+          .describe('Document kind for every page given, such as "design" or "meeting-notes". Default "confluence".'),
       },
       annotations: { openWorldHint: true },
     },
