@@ -232,7 +232,8 @@ export function backlogToMarkdown(backlog: Backlog): string {
 /** One decision as a Markdown list line. */
 export function decisionLine(d: Decision): string {
   const facts = [d.owner ? `owner: ${d.owner}` : undefined, d.requirementIds?.length ? `requirements: ${d.requirementIds.join(", ")}` : undefined].filter(Boolean);
-  return `- **${d.id} ${d.title}:** ${d.choice}${d.reason ? `. Reason: ${d.reason}` : ""}${facts.length ? ` (${facts.join("; ")})` : ""}`;
+  const choice = d.reason ? `${d.choice.trim().replace(/\.+$/, "")}. Reason: ${d.reason}` : d.choice;
+  return `- **${d.id} ${d.title}:** ${choice}${facts.length ? ` (${facts.join("; ")})` : ""}`;
 }
 
 export interface Finding {

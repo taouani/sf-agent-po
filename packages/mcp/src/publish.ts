@@ -9,7 +9,7 @@ import type { ContextRepository, FeedbackRepository, Masker, RequirementReposito
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
 import { type Artifact, type ArtifactMeta, getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
-import { highLevelDiagrams } from "./design/render.js";
+import { highLevelDiagrams, oneLine } from "./design/render.js";
 import type { HighLevelDesign } from "./design/schema.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
@@ -192,10 +192,11 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const decisions = args.page === "decisions";
           const pageMeta = decisions ? (doc.metadata.decisionsPage as ArtifactMeta["confluence"]) : doc.metadata.confluence;
           const what = decisions ? "requirements and decisions page" : doc.kind === "backlog" ? "backlog" : "design";
-          const maskedTitle = args.title?.trim() || (decisions ? decisionsTitle(doc.title) : doc.title);
+          const maskedTitle = oneLine(args.title ?? "") || (decisions ? decisionsTitle(doc.title) : doc.title);
           const named = masker.unmask(context, maskedTitle);
           // Confluence takes 255 characters.
-          const title = named.text.length > 255 ? { ...named, text: `${named.text.slice(0, 254).trimEnd()}…` } : named;
+          const chars = [...named.text];
+          const title = chars.length > 255 ? { ...named, text: `${chars.slice(0, 254).join("").trimEnd()}…` } : named;
           const built = decisions ? decisionsMarkdown(contexts, kit.requirements, context, doc, maskedTitle) : undefined;
           const content = built ? built.content : doc.content;
           // What the user reads on the page (the Markdown with the real values), and what is
@@ -378,7 +379,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
                   ...(ownPage ? { confluence: placed } : {}),
                 },
           );
-          let traced = traceMeta?.url ? ` Its traceability matrix page (${traceMeta.url}) was not updated.` : "";
+          let traced = !decisions && traceMeta?.url ? ` Its traceability matrix page (${traceMeta.url}) was not updated.` : "";
           if (matrix && traceTitle && traceStorage) {
             let written: Awaited<ReturnType<AtlassianClient["updatePage"]>> | undefined;
             try {

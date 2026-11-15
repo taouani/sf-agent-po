@@ -344,7 +344,13 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
     findings.push(...coverageFindings(backlog, confirmed, "error", new Set(rest.gaps.map((g) => g.requirementId))));
     // The epics and stories passed their own steps: what the whole backlog still shows is for the user to see, not for this answer to fix.
     const whole = checkBacklog(backlog, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context), { requirements: confirmed });
-    findings.push(...whole.map((f): Finding => (f.level === "error" ? { ...f, level: "warning", message: `${f.message} (Left from an earlier step: fix it with backlog_save, or run the workflow again.)` } : f)));
+    // Decisions come from this answer: their findings are sent back above, not left from an earlier step.
+    const fromAnswer = new Set(rest.decisions?.map((d) => d.id));
+    findings.push(
+      ...whole
+        .filter((f) => !(f.level === "error" && fromAnswer.has(f.where)))
+        .map((f): Finding => (f.level === "error" ? { ...f, level: "warning", message: `${f.message} (Left from an earlier step: fix it with backlog_save, or run the workflow again.)` } : f)),
+    );
     for (const e of draft.epics.filter((x) => !x.stories.length)) findings.push({ level: "warning", where: e.id, message: `Epic ${e.id} has no stories (the stories step failed) and is left out of the backlog.` });
     if (findings.some((f) => f.level === "error")) return { kind: "retry", attempt: true, findings };
     // The reasons stay with the backlog, for the user and the traceability matrix.

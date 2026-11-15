@@ -442,6 +442,7 @@ describe("workflow tools", () => {
     });
     expect(missing.text).toContain("ERROR [D1] R9 is not a confirmed requirement.");
     expect(missing.text).toContain("ERROR [D1] Two decisions have the id D1.");
+    expect(missing.text).not.toMatch(/\[D1\][^\n]*Left from an earlier step/);
     expect(missing.text).toContain("ERROR [R2] Must requirement R2 is delivered by no story");
     expect(missing.text).toContain("WARNING [R3] Should requirement R3 is delivered by no story.");
     const done = await submit("assemble", {

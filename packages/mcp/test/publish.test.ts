@@ -494,6 +494,39 @@ describe("requirements and decisions page", () => {
     expect((await call("confluence_publish", { context: "acme", artifactId: backlog.id })).text).toContain("This backlog has not been published yet");
   });
 
+  it("leaves a published design's own page, status and matrix alone, keeps tables whole, and checks the parent's space", async () => {
+    const { call, contexts, confluence, seen, requirements } = await connect();
+    requirements.save("acme", [{ kind: "functional", statement: "Split A\\|B and C\rD.", priority: "must", status: "confirmed", sourceIds: [] }]);
+    const hld = { title: "VIP flag", solution: { overview: "", orgStrategy: "", components: [{ id: "C1", name: "VIP flag field", type: "Field", status: "new", purpose: "", requirementIds: ["R1"] }] }, decisions: { decisions: [{ id: "D1", title: "Storage", options: ["A", "B"], choice: "A field.", reason: "Simplest.", requirementIds: ["R1"] }], risks: [], openQuestions: [] } };
+    const design = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag design", content: "# VIP flag", artifactType: "high-level", extra: { design: hld } });
+    await call("confluence_publish", { context: "acme", artifactId: design.id, spaceKey: "ENG" });
+    const before = contexts.getDocument("acme", design.id)!.metadata as { status: string; confluence: unknown; traceability: unknown };
+    expect(before.status).toBe("published");
+
+    const r = await call("confluence_publish", { context: "acme", artifactId: design.id, page: "decisions", spaceKey: "ENG", title: "Decisions\nfor the flag" });
+    expect(r.text).not.toContain("traceability matrix");
+    const after = contexts.getDocument("acme", design.id)!.metadata as typeof before & { decisionsPage: { pageId: string } };
+    expect(after.status).toBe("published");
+    expect(after.confluence).toEqual(before.confluence);
+    expect(after.traceability).toEqual(before.traceability);
+    expect(after.decisionsPage.pageId).toBeDefined();
+    const body = (seen.at(-1) as { body: string; title: string }).body;
+    expect((seen.at(-1) as { title: string }).title).toBe("Decisions for the flag");
+    expect(body).toContain("# Decisions for the flag\n");
+    expect(body).toContain("| R1 | Split A\\\\\\|B and C D. | Functional | Must |");
+    expect(body).toContain("| D1 | Storage | A field. | Simplest. Options considered: A; B | R1 |");
+    // One row of four cells: the escaped backslash and pipe stay in their cell.
+    const storage = confluence.writes.at(-1)!.storage;
+    expect(storage).toContain("Split A\\|B and C D.");
+
+    // A parent page in another space than the one named is refused, before anything is shown.
+    const other = await confluence.client.createPage({ spaceId: "2", title: "Elsewhere", storage: "" });
+    const shown = seen.length;
+    const refused = await call("confluence_publish", { context: "acme", artifactId: design.id, page: "decisions", newPage: true, spaceKey: "ENG", parentPageId: other.pageId });
+    expect(refused.text).toContain("The parent page is not in space ENG");
+    expect(seen.length).toBe(shown);
+  });
+
   it("says so when nothing is recorded", async () => {
     const { call, contexts, seen } = await connect();
     const backlog = saveBacklog(contexts, "acme", {

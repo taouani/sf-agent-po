@@ -8,7 +8,10 @@ import type { ContextRepository, Requirement, RequirementRepository } from "@sf-
 import type { Artifact } from "./artifacts.js";
 import type { Backlog } from "./backlog.js";
 import type { DecisionsSection } from "./design/schema.js";
-import { cell } from "./design/render.js";
+import { cell, oneLine } from "./design/render.js";
+
+/** Joins sentences, without doubling the full stop one already ends with. */
+const sentences = (parts: (string | undefined)[]) => parts.filter((p): p is string => !!p?.trim()).map((p) => p.trim().replace(/\.+$/, "")).join(". ");
 
 const PRIORITY: Record<Requirement["priority"], string> = { must: "Must", should: "Should", could: "Could", wont: "Won't" };
 const KIND: Record<Requirement["kind"], string> = { functional: "Functional", "non-functional": "Non-functional", constraint: "Constraint", compliance: "Compliance" };
@@ -74,7 +77,7 @@ export function decisionsMarkdown(contexts: ContextRepository, requirements: Req
   }
   const confirmed = (requirements?.list(context) ?? []).filter((r) => r.status === "confirmed");
 
-  const out: string[] = [`# ${title}`, "", `From the context's confirmed requirements and ${sources.map((s) => s.name).join(", ")} (version ${doc.metadata.version}).`, ""];
+  const out: string[] = [`# ${oneLine(title)}`, "", `From the context's confirmed requirements and ${sources.map((s) => s.name).join(", ")} (version ${doc.metadata.version}).`, ""];
   const none = () => out.push("None recorded.", "");
 
   out.push("## Requirements", "");
@@ -89,7 +92,7 @@ export function decisionsMarkdown(contexts: ContextRepository, requirements: Req
   if (decisions.length) {
     out.push("| Id | Decision | Choice | Reason | Requirements | From |", "| --- | --- | --- | --- | --- | --- |");
     for (const d of decisions) {
-      const reason = [d.reason, d.options?.length ? `Options considered: ${d.options.join("; ")}` : undefined, d.owner ? `Owner: ${d.owner}` : undefined].filter(Boolean).join(". ");
+      const reason = sentences([d.reason, d.options?.length ? `Options considered: ${d.options.join("; ")}` : undefined, d.owner ? `Owner: ${d.owner}` : undefined]);
       out.push(`| ${d.id} | ${cell(d.title)} | ${cell(d.choice)} | ${cell(reason)} | ${cell(d.requirementIds?.join(", "))} | ${cell(d.from)} |`);
     }
     out.push("");
