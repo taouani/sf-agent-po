@@ -267,6 +267,21 @@ const assembleAnswer = z.strictObject({
     .max(30)
     .optional(),
   gaps: z.array(gapSchema).max(60).default([]),
+  decisions: z
+    .array(
+      z.strictObject({
+        id: z.string().regex(/^D[1-9]\d{0,3}$/, "use a decision id such as D1"),
+        title: z.string().trim().min(3).max(300),
+        choice: z.string().trim().min(2).max(500),
+        reason: z.string().trim().min(3).max(1_000).optional(),
+        options: z.array(z.string().trim().min(1).max(500)).max(6).optional(),
+        owner: z.string().trim().min(1).max(120).optional(),
+        requirementIds: z.array(z.string().regex(/^R[1-9]\d{0,5}$/, "use a requirement id such as R1")).max(30).optional(),
+        sourceIds: z.array(z.string().regex(/^doc-[0-9a-f]{10}$/, "use a context document id such as doc-1a2b3c4d5e")).max(10).optional(),
+      }),
+    )
+    .max(40)
+    .optional(),
 });
 type AssembleAnswer = z.infer<typeof assembleAnswer>;
 
@@ -276,7 +291,8 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
   shape:
     '{"title": "Policy renewals: backlog", "summary": "a short overview for stakeholders", "assumptions": ["..."],\n' +
     ' "openQuestions": [{"question": "...", "owner": "Business owner", "sourceIds": ["doc-..."]}],\n' +
-    ' "gaps": [{"requirementId": "R7", "reason": "why no story delivers it: out of scope, or waiting on an open question"}]}',
+    ' "gaps": [{"requirementId": "R7", "reason": "why no story delivers it: out of scope, or waiting on an open question"}],\n' +
+    ' "decisions": [{"id": "D1", "title": "Renewal reminders channel", "choice": "Email only for the first release", "reason": "...", "options": ["Email", "SMS"], "owner": "Business owner", "requirementIds": ["R3"], "sourceIds": ["doc-..."]}]}',
   schema: assembleAnswer as z.ZodType<AssembleAnswer>,
   brief(s) {
     const draft = draftOf(s.run);
@@ -285,6 +301,7 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
     const empty = draft.epics.filter((e) => !e.stories.length).map((e) => e.id);
     return [
       "Give the backlog its title, a short summary, the assumptions and the open questions, each with the role who should answer it. The server puts the epics and stories together, checks the whole backlog and saves it.",
+      "Give the decisions too: what was decided for this backlog (scope cuts, priorities, an approach chosen among options, what the inputs or the user settled), each with its reason, the requirements it concerns and the inputs that record it. Do not repeat the design's decisions: they are published with it.",
       ...savedBacklogs(s),
       practice("Open questions"),
       open.length
@@ -301,13 +318,14 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
     if (!epics.length) return { kind: "retry", attempt: true, findings: [error("stories", "No epic has stories, so there is no backlog to save: tell the user the earlier steps failed, and start again with restart set to true.")] };
     // Masked like a saved backlog: the title alone, since it names the artifact.
     const title = (await kit.masker.maskOutput(context, answer.title)).text;
-    const rest = await maskDeep(kit.masker, context, { summary: answer.summary, assumptions: answer.assumptions, openQuestions: answer.openQuestions, gaps: answer.gaps });
+    const rest = await maskDeep(kit.masker, context, { summary: answer.summary, assumptions: answer.assumptions, openQuestions: answer.openQuestions, gaps: answer.gaps, decisions: answer.decisions });
     const backlog: Backlog = {
       title,
       ...(rest.summary ? { summary: rest.summary } : {}),
       epics,
       ...(rest.assumptions?.length ? { assumptions: rest.assumptions } : {}),
       ...(rest.openQuestions?.length ? { openQuestions: rest.openQuestions } : {}),
+      ...(rest.decisions?.length ? { decisions: rest.decisions } : {}),
     };
     const known = new Set(confirmed.map((r) => r.id));
     const open = new Set(uncoveredRequirements(backlog, confirmed).map((r) => r.id));
@@ -316,10 +334,23 @@ export const backlogAssembleStep: StepDefinition<AssembleAnswer> = {
       if (!known.has(g.requirementId)) findings.push(error(g.requirementId, `${g.requirementId} is not a confirmed requirement.`));
       else if (!open.has(g.requirementId)) findings.push({ level: "warning", where: g.requirementId, message: `${g.requirementId} is delivered by a story, so it is not a gap: it is left out of the gaps.` });
     }
+    const decided = new Set<string>();
+    for (const d of rest.decisions ?? []) {
+      if (decided.has(d.id)) findings.push(error(d.id, `Two decisions have the id ${d.id}.`));
+      decided.add(d.id);
+      const unknown = (d.requirementIds ?? []).filter((id) => !known.has(id));
+      if (unknown.length) findings.push(error(d.id, `${unknown.join(", ")} ${unknown.length === 1 ? "is not a confirmed requirement" : "are not confirmed requirements"}.`));
+    }
     findings.push(...coverageFindings(backlog, confirmed, "error", new Set(rest.gaps.map((g) => g.requirementId))));
     // The epics and stories passed their own steps: what the whole backlog still shows is for the user to see, not for this answer to fix.
     const whole = checkBacklog(backlog, kit.contexts.documents(context).filter((d) => d.masked), contextLanguage(kit.contexts, context), { requirements: confirmed });
-    findings.push(...whole.map((f): Finding => (f.level === "error" ? { ...f, level: "warning", message: `${f.message} (Left from an earlier step: fix it with backlog_save, or run the workflow again.)` } : f)));
+    // Decisions come from this answer: their findings are sent back above, not left from an earlier step.
+    const fromAnswer = new Set(rest.decisions?.map((d) => d.id));
+    findings.push(
+      ...whole
+        .filter((f) => !(f.level === "error" && fromAnswer.has(f.where)))
+        .map((f): Finding => (f.level === "error" ? { ...f, level: "warning", message: `${f.message} (Left from an earlier step: fix it with backlog_save, or run the workflow again.)` } : f)),
+    );
     for (const e of draft.epics.filter((x) => !x.stories.length)) findings.push({ level: "warning", where: e.id, message: `Epic ${e.id} has no stories (the stories step failed) and is left out of the backlog.` });
     if (findings.some((f) => f.level === "error")) return { kind: "retry", attempt: true, findings };
     // The reasons stay with the backlog, for the user and the traceability matrix.

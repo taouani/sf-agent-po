@@ -426,3 +426,116 @@ describe("draw.io diagrams", () => {
     expect(contexts.get("acme")!.settings.confluenceDiagrams).toBe("mermaid");
   });
 });
+
+describe("requirements and decisions page", () => {
+  it("publishes a backlog's requirements, decisions, questions and open points under a parent page, then updates that page", async () => {
+    const { call, contexts, seen, confluence, requirements } = await connect();
+    const notes = contexts.documents("acme")[0]!;
+    requirements.save("acme", [
+      { kind: "functional", statement: "Flag VIP clients for [PERSON_1].", priority: "must", status: "confirmed", sourceIds: [notes.id] },
+      { kind: "compliance", statement: "Keep | the flag history for 5 years.", priority: "should", status: "confirmed", sourceIds: [notes.id] },
+      { kind: "functional", statement: "A dropped idea.", priority: "could", status: "dropped", sourceIds: [] },
+    ]);
+    const hld = {
+      title: "VIP flag",
+      decisions: {
+        decisions: [{ id: "D1", title: "Flag storage", options: ["Field", "Custom object"], choice: "A checkbox field", reason: "Simplest", requirementIds: ["R1"] }],
+        risks: [{ risk: "Flag misuse", mitigation: "Audit trail" }],
+        openQuestions: [{ question: "Who approves a VIP flag?", owner: "Business owner" }],
+      },
+      gaps: [{ requirementId: "R2", reason: "History comes later." }],
+    };
+    saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag design", content: "# VIP flag", artifactType: "high-level", extra: { design: hld } });
+    // The parent page the user names, in their space.
+    const parent = await confluence.client.createPage({ spaceId: "1", title: "PPM-2207", storage: "" });
+    const backlog = saveBacklog(contexts, "acme", {
+      title: "VIP backlog",
+      epics: [{ id: "E1", summary: "VIP flag", outcome: "VIP clients get priority", stories: [{ id: "S1", type: "story", summary: "Flag a client", persona: "Account manager", want: "to flag VIP clients", benefit: "they get priority", acceptanceCriteria: [{ given: "a client", when: "flagged", then: "the flag shows" }], requirementIds: ["R1"] }] }],
+      assumptions: ["[PERSON_1] stays the owner"],
+      openQuestions: [{ question: "Is the flag shown on mobile?", owner: "PO" }],
+      decisions: [{ id: "D1", title: "Release 1 scope", choice: "Desktop only", reason: "Mobile app frozen", owner: "Business owner", requirementIds: ["R1"] }],
+    });
+    expect(backlog.content).toContain("## Decisions\n- **D1 Release 1 scope:** Desktop only. Reason: Mobile app frozen (owner: Business owner; requirements: R1)");
+
+    const r = await call("confluence_publish", { context: "acme", artifactId: backlog.id, page: "decisions", parentPageId: parent.pageId });
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('Created the Confluence requirements and decisions page for "VIP backlog"');
+    expect(r.text).toContain("It lists 2 requirement(s), 2 decision(s), 2 open question(s) and 3 open point(s).");
+    expect(r.text).not.toContain("Karim");
+    const req = seen.at(-1)!;
+    expect(req.kind === "publish" && req.target).toContain('a new page in the parent page\'s space under "PPM-2207"');
+    expect(req.kind === "publish" && req.title).toBe("VIP backlog: requirements, decisions and open points");
+    const body = req.kind === "publish" ? req.body : "";
+    expect(body).toContain("| R1 | Flag VIP clients for Karim Benali. | Functional | Must |");
+    expect(body).toContain("| R2 | Keep \\| the flag history for 5 years. | Compliance | Should |");
+    expect(body).not.toContain("A dropped idea");
+    expect(body).toContain('| D1 | Release 1 scope | Desktop only | Mobile app frozen. Owner: Business owner | R1 | Backlog "VIP backlog" |');
+    expect(body).toContain('| D1 | Flag storage | A checkbox field | Simplest. Options considered: Field; Custom object | R1 | High-level design "VIP flag design" |');
+    expect(body).toContain('| Who approves a VIP flag? | Business owner | High-level design "VIP flag design" |');
+    expect(body).toContain('| R2 | History comes later. | High-level design "VIP flag design" |');
+    expect(body).toContain('| Karim Benali stays the owner | Backlog "VIP backlog" |');
+    expect(body).toContain("| Flag misuse | Audit trail |");
+    const written = confluence.writes.at(-1)!;
+    expect(written.title).toBe("VIP backlog: requirements, decisions and open points");
+    expect(written.storage).toContain("Flag VIP clients for Karim Benali.");
+    expect(confluence.pages.get(String(Number(parent.pageId) + 1))).toBeDefined();
+
+    // Kept apart from the backlog's own page: the backlog stays unpublished on Confluence, and the decisions page is updated in place.
+    const meta = contexts.getDocument("acme", backlog.id)!.metadata as { status: string; confluence?: unknown; decisionsPage: { pageId: string } };
+    expect(meta.status).toBe("draft");
+    expect(meta.confluence).toBeUndefined();
+    expect(meta.decisionsPage.pageId).toBe(String(Number(parent.pageId) + 1));
+    const again = await call("confluence_publish", { context: "acme", artifactId: backlog.id, page: "decisions" });
+    expect(again.text).toContain("Updated the Confluence requirements and decisions page");
+    expect(seen.at(-1)!.kind === "publish" && (seen.at(-1) as { target: string }).target).toContain('replace the content of page "VIP backlog: requirements, decisions and open points"');
+    expect(confluence.writes).toHaveLength(3);
+
+    // Its own page is still its own: the backlog itself needs a space or parent the first time.
+    expect((await call("confluence_publish", { context: "acme", artifactId: backlog.id })).text).toContain("This backlog has not been published yet");
+  });
+
+  it("leaves a published design's own page, status and matrix alone, keeps tables whole, and checks the parent's space", async () => {
+    const { call, contexts, confluence, seen, requirements } = await connect();
+    requirements.save("acme", [{ kind: "functional", statement: "Split A\\|B and C\rD.", priority: "must", status: "confirmed", sourceIds: [] }]);
+    const hld = { title: "VIP flag", solution: { overview: "", orgStrategy: "", components: [{ id: "C1", name: "VIP flag field", type: "Field", status: "new", purpose: "", requirementIds: ["R1"] }] }, decisions: { decisions: [{ id: "D1", title: "Storage", options: ["A", "B"], choice: "A field.", reason: "Simplest.", requirementIds: ["R1"] }], risks: [], openQuestions: [] } };
+    const design = saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag design", content: "# VIP flag", artifactType: "high-level", extra: { design: hld } });
+    await call("confluence_publish", { context: "acme", artifactId: design.id, spaceKey: "ENG" });
+    const before = contexts.getDocument("acme", design.id)!.metadata as { status: string; confluence: unknown; traceability: unknown };
+    expect(before.status).toBe("published");
+
+    const r = await call("confluence_publish", { context: "acme", artifactId: design.id, page: "decisions", spaceKey: "ENG", title: "Decisions\nfor the flag" });
+    expect(r.text).not.toContain("traceability matrix");
+    const after = contexts.getDocument("acme", design.id)!.metadata as typeof before & { decisionsPage: { pageId: string } };
+    expect(after.status).toBe("published");
+    expect(after.confluence).toEqual(before.confluence);
+    expect(after.traceability).toEqual(before.traceability);
+    expect(after.decisionsPage.pageId).toBeDefined();
+    const body = (seen.at(-1) as { body: string; title: string }).body;
+    expect((seen.at(-1) as { title: string }).title).toBe("Decisions for the flag");
+    expect(body).toContain("# Decisions for the flag\n");
+    expect(body).toContain("| R1 | Split A\\\\\\|B and C D. | Functional | Must |");
+    expect(body).toContain("| D1 | Storage | A field. | Simplest. Options considered: A; B | R1 |");
+    // One row of four cells: the escaped backslash and pipe stay in their cell.
+    const storage = confluence.writes.at(-1)!.storage;
+    expect(storage).toContain("Split A\\|B and C D.");
+
+    // A parent page in another space than the one named is refused, before anything is shown.
+    const other = await confluence.client.createPage({ spaceId: "2", title: "Elsewhere", storage: "" });
+    const shown = seen.length;
+    const refused = await call("confluence_publish", { context: "acme", artifactId: design.id, page: "decisions", newPage: true, spaceKey: "ENG", parentPageId: other.pageId });
+    expect(refused.text).toContain("The parent page is not in space ENG");
+    expect(seen.length).toBe(shown);
+  });
+
+  it("says so when nothing is recorded", async () => {
+    const { call, contexts, seen } = await connect();
+    const backlog = saveBacklog(contexts, "acme", {
+      title: "Bare backlog",
+      epics: [{ id: "E1", summary: "VIP flag", outcome: "VIP clients get priority", stories: [{ id: "S1", type: "story", summary: "Flag a client", persona: "Account manager", want: "to flag VIP clients", benefit: "they get priority", acceptanceCriteria: [{ given: "a client", when: "flagged", then: "the flag shows" }] }] }],
+    });
+    const r = await call("confluence_publish", { context: "acme", artifactId: backlog.id, page: "decisions", spaceKey: "ENG" });
+    expect(r.text).toContain("It lists 0 requirement(s), 0 decision(s), 0 open question(s) and 0 open point(s).");
+    const body = (seen.at(-1) as { body: string }).body;
+    expect(body.match(/None recorded\./g)).toHaveLength(4);
+  });
+});

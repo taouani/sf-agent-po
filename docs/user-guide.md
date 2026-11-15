@@ -229,6 +229,7 @@ Ask "publish the design to Confluence in space ARCH" or "publish the backlog to 
 
 - **Confluence.** A design becomes a page; a design written by a workflow also gets its traceability matrix as a page under it. A high-level design's diagrams are attached as draw.io files and shown with the draw.io app (on a site without it, ask for Mermaid diagrams instead); a detailed design's diagrams stay Mermaid. Publishing again updates the same page.
 - **Jira.** Epics, stories under them and "Blocks" links for dependencies. Publishing again creates only new items and updates only those whose content changed; labels, status, assignee and comments added in Jira are kept. Stories marked won't have stay out of Jira. The sub-tasks of a detailed design can go with it.
+- **Requirements and decisions page.** Ask "publish the requirements, decisions and open points of the renewal backlog to Confluence under <page link>". The page lists the context's confirmed requirements, the decisions (the backlog's, which the PO records when it assembles the backlog, and the designs'), the open questions, and the open points: requirements not delivered, assumptions to confirm and risks. It is a page of its own, under the parent you name (its space is used), and publishing it again updates it. It works for a design too.
 - **Quality first.** A backlog with errors from the quality check is not published until they are fixed.
 
 ## Give feedback on what was published
@@ -287,7 +288,7 @@ You rarely call tools by name; this list helps when you want to be precise.
 | `workflow_start`, `workflow_step`, `workflow_submit`, `workflow_status` | The guided workflows |
 | `trace_show` | The traceability matrix |
 | `design_save`, `backlog_save`, `backlog_get`, `backlog_check` | Save and check designs and backlogs (the workflows use them) |
-| `confluence_publish`, `jira_publish` | Publish, after your approval |
+| `confluence_publish`, `jira_publish` | Publish, after your approval; `confluence_publish` with page "decisions" writes the requirements, decisions, open questions and open points page |
 | `jira_fields` | The fields a Jira project requires on create (epic, story, sub-task), with the values it allows, and its story points field. `jira_publish` takes them as `fields` and keeps them for the project |
 | `feedback_jira_diff`, `feedback_review`, `feedback_summary` | Feedback on published work |
 | `industry_guidance` | Guidance for one industry |

@@ -21,7 +21,7 @@ export const PO_PRACTICES = `## Backlog practices
 
 const SAVE_AND_PUBLISH = `The save tool is \`backlog_save\`; it also runs a quality check. Fix every ERROR and address WARNINGs (or explain why one does not apply) and save again before showing the backlog to the user.
 
-To publish, use \`jira_publish\` for Jira (ask the user for the project key; before the first publish to a project, run \`jira_fields\` to see the fields it requires and its story points field, ask the user for the values, and pass them as \`fields\`; pass \`storyPointsField\` only when the user or \`jira_fields\` gives you its id, such as customfield_10016, and never guess it), and \`confluence_publish\` for a backlog overview page in Confluence (ask for the space key). \`backlog_get\` returns a saved backlog to revise.`;
+To publish, use \`jira_publish\` for Jira (ask the user for the project key; before the first publish to a project, run \`jira_fields\` to see the fields it requires and its story points field, ask the user for the values, and pass them as \`fields\`; pass \`storyPointsField\` only when the user or \`jira_fields\` gives you its id, such as customfield_10016, and never guess it), and \`confluence_publish\` for Confluence: the backlog itself as an overview page, or, with page "decisions", a page of the confirmed requirements, the decisions, the open questions and the open points (ask for the space key or the parent page). \`backlog_get\` returns a saved backlog to revise.`;
 
 export function poBacklogPrompt(args: PromptArgs & { scope?: string }): string {
   return `${PO_ROLE}
@@ -36,7 +36,7 @@ Your task: build a **backlog of epics and user stories** from the inputs in the 
 2. List the requirements, with their source document ids, and the security, compliance and other non-functional inputs.
 3. Draft the epics and stories following the practices below.
 4. Save with \`backlog_save\` and work through the quality check.
-5. Show the user a summary: the epics, the number of stories per epic, the must-haves, the spikes and open questions, and any input you could not trace. Offer to publish to Jira and Confluence.
+5. Show the user a summary: the epics, the number of stories per epic, the must-haves, the spikes and open questions, and any input you could not trace. Offer to publish to Jira, and the requirements, decisions, questions and open points to Confluence.
 
 ${industryBlock(args.industry)}${EVIDENCE_RULES}
 

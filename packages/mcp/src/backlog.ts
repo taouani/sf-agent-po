@@ -57,6 +57,18 @@ export const storySchema = z.object({
   jiraKey,
 });
 
+/** A decision the Product Owner took or the inputs record, published with the requirements and open points. */
+export const decisionSchema = z.object({
+  id: z.string().regex(/^D[1-9]\d{0,3}$/, "use a decision id such as D1"),
+  title: z.string().min(3).max(300).describe('What was decided about, e.g. "Renewal reminders channel".'),
+  choice: z.string().min(2).max(500).describe("What was decided."),
+  reason: z.string().min(3).max(1_000).optional().describe("Why."),
+  options: z.array(z.string().min(1).max(500)).max(6).optional().describe("The options considered, the choice among them."),
+  owner: z.string().min(1).max(120).optional().describe('The role who took it, e.g. "Business owner".'),
+  requirementIds: requirementIds.describe("Ids of the confirmed requirements it concerns, such as R1."),
+  sourceIds: sourceIds.describe("Context document ids that record it."),
+});
+
 export const epicSchema = z.object({
   id: localId,
   summary: z.string().min(5).max(255),
@@ -83,11 +95,17 @@ export const backlogSchema = z.object({
     .array(z.object({ requirementId: z.string().regex(/^R[1-9]\d{0,5}$/, "use a requirement id such as R1"), reason: z.string().min(3) }))
     .optional()
     .describe("Confirmed requirements no story delivers, each with the reason: out of scope, or waiting on an open question."),
+  decisions: z
+    .array(decisionSchema)
+    .max(40)
+    .optional()
+    .describe("Decisions taken for this backlog (scope, priority, approach, a choice between options), each with its reason."),
 });
 
 export type Backlog = z.infer<typeof backlogSchema>;
 export type Epic = z.infer<typeof epicSchema>;
 export type Story = z.infer<typeof storySchema>;
+export type Decision = z.infer<typeof decisionSchema>;
 
 export function allStories(backlog: Backlog): { epic: Epic; story: Story }[] {
   return backlog.epics.flatMap((epic) => epic.stories.map((story) => ({ epic, story })));
@@ -130,6 +148,7 @@ export function mapBacklogText(backlog: Backlog, f: (text: string) => string): B
     assumptions: list(backlog.assumptions),
     openQuestions: backlog.openQuestions?.map((q) => ({ ...q, question: f(q.question), owner: opt(q.owner) })),
     gaps: backlog.gaps?.map((g) => ({ ...g, reason: f(g.reason) })),
+    decisions: backlog.decisions?.map((d) => ({ ...d, title: f(d.title), choice: f(d.choice), reason: opt(d.reason), options: list(d.options), owner: opt(d.owner) })),
   };
 }
 
@@ -201,12 +220,20 @@ export function backlogToMarkdown(backlog: Backlog): string {
       if (s.technicalNotes) out.push(`**Technical notes:** ${s.technicalNotes}`, "");
     }
   }
+  if (backlog.decisions?.length) out.push("## Decisions", ...backlog.decisions.map(decisionLine), "");
   if (backlog.assumptions?.length) out.push("## Assumptions", ...backlog.assumptions.map((a) => `- ${a}`), "");
   if (backlog.openQuestions?.length) {
     out.push("## Open questions", ...backlog.openQuestions.map((q) => `- ${q.question}${q.owner ? ` (owner: ${q.owner})` : ""}`), "");
   }
   if (backlog.gaps?.length) out.push("## Requirements not delivered", ...backlog.gaps.map((g) => `- ${g.requirementId}: ${g.reason}`), "");
   return out.join("\n").trimEnd() + "\n";
+}
+
+/** One decision as a Markdown list line. */
+export function decisionLine(d: Decision): string {
+  const facts = [d.owner ? `owner: ${d.owner}` : undefined, d.requirementIds?.length ? `requirements: ${d.requirementIds.join(", ")}` : undefined].filter(Boolean);
+  const choice = d.reason ? `${d.choice.trim().replace(/\.+$/, "")}. Reason: ${d.reason}` : d.choice;
+  return `- **${d.id} ${d.title}:** ${choice}${facts.length ? ` (${facts.join("; ")})` : ""}`;
 }
 
 export interface Finding {
@@ -314,6 +341,13 @@ export function checkBacklog(backlog: Backlog, contextDocs: SourceDocument[], la
     }
   }
   checkSources("open questions", backlog.openQuestions?.flatMap((q) => q.sourceIds ?? []));
+  const decisionIds = new Set<string>();
+  for (const d of backlog.decisions ?? []) {
+    if (decisionIds.has(d.id)) add("error", d.id, `Two decisions have the id ${d.id}.`);
+    decisionIds.add(d.id);
+    checkSources(d.id, d.sourceIds);
+    checkRequirements(d.id, d.requirementIds);
+  }
   for (const cycle of dependencyCycles(backlog)) {
     add("error", cycle[0]!, `Circular dependency: ${cycle.join(" depends on ")}. None of these stories can start first.`);
   }

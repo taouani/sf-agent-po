@@ -11,7 +11,8 @@ export interface RequirementGap {
 }
 
 /** A table cell: one line, with its pipes escaped. */
-export const cell = (v: string | number | undefined) => (v === undefined || v === "" ? "" : String(v).replace(/\r?\n+/g, " ").replace(/\|/g, "\\|"));
+export const cell = (v: string | number | undefined) =>
+  v === undefined || v === "" ? "" : String(v).replace(/[\r\n]+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 
 export function table(head: readonly string[], rows: readonly (readonly (string | number | undefined)[])[]): string {
   return [`| ${head.join(" | ")} |`, `|${head.map(() => " --- ").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)].join("\n");
