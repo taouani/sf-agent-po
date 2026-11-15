@@ -8,12 +8,13 @@ import { AtlassianError, diagramNames, DRAWIO_MEDIA_TYPE, drawioMacro, drawioXml
 import type { ContextRepository, FeedbackRepository, Masker, RequirementRepository } from "@sf-agent-po/core";
 import { z } from "zod";
 import { requestDigest, type PublishRequest } from "./approval/server.js";
-import { type Artifact, getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
+import { type Artifact, type ArtifactMeta, getArtifact, type KeyedLock, pageLink, saveArtifact, updateArtifactMeta } from "./artifacts.js";
 import { highLevelDiagrams } from "./design/render.js";
 import type { HighLevelDesign } from "./design/schema.js";
 import type { Reviewer } from "./inputs.js";
 import type { CallContext } from "./review.js";
 import { buildTrace, renderTrace, type TraceMatrix } from "./trace.js";
+import { decisionsMarkdown, decisionsTitle } from "./decisions-page.js";
 
 type Result = { content: { type: "text"; text: string }[] };
 
@@ -136,12 +137,18 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
     {
       title: "Publish to Confluence",
       description:
-        "Creates or updates a Confluence page from a design artifact. The user sees exactly what will be written, with the real values, in their browser, " +
-        "and the page is written only if they approve it there; the call waits for them. Updating replaces the page content.",
+        "Creates or updates a Confluence page from a design or backlog artifact. The user sees exactly what will be written, with the real values, in their browser, " +
+        "and the page is written only if they approve it there; the call waits for them. Updating replaces the page content. " +
+        'With page "decisions" it writes, instead of the artifact itself, a page of the context\'s confirmed requirements, the decisions taken, the open questions and the open points ' +
+        "(requirements not delivered, assumptions, risks), from the artifact and, for a backlog, the context's designs. That page has its own place: publishing it again updates it.",
       inputSchema: {
         context: contextName,
-        artifactId: z.string().describe("Id of the design artifact to publish."),
-        spaceKey: z.string().optional().describe("Confluence space key, needed the first time an artifact is published."),
+        artifactId: z.string().describe("Id of the design or backlog artifact to publish."),
+        page: z
+          .enum(["artifact", "decisions"])
+          .default("artifact")
+          .describe('"artifact" publishes the design or backlog itself; "decisions" publishes its requirements, decisions, open questions and open points page.'),
+        spaceKey: z.string().optional().describe("Confluence space key, needed the first time a page is published unless parentPageId is given (its space is used)."),
         parentPageId: z.string().optional().describe("Optional parent page id or URL for a new page."),
         pageId: z.string().optional().describe("Update this existing page instead of the artifact's own page."),
         title: z.string().optional().describe("Page title. Defaults to the artifact title."),
@@ -165,6 +172,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
         args: {
           context: string;
           artifactId: string;
+          page?: "artifact" | "decisions";
           spaceKey?: string;
           parentPageId?: string;
           pageId?: string;
@@ -180,14 +188,23 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const doc = getArtifact(contexts, context, args.artifactId);
           if (!kit.atlassian) throw new Error("Confluence is not set up for this server.");
           const client = kit.atlassian();
-          const title = masker.unmask(context, args.title?.trim() || doc.title);
+          // The decisions page is a page of its own, kept apart from the artifact's page.
+          const decisions = args.page === "decisions";
+          const pageMeta = decisions ? (doc.metadata.decisionsPage as ArtifactMeta["confluence"]) : doc.metadata.confluence;
+          const what = decisions ? "requirements and decisions page" : doc.kind === "backlog" ? "backlog" : "design";
+          const maskedTitle = args.title?.trim() || (decisions ? decisionsTitle(doc.title) : doc.title);
+          const named = masker.unmask(context, maskedTitle);
+          // Confluence takes 255 characters.
+          const title = named.text.length > 255 ? { ...named, text: `${named.text.slice(0, 254).trimEnd()}…` } : named;
+          const built = decisions ? decisionsMarkdown(contexts, kit.requirements, context, doc, maskedTitle) : undefined;
+          const content = built ? built.content : doc.content;
           // What the user reads on the page (the Markdown with the real values), and what is
           // written: storage made from the masked Markdown, with the same values put in escaped.
-          const body = masker.unmask(context, doc.content);
+          const body = masker.unmask(context, content);
           const mode = args.diagrams ?? (contexts.get(context)?.settings.confluenceDiagrams === "mermaid" ? "mermaid" : "drawio");
           // The diagrams go as draw.io files: their labels come from the design, with the real values put in.
-          const graphs = mode === "drawio" && doc.metadata.design && doc.metadata.artifactType !== "detailed" ? highLevelDiagrams(doc.metadata.design as HighLevelDesign) : {};
-          const files = diagramNames(doc.content)
+          const graphs = !decisions && mode === "drawio" && doc.metadata.design && doc.metadata.artifactType !== "detailed" ? highLevelDiagrams(doc.metadata.design as HighLevelDesign) : {};
+          const files = diagramNames(content)
             .filter((name) => Object.hasOwn(graphs, name))
             .map((name) => {
               // The real values go in before the layout, so that each box is sized for what it shows.
@@ -211,7 +228,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             unmaskStorage(
               masker,
               context,
-              markdownToStorage(doc.content, { diagrams: Object.fromEntries(files.map((f) => [f.name, drawioMacro(f.file, revision(f.file), f.width)])) }),
+              markdownToStorage(content, { diagrams: Object.fromEntries(files.map((f) => [f.name, drawioMacro(f.file, revision(f.file), f.width)])) }),
             );
           const storage = storageAt(() => 1);
           /** Attaches the diagram files to the page; returns each file's version. */
@@ -224,7 +241,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             return versions;
           };
           let diagramNote = "";
-          const ownPageId = doc.metadata.confluence?.pageId;
+          const ownPageId = pageMeta?.pageId;
           const existing = args.pageId ?? (args.newPage ? undefined : ownPageId);
 
           // Where it goes, for the user: page titles from Confluence may hold real names, so they are shown on the page only.
@@ -238,18 +255,18 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
               page = await client.getPageSummary(existing);
             } catch (err) {
               if (!args.pageId && err instanceof AtlassianError && err.status === 404) {
-                throw new Error("The page this design was published to no longer exists or is not visible. To publish it again, pass newPage: true with a spaceKey.");
+                throw new Error(`The page this ${what} was published to no longer exists or is not visible. To publish it again, pass newPage: true with a spaceKey or a parentPageId.`);
               }
               if (err instanceof AtlassianError) throw new Error(`Confluence did not return the page (HTTP ${err.status}). Nothing was written.`);
               throw err;
             }
             ownPage = !args.pageId || page.pageId === ownPageId;
             shownTitles.push(page.title);
-            const edited = ownPage && doc.metadata.confluence && doc.metadata.confluence.pageVersion !== page.version;
+            const edited = ownPage && pageMeta && pageMeta.pageVersion !== page.version;
             target =
               `Confluence: replace the content of page "${page.title}" (version ${page.version})` +
               (edited ? ". It was edited in Confluence since it was last published, and those edits will be replaced" : "") +
-              (ownPage ? "" : ". This is not the design's own page: its whole content will be replaced");
+              (ownPage ? "" : `. This is not the ${what}'s own page: its whole content will be replaced`);
             write = async () => {
               // The files first, so the macros can name their new versions; adding a file leaves the page's version as it is.
               let versions: Map<string, number>;
@@ -268,18 +285,18 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
               }
             };
           } else {
-            if (!args.spaceKey) throw new Error("This design has not been published yet. Ask the user which Confluence space (key) to publish to.");
+            if (!args.spaceKey && !args.parentPageId) throw new Error(`This ${what} has not been published yet. Ask the user which Confluence space (key) or parent page to publish it to.`);
             const spaceKey = args.spaceKey;
-            const spaceId = await confluence("find the space", () => client.getSpaceId(spaceKey));
             let parent: Awaited<ReturnType<AtlassianClient["getPageSummary"]>> | undefined;
             if (args.parentPageId) {
               const parentId = args.parentPageId;
               parent = await confluence("return the parent page", () => client.getPageSummary(parentId));
               shownTitles.push(parent.title);
-              if (parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
             }
+            const spaceId = spaceKey ? await confluence("find the space", () => client.getSpaceId(spaceKey)) : parent!.spaceId;
+            if (spaceKey && parent && parent.spaceId !== spaceId) throw new Error(`The parent page is not in space ${spaceKey}. Choose a parent page in that space, or leave parentPageId out.`);
             ownPage = true;
-            target = `Confluence: a new page in space ${spaceKey}${parent ? ` under "${parent.title}"` : " at the space root"}`;
+            target = `Confluence: a new page ${spaceKey ? `in space ${spaceKey}` : "in the parent page's space"}${parent ? ` under "${parent.title}"` : " at the space root"}`;
             write = async () => {
               const created = await client.createPage({ spaceId, parentId: parent?.pageId, title: title.text, storage: storage.text });
               // A new page's files start at version 1, which its macros already name.
@@ -294,7 +311,7 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           }
 
           // The matrix goes under the design's own page, from the requirement ids this design carries.
-          const matrix = ownPage && args.traceability ? traceOf(context, doc) : undefined;
+          const matrix = !decisions && ownPage && args.traceability ? traceOf(context, doc) : undefined;
           let traceTitle: ReturnType<Masker["unmask"]> | undefined;
           let traceBody: ReturnType<Masker["unmask"]> | undefined;
           let traceStorage: ReturnType<typeof unmaskStorage> | undefined;
@@ -349,11 +366,18 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
           const version = doc.metadata.version;
           // The choice is kept once a page was written with it.
           if (args.diagrams) contexts.updateSettings(context, { confluenceDiagrams: args.diagrams });
-          updateArtifactMeta(contexts, context, doc, (meta) => ({
-            // Saved again while this ran: the new version is still unpublished.
-            status: meta.version === version ? "published" : "changed",
-            ...(ownPage ? { confluence: { pageId: page.pageId, url, pageVersion: page.version, artifactVersion: version, publishedAt: new Date().toISOString() } } : {}),
-          }));
+          const placed = { pageId: page.pageId, url, pageVersion: page.version, artifactVersion: version, publishedAt: new Date().toISOString() };
+          updateArtifactMeta(contexts, context, doc, (meta) =>
+            decisions
+              ? ownPage
+                ? { decisionsPage: placed }
+                : {}
+              : {
+                  // Saved again while this ran: the new version is still unpublished.
+                  status: meta.version === version ? "published" : "changed",
+                  ...(ownPage ? { confluence: placed } : {}),
+                },
+          );
           let traced = traceMeta?.url ? ` Its traceability matrix page (${traceMeta.url}) was not updated.` : "";
           if (matrix && traceTitle && traceStorage) {
             let written: Awaited<ReturnType<AtlassianClient["updatePage"]>> | undefined;
@@ -379,7 +403,10 @@ export function registerPublishTools(server: McpServer, kit: PublishKit): void {
             }
           }
           const drawn = files.length && !diagramNote ? ` Its ${files.length} diagram(s) are attached as draw.io files.` : "";
-          return text(`${existing ? "Updated" : "Created"} the Confluence page for "${doc.title}" (version ${page.version}): ${url}${drawn}${diagramNote}${traced}${await comment()}`);
+          const counted = built
+            ? ` It lists ${built.counts.requirements} requirement(s), ${built.counts.decisions} decision(s), ${built.counts.questions} open question(s) and ${built.counts.openPoints} open point(s).`
+            : "";
+          return text(`${existing ? "Updated" : "Created"} the Confluence ${decisions ? "requirements and decisions page" : "page"} for "${doc.title}" (version ${page.version}): ${url}${counted}${drawn}${diagramNote}${traced}${await comment()}`);
         }),
     ),
   );

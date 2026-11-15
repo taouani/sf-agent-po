@@ -227,7 +227,7 @@ export const WORKFLOW_DEFINITIONS: Record<keyof typeof WORKFLOWS, WorkflowDefini
   po_backlog: {
     id: "po_backlog",
     title: WORKFLOWS.po_backlog.title,
-    next: "Show the user the backlog, and offer to publish it to Jira with jira_publish.",
+    next: "Show the user the backlog, and offer to publish it to Jira with jira_publish, and its requirements, decisions, open questions and open points to Confluence with confluence_publish (page \"decisions\", under the parent page the user names).",
     steps: (kit) => [requirementsStep, ...withScope(kit), ...backlogSteps] as StepDefinition[],
     // A run started before the backlog had its steps ends the old way, with a saved backlog;
     // one started before it had a scope step goes on without it.

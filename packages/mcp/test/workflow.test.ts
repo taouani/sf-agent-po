@@ -433,7 +433,15 @@ describe("workflow tools", () => {
     expect(assembleBrief.text).toContain("WARNING [E1] E1 cites R3");
     expect(assembleBrief.text).toMatch(/Confirmed requirements no story delivers:\n- R2 .*\n- R3 /);
 
-    const missing = await submit("assemble", { title: "Renewals backlog" });
+    const missing = await submit("assemble", {
+      title: "Renewals backlog",
+      decisions: [
+        { id: "D1", title: "Letter channel", choice: "Post only", requirementIds: ["R9"] },
+        { id: "D1", title: "Archive owner", choice: "Records team" },
+      ],
+    });
+    expect(missing.text).toContain("ERROR [D1] R9 is not a confirmed requirement.");
+    expect(missing.text).toContain("ERROR [D1] Two decisions have the id D1.");
     expect(missing.text).toContain("ERROR [R2] Must requirement R2 is delivered by no story");
     expect(missing.text).toContain("WARNING [R3] Should requirement R3 is delivered by no story.");
     const done = await submit("assemble", {
@@ -444,6 +452,7 @@ describe("workflow tools", () => {
         { requirementId: "R2", reason: "The archive is set up by the records team." },
         { requirementId: "R1", reason: "Not needed." },
       ],
+      decisions: [{ id: "D1", title: "Letter channel", choice: "Post only, signed by Karim Haddad", reason: "Customers asked for paper", requirementIds: ["R1"] }],
     });
     expect(done.text).toContain("WARNING [R1] R1 is delivered by a story, so it is not a gap");
     expect(done.text).toMatch(/Step "assemble" passed with warnings: tell the user about them\. Saved as doc-[0-9a-f]{10}, version 1: Renewals backlog \(2 epics, 3 stories\)\./);
@@ -454,6 +463,7 @@ describe("workflow tools", () => {
     expect(saved.content).toContain("Requirements: R1");
     expect(saved.content).toContain("## Requirements not delivered\n- R2: The archive is set up by the records team.");
     expect(saved.content).not.toContain("Not needed");
+    expect(saved.content).toMatch(/## Decisions\n- \*\*D1 Letter channel:\*\* Post only, signed by \[PERSON_\d+\]\. Reason: Customers asked for paper \(requirements: R1\)/);
     expect(saved.content).toMatch(/## E1: Renewal letters for \[PERSON_\d+\]/);
     const backlog = (saved.metadata as { backlog: { epics: { stories: { id: string; requirementIds?: string[] }[] }[]; openQuestions: { question: string }[] } }).backlog;
     expect(backlog.epics[0]!.stories.map((x) => x.requirementIds)).toEqual([["R1"], ["R1"]]);
