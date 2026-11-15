@@ -187,7 +187,7 @@ Ask in plain words; the assistant picks the tool.
 | Files or a folder | "Add ~/shared/renewal as meeting notes to renewal" | `context_add_file` (notes, `.eml`, PDF, Word, PowerPoint, Excel, CSV, draw.io, text, PNG and JPEG) |
 | Text pasted in the chat | "Add this email to renewal: ..." | `context_add_text` |
 | Jira issues | "Add PORT-12 and its stories" or a JQL query | `context_add_jira` |
-| Confluence pages | "Add this page: <URL>" | `context_add_confluence` |
+| Confluence pages | "Add this page: <URL>", or "Add this page as a high-level design: <URL>" (kind `design`) | `context_add_confluence` |
 
 Images are read with OCR, and the personal data found on them is blacked out. You confirm each redacted image before the model sees it, whatever the input review setting. To see what a context holds, ask "show the renewal context"; to remove an input, "remove doc-… from renewal".
 
