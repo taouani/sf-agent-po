@@ -22,6 +22,13 @@ function fakeConfluence() {
   let next = 100;
   const url = (id: string, title: string) => `https://acme.atlassian.net/wiki/spaces/ENG/pages/${id}/${encodeURIComponent(title)}`;
   const client = {
+    getPage: async (id: string) => ({
+      kind: "confluence",
+      title: `Design ${id} by Karim Benali`,
+      source: url(id, "Design"),
+      content: "Karim Benali designed the document capture.",
+      metadata: { pageId: id },
+    }),
     getSpaceId: async (key: string) => (key === "ENG" ? "1" : Promise.reject(new Error(`Confluence space "${key}" was not found`))),
     getPageSummary: async (id: string) => {
       const p = pages.get(id);
@@ -101,6 +108,21 @@ async function connect(answers: (Partial<Omit<Decision, "digest">> | ((req: Appr
 }
 
 const design = "# VIP flag\n\nOwner: [PERSON_1]. Reviewer: Lea Martin. Service login stays [SECRET_1].";
+
+describe("adding Confluence pages", () => {
+  it("files the pages under the kind given, masked, and keeps kind confluence by default", async () => {
+    const { call, contexts } = await connect();
+    expect((await call("context_add_confluence", { context: "acme", pages: ["6468468767"], kind: "design" })).isError).toBeFalsy();
+    expect((await call("context_add_confluence", { context: "acme", pages: ["42"] })).isError).toBeFalsy();
+    const pages = contexts.documents("acme").filter((d) => d.title.startsWith("Design"));
+    expect(pages.map((d) => [d.title, d.kind])).toEqual([
+      ["Design 6468468767 by [PERSON_1]", "design"],
+      ["Design 42 by [PERSON_1]", "confluence"],
+    ]);
+    expect(pages[0]!.content).not.toContain("Karim");
+    expect((await call("context_add_confluence", { context: "acme", pages: ["1"], kind: "plan" })).isError).toBe(true);
+  });
+});
 
 describe("saving designs", () => {
   it("keeps the pseudonyms the agent used, masks names written in clear, and versions the design", async () => {

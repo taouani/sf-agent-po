@@ -361,15 +361,24 @@ export function createServer(opts: ServerOptions): McpServer {
     "context_add_confluence",
     {
       title: "Add Confluence pages",
-      description: "Adds Confluence Cloud pages to a context, by page id or page URL. Personal data is masked before it is stored.",
-      inputSchema: { context: contextName, pages: z.array(z.string()).min(1) },
+      description:
+        "Adds Confluence Cloud pages to a context, by page id or page URL. Personal data is masked before it is stored. " +
+        'Give kind (such as "design" for a high-level design page) to file the pages under that kind; without it they are kind "confluence".',
+      inputSchema: {
+        context: contextName,
+        pages: z.array(z.string()).min(1),
+        kind: kind.optional().describe('Document kind for every page given, such as "design" or "meeting-notes". Default "confluence".'),
+      },
       annotations: { openWorldHint: true },
     },
-    guard(async ({ context, pages }, call) => {
+    guard(async ({ context, pages, kind }, call) => {
       if (!opts.atlassian) throw new Error("Confluence is not set up for this server.");
       const client = opts.atlassian();
       const docs: NewDocument[] = [];
-      for (const page of pages) docs.push(await client.getPage(page));
+      for (const page of pages) {
+        const doc = await client.getPage(page);
+        docs.push(kind ? { ...doc, kind } : doc);
+      }
       return text(await add(context, docs, call));
     }),
   );
