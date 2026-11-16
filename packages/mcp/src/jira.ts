@@ -548,7 +548,12 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         // Saved with the mapping once the publish goes through (never on a rejection): where each change went this time.
         const plannedTasks = items.filter((i) => i.level === "subtask" && i.action !== "skip").map((i) => i.id);
         if (plannedTasks.length) mapping.subtasks = plannedTasks;
-        const noteText = notes.length ? `\n\n${notes.join("\n")}` : "";
+        // What stays in Jira untouched, masked: the model tells the user which issues to close, as this tool never deletes.
+        const leftInJira = [
+          ...(orphans.length ? [`No longer in this backlog, left as they are in Jira: ${orphans.join(", ")}.`] : []),
+          ...(unplanned.length ? [`Sub-tasks not planned in this publish, left as they are in Jira: ${unplanned.join(", ")}. Tell the user to close them in Jira if the work is covered elsewhere.`] : []),
+        ];
+        const noteText = notes.length || leftInJira.length ? `\n\n${[...notes, ...leftInJira].join("\n")}` : "";
         const version = doc.metadata.version;
         // The report credits the stories to the model label set when they were published.
         const publishedModel = () => {

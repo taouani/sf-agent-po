@@ -583,6 +583,11 @@ describe("Jira sub-tasks", () => {
     expect(shown.body).toContain("Also needed by: S2 Set the VIP flag.");
     expect(shown.body).not.toMatch(/Also needed by:.*S3/);
     expect(shown.body).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c \(PORT-\d+\)/);
+    expect(r.text).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c \(PORT-\d+\)\. Tell the user to close them/);
+    // Also when nothing else changes, where no approval page shows it.
+    const quiet = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(quiet.text).toContain("Nothing to publish");
+    expect(quiet.text).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c/);
     const update = jira.writes.at(-1)!;
     expect(update).toMatchObject({ op: "update" });
     expect(JSON.stringify(update.fields.description)).toContain("Also needed by: S2 Set the VIP flag.");
