@@ -95,12 +95,29 @@ function details(d: DetailedDesign, type: string, name: string): string[] {
   return [];
 }
 
+/** "per-change": one sub-task per deployment entry, under the first story that needs it. "per-story": one under each story it cites. */
+export type SubtaskMode = "per-change" | "per-story";
+
+export interface PlanOptions {
+  mode?: SubtaskMode;
+  /** Stories this publish leaves out of Jira: a change goes under a published story when one cites it. */
+  skipped?: (story: Story) => boolean;
+  /** Sub-task ids already in Jira: a change keeps the story it was published under. */
+  known?: (id: string) => boolean;
+  /** Sub-task ids the last publish planned: preferred over other ids in Jira, so a change does not move back to a story it left. */
+  previous?: (id: string) => boolean;
+}
+
 /**
- * The sub-tasks a detailed design gives a backlog's stories: one per component change in its
- * deployment list, under each story it cites (by id, or by the story's Jira key).
+ * The sub-tasks a detailed design gives a backlog's stories, one per component change in its
+ * deployment list (by story id, or by the story's Jira key). By default each change is one
+ * sub-task, under the first story in backlog order that cites it, naming the others; with
+ * "per-story", each story it cites gets its own.
  */
-export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTitle: string, jiraKeyOf: (story: Story) => string | undefined): SubtaskPlan {
+export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTitle: string, jiraKeyOf: (story: Story) => string | undefined, opts: PlanOptions = {}): SubtaskPlan {
+  const { mode = "per-change", skipped = () => false, known = () => false, previous = () => false } = opts;
   const stories = backlog.epics.flatMap((e) => e.stories);
+  const order = new Map(stories.map((s, i) => [s, i]));
   const byRef = new Map<string, Story>();
   for (const s of stories) {
     byRef.set(s.id, s);
@@ -110,19 +127,39 @@ export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTit
   const subtasks: PlannedSubtask[] = [];
   const seen = new Set<string>();
   const unmatched = new Set<string>();
+  /** How many entries each component has had so far, in design order. */
+  const entries = new Map<string, number>();
   for (const c of design.deployment?.components ?? []) {
+    const cited: Story[] = [];
     for (const ref of c.stories) {
       const story = byRef.get(ref);
-      if (!story) {
-        unmatched.add(ref);
-        continue;
-      }
-      // Stable across rewordings Salesforce treats as the same component: the type's letters and the name, in lower case.
-      const id = `${story.id}:${typeKey(c.type)}:${c.name.trim().toLowerCase()}`;
-      if (seen.has(id)) continue;
+      if (!story) unmatched.add(ref);
+      else if (!cited.includes(story)) cited.push(story);
+    }
+    if (!cited.length) continue;
+    cited.sort((a, b) => order.get(a)! - order.get(b)!);
+    const name = c.name.trim();
+    // Stable across rewordings Salesforce treats as the same component: the type's letters and the name, in lower case.
+    const component = `${typeKey(c.type)}:${name.toLowerCase()}`;
+    // A component's second entry is a change of its own, with its own sub-task: ":2", ":3" in design order, whatever story it lands on.
+    const nth = (entries.get(component) ?? 0) + 1;
+    entries.set(component, nth);
+    const idOf = (story: Story) => `${story.id}:${component}${nth > 1 ? `:${nth}` : ""}`;
+    const live = cited.filter((s) => !skipped(s));
+    const pick = (ok: (id: string) => boolean) => live.find((s) => !seen.has(idOf(s)) && ok(idOf(s)));
+    const targets = mode === "per-story" ? cited : [pick(previous) ?? pick(known) ?? pick(() => true) ?? live[0] ?? cited[0]!];
+    for (const story of targets) {
+      if (seen.has(idOf(story))) continue;
+      const id = idOf(story);
       seen.add(id);
-      const summary = `${VERB[c.change]} ${noun(c.type)} ${c.name.trim()}`;
-      const lines = [`${VERB[c.change]} the ${c.type} ${c.name.trim()}.`, ...details(design, c.type, c.name.trim()), ...(c.notes ? [c.notes] : [])];
+      const others = mode === "per-story" ? [] : live.filter((s) => s !== story);
+      const summary = `${VERB[c.change]} ${noun(c.type)} ${name}`;
+      const lines = [
+        `${VERB[c.change]} the ${c.type} ${name}.`,
+        ...details(design, c.type, name),
+        ...(c.notes ? [c.notes] : []),
+        ...(others.length ? [`Also needed by: ${others.map((s) => `${s.id} ${s.summary}`).join("; ")}.`] : []),
+      ];
       subtasks.push({
         id,
         storyId: story.id,

@@ -27,7 +27,7 @@ import {
 import { atlassianCall, decisionComment, type PublishKit } from "./publish.js";
 import { contextLanguage } from "./checks.js";
 import type { DetailedDesign } from "./design/detailed-schema.js";
-import { planSubtasks } from "./subtasks.js";
+import { planSubtasks, type SubtaskMode } from "./subtasks.js";
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
@@ -86,6 +86,7 @@ type JiraTarget = {
   storyPointsField?: string;
   fields?: LevelFields;
   subtasks: boolean;
+  subtaskMode: SubtaskMode;
   detailedDesignId?: string;
   subtaskIssueType?: string;
 };
@@ -303,7 +304,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       }
     }
 
-    // Sub-tasks from the detailed design that builds this backlog: one per component change, under each story it cites.
+    // Sub-tasks from the detailed design that builds this backlog: one per component change (under the first story that needs it, or each story it cites, by mode).
     const notes: string[] = [];
     const found = args.subtasks ? designFor(args.context, doc.id, args.detailedDesignId) : undefined;
     const design = found?.chosen;
@@ -315,15 +316,20 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       if (args.subtaskIssueType && !types.includes(args.subtaskIssueType))
         throw new Error(`Project ${args.projectKey} has no sub-task issue type "${args.subtaskIssueType}". Available: ${types.join(", ") || "none"}.`);
       subtaskType = args.subtaskIssueType ?? types.find((t) => /^sub-?task$/i.test(t.replace(/\s+/g, ""))) ?? types[0];
-      const planned = planSubtasks(backlog, design.design, design.doc.title, (story) => mapping.items[story.id]?.key ?? story.jiraKey);
+      const storyItems = new Map(items.filter((i) => i.level === "story").map((i) => [i.id, i]));
+      const planned = planSubtasks(backlog, design.design, design.doc.title, (story) => mapping.items[story.id]?.key ?? story.jiraKey, {
+        mode: args.subtaskMode,
+        skipped: (story) => storyItems.get(story.id)?.action === "skip",
+        known: (id) => !!mapping.items[id],
+        previous: (id) => !!mapping.subtasks?.includes(id),
+      });
       unmatched = planned.unmatched;
       if (!subtaskType) notes.push(`Project ${args.projectKey} has no sub-task issue type, so the ${planned.subtasks.length} sub-task(s) of the detailed design ${design.doc.id} are left out; the stories are published.`);
       else if (!planned.subtasks.length) notes.push(`The detailed design ${design.doc.id} gives no sub-task to these stories: its deployment list cites none of them.`);
       else {
-        const stories = new Map(items.filter((i) => i.level === "story").map((i) => [i.id, i]));
         const byStory = new Map<string, PlannedItem[]>();
         for (const t of planned.subtasks) {
-          const story = stories.get(t.storyId)!;
+          const story = storyItems.get(t.storyId)!;
           const fields = { summary: t.summary, description: t.description };
           const labels = ["sf-agent-po"];
           const known = mapping.items[t.id];
@@ -519,7 +525,13 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         subtasks: z
           .boolean()
           .default(true)
-          .describe("Give each story one sub-task per component change in the deployment list of the detailed design that builds this backlog."),
+          .describe("Add the sub-tasks of the deployment list of the detailed design that builds this backlog."),
+        subtaskMode: z
+          .enum(["per-change", "per-story"])
+          .default("per-change")
+          .describe(
+            '"per-change": one sub-task per component change, under the first story that needs it, naming the other stories. "per-story": one under every story the change cites. Sub-tasks already in Jira that a mode no longer plans are left as they are.',
+          ),
         detailedDesignId: z.string().optional().describe("The detailed design to take the sub-tasks from. Left out: the newest one whose stories come from this backlog."),
         subtaskIssueType: z.string().optional().describe("The sub-task issue type. Left out: the project's own, read from Jira."),
         fields: fieldsArg.optional(),
@@ -533,6 +545,9 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         if (!kit.atlassian) throw new Error("Jira is not set up for this server.");
         const client = kit.atlassian();
         const { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design } = await plan(args, doc, meta, backlog, client);
+        // Saved with the mapping once the publish goes through (never on a rejection): where each change went this time.
+        const plannedTasks = items.filter((i) => i.level === "subtask" && i.action !== "skip").map((i) => i.id);
+        if (plannedTasks.length) mapping.subtasks = plannedTasks;
         const noteText = notes.length ? `\n\n${notes.join("\n")}` : "";
         const version = doc.metadata.version;
         // The report credits the stories to the model label set when they were published.

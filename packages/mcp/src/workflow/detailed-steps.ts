@@ -220,6 +220,7 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
       ' "preSteps": ["..."], "postSteps": ["..."], "dataLoads": ["..."], "rollback": "..."}',
     guidance:
       "every metadata component to deploy, with its Metadata API type and API name (each one listed below, and any other), the stories it builds, the pre- and post-deployment steps, the data loads, and the rollback. " +
+      "Each entry becomes one Jira sub-task, under the first story it builds: list a component once with all its stories, and split it into several entries only when each story needs a different change to it, saying which in notes. " +
       "Run metadata_impact on the components you change or delete first, in this run.",
     check: checkDdDeployment,
     summary: (s) => `${plural(s.components.length, "component")} to deploy.${storiesOf(s.components)}`,
