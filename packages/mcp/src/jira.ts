@@ -417,7 +417,15 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       });
 
     // Issues published from ids no longer in the backlog, or sub-tasks not planned this time, are left alone.
-    const gone = Object.entries(mapping.items).filter(([id]) => !byId.has(id));
+    // Only those still open: one closed or deleted in Jira is dealt with, so it is not listed again on every publish.
+    const left = Object.entries(mapping.items).filter(([id]) => !byId.has(id));
+    const open = left.length
+      ? await client.getStories(left.map(([, i]) => i.key)).then(
+          (found) => (key: string) => !!found.get(key) && found.get(key)!.status !== "done",
+          () => () => true, // best effort: listed when Jira cannot say
+        )
+      : () => true;
+    const gone = left.filter(([, i]) => open(i.key));
     const orphans = gone.filter(([id]) => !id.includes(":")).map(([id, i]) => `${id} (${i.key})`);
     const unplanned = [...gone.filter(([id]) => id.includes(":")).map(([id, i]) => `${id} (${i.key})`), ...strays];
     return { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design: design?.doc };
