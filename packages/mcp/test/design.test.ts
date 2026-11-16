@@ -244,8 +244,19 @@ describe("design checks review fixes", () => {
       "error Case: The security section leaves Case's sharing default to confirm: add an open question about it, naming Case, with who should answer.",
       "error Cart__c: The security section leaves Cart__c's sharing default to confirm: add an open question about it, naming Cart__c, with who should answer.",
     ]);
+    // A question naming another object, or the word in passing, does not count.
+    const near = { ...without, openQuestions: [{ question: "Who owns Case_Note__c records? In that case, who signs off for Cart__c?", owner: "Business owner" }] };
+    expect(lines(checkDecisions(near, env(index, { design })))).toEqual([
+      "error Case: The security section leaves Case's sharing default to confirm: add an open question about it, naming Case, with who should answer.",
+    ]);
     const asked = { ...without, openQuestions: [...without.openQuestions, { question: "What is the sharing model of cart__c and of Case for external users?", owner: "Security" }] };
     expect(checkDecisions(asked, env(index, { design }))).toEqual([]);
+
+    // A default the design has no word for is still known.
+    const campaign = securitySection.parse({ sharing: [{ object: "CampaignMember", internal: "to confirm" }], measures: [{ id: "S1", measure: "m", requirementIds: ["R2"] }], nonFunctional: [] });
+    expect(lines(checkSecurity(campaign, env([component("CustomObject", "CampaignMember", { sharingModel: "ControlledByCampaign" })])))).toEqual([
+      'error CampaignMember.internal: The index gives CampaignMember\'s internal default: ControlledByCampaign (write "controlled by parent"). Use it, or the default this design sets.',
+    ]);
   });
 
   it("key what metadata_impact looked at on the type and real name, never in clear", () => {
