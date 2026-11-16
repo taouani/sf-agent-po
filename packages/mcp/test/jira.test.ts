@@ -586,7 +586,7 @@ describe("Jira sub-tasks", () => {
     const update = jira.writes.at(-1)!;
     expect(update).toMatchObject({ op: "update" });
     expect(JSON.stringify(update.fields.description)).toContain("Also needed by: S2 Set the VIP flag.");
-    expect(jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task" && (w as { op?: string }).op !== "update")).toHaveLength(3);
+    expect(jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task")).toHaveLength(3); // creates only: an update sends no issue type
 
     // A new backlog published per change from the start: one sub-task for the field, under S1.
     const other = await call("backlog_save", { context: "acme", backlog: { ...backlog(input.id), title: "Other backlog" } });
@@ -599,6 +599,46 @@ describe("Jira sub-tasks", () => {
     const created = jira.writes.slice(before).filter((w) => w.fields.issuetype?.name === "Sub-task");
     expect(created.map((w) => w.fields.summary)).toEqual(["Create field Account.VIP__c", "Create flow VIP_Notify"]);
     expect(created[0]!.fields.parent?.key).toBe(created[1]!.fields.parent?.key);
+  });
+
+  it("per change: a second entry for the same component gets its own sub-task, and a change stays under the story it moved to", async () => {
+    const { call, contexts, seen, jira, input } = await connect();
+    const { id } = await saveBacklog(call, backlog(input.id));
+    const dd = ddFor(id);
+    dd.deployment.components = [
+      { type: "CustomField", name: "Account.VIP__c", change: "add", stories: ["S1", "S2"], notes: "Ask Lea Martin" },
+      { type: "CustomField", name: "Account.VIP__c", change: "modify", stories: ["S1"], notes: "Then make it required" },
+      { type: "Flow", name: "VIP_Notify", change: "add", stories: ["S1", "S2"] },
+    ];
+    saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD", artifactType: "detailed", extra: { design: dd } });
+    const created = () => jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task").map((w) => [w.fields.summary, w.fields.parent?.key]);
+
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    // S1 is PORT-2 and S2 PORT-6 (created after S1's sub-tasks): the field's second entry is a sub-task of its own.
+    expect(created()).toEqual([
+      ["Create field Account.VIP__c", "PORT-2"],
+      ["Update field Account.VIP__c", "PORT-2"],
+      ["Create flow VIP_Notify", "PORT-2"],
+    ]);
+    expect(seen.at(-1)!.body).toContain("Then make it required");
+
+    // S1 becomes won't have: its changes move to S2 (the field's second entry has no other story, so it stays with S1, skipped).
+    await saveBacklog(call, backlog(input.id, (b) => void (b.epics[0]!.stories[0]!.priority = "wont")));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(created().slice(3)).toEqual([
+      ["Create field Account.VIP__c", "PORT-6"],
+      ["Create flow VIP_Notify", "PORT-6"],
+    ]);
+
+    // S1 is back: the changes stay under S2, where they went last time, and nothing new is created.
+    await saveBacklog(call, backlog(input.id));
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(created()).toHaveLength(5);
+    // Only their "Also needed by" changes, as S1 is published again.
+    expect(r.text).toContain("Updated PORT-7 Create field Account.VIP__c");
+    expect(r.text).not.toMatch(/Updated PORT-[2345] /);
+    expect(seen.at(-1)!.body).toContain("Also needed by: S1 Show the VIP flag.");
+    expect(seen.at(-1)!.body).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: .*S1:customfield:account\.vip__c \(PORT-3\)/);
   });
 
   it("publishes the stories without sub-tasks when the project has no sub-task type", async () => {

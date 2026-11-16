@@ -37,6 +37,8 @@ export interface JiraMapping {
   /** Dependency links already created, as "BLOCKER>BLOCKED" issue keys. */
   links: string[];
   publishedVersion?: number;
+  /** The sub-task ids the last approved publish planned: a change keeps its story from one publish to the next. */
+  subtasks?: string[];
   /** The context's model label (masked) when the backlog was last published, for the report. */
   model?: string;
 }

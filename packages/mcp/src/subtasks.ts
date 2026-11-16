@@ -104,6 +104,8 @@ export interface PlanOptions {
   skipped?: (story: Story) => boolean;
   /** Sub-task ids already in Jira: a change keeps the story it was published under. */
   known?: (id: string) => boolean;
+  /** Sub-task ids the last publish planned: preferred over other ids in Jira, so a change does not move back to a story it left. */
+  previous?: (id: string) => boolean;
 }
 
 /**
@@ -113,7 +115,7 @@ export interface PlanOptions {
  * "per-story", each story it cites gets its own.
  */
 export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTitle: string, jiraKeyOf: (story: Story) => string | undefined, opts: PlanOptions = {}): SubtaskPlan {
-  const { mode = "per-change", skipped = () => false, known = () => false } = opts;
+  const { mode = "per-change", skipped = () => false, known = () => false, previous = () => false } = opts;
   const stories = backlog.epics.flatMap((e) => e.stories);
   const order = new Map(stories.map((s, i) => [s, i]));
   const byRef = new Map<string, Story>();
@@ -125,6 +127,8 @@ export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTit
   const subtasks: PlannedSubtask[] = [];
   const seen = new Set<string>();
   const unmatched = new Set<string>();
+  /** How many entries each component has had so far, in design order. */
+  const entries = new Map<string, number>();
   for (const c of design.deployment?.components ?? []) {
     const cited: Story[] = [];
     for (const ref of c.stories) {
@@ -136,12 +140,17 @@ export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTit
     cited.sort((a, b) => order.get(a)! - order.get(b)!);
     const name = c.name.trim();
     // Stable across rewordings Salesforce treats as the same component: the type's letters and the name, in lower case.
-    const idOf = (story: Story) => `${story.id}:${typeKey(c.type)}:${name.toLowerCase()}`;
+    const component = `${typeKey(c.type)}:${name.toLowerCase()}`;
+    // A component's second entry is a change of its own, with its own sub-task: ":2", ":3" in design order, whatever story it lands on.
+    const nth = (entries.get(component) ?? 0) + 1;
+    entries.set(component, nth);
+    const idOf = (story: Story) => `${story.id}:${component}${nth > 1 ? `:${nth}` : ""}`;
     const live = cited.filter((s) => !skipped(s));
-    const targets = mode === "per-story" ? cited : [live.find((s) => known(idOf(s))) ?? live[0] ?? cited[0]!];
+    const pick = (ok: (id: string) => boolean) => live.find((s) => !seen.has(idOf(s)) && ok(idOf(s)));
+    const targets = mode === "per-story" ? cited : [pick(previous) ?? pick(known) ?? pick(() => true) ?? live[0] ?? cited[0]!];
     for (const story of targets) {
+      if (seen.has(idOf(story))) continue;
       const id = idOf(story);
-      if (seen.has(id)) continue;
       seen.add(id);
       const others = mode === "per-story" ? [] : live.filter((s) => s !== story);
       const summary = `${VERB[c.change]} ${noun(c.type)} ${name}`;

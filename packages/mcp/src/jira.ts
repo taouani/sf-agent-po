@@ -304,7 +304,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
       }
     }
 
-    // Sub-tasks from the detailed design that builds this backlog: one per component change, under each story it cites.
+    // Sub-tasks from the detailed design that builds this backlog: one per component change (under the first story that needs it, or each story it cites, by mode).
     const notes: string[] = [];
     const found = args.subtasks ? designFor(args.context, doc.id, args.detailedDesignId) : undefined;
     const design = found?.chosen;
@@ -321,6 +321,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         mode: args.subtaskMode,
         skipped: (story) => storyItems.get(story.id)?.action === "skip",
         known: (id) => !!mapping.items[id],
+        previous: (id) => !!mapping.subtasks?.includes(id),
       });
       unmatched = planned.unmatched;
       if (!subtaskType) notes.push(`Project ${args.projectKey} has no sub-task issue type, so the ${planned.subtasks.length} sub-task(s) of the detailed design ${design.doc.id} are left out; the stories are published.`);
@@ -544,6 +545,9 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         if (!kit.atlassian) throw new Error("Jira is not set up for this server.");
         const client = kit.atlassian();
         const { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design } = await plan(args, doc, meta, backlog, client);
+        // Saved with the mapping once the publish goes through (never on a rejection): where each change went this time.
+        const plannedTasks = items.filter((i) => i.level === "subtask" && i.action !== "skip").map((i) => i.id);
+        if (plannedTasks.length) mapping.subtasks = plannedTasks;
         const noteText = notes.length ? `\n\n${notes.join("\n")}` : "";
         const version = doc.metadata.version;
         // The report credits the stories to the model label set when they were published.
