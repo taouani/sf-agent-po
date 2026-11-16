@@ -23,6 +23,7 @@ import {
   INDEXED_TYPES,
   unaddressed,
   type DesignCheckEnv,
+  sharingToConfirm,
 } from "../design/checks.js";
 import { maskDeep } from "../design/mask.js";
 import { renderHighLevelDesign, type RequirementGap } from "../design/render.js";
@@ -277,13 +278,14 @@ const SECTIONS: SectionSpec<any>[] = [
     traces: true,
     uses: ["context", "dataModel"],
     shape:
-      '{"sharing": [{"object": "Policy__c", "internal": "private" | "public read only" | "public read/write" | "controlled by parent", "external": "private", "notes": "..."}],\n' +
+      '{"sharing": [{"object": "Policy__c", "internal": "private" | "public read only" | "public read/write" | "public read/write/transfer" | "public full access" | "controlled by parent" | "to confirm", "external": "private", "notes": "..."}],\n' +
       ' "accessByPersona": "...",\n' +
       ' "measures": [{"id": "S1", "measure": "Field audit trail on Policy__c for 10 years", "requirementIds": ["R5"]}],\n' +
       ' "nonFunctional": [{"topic": "Performance", "target": "The renewal page opens in under 2 seconds", "requirementIds": ["R6"]}]}',
     guidance:
       "the sharing model of each object the work touches (internal and external defaults), access by persona, and the security and compliance measures (encryption, authentication, audit, retention, data residency), each with an id (S1, S2...) and the requirement ids it meets. " +
-      "Every compliance requirement needs a measure. Then the non-functional targets (performance, volumes and limits, availability, retention and archiving, backup and restore), each citing its requirement ids.",
+      "Every compliance requirement needs a measure. Then the non-functional targets (performance, volumes and limits, availability, retention and archiving, backup and restore), each citing its requirement ids." +
+      ' Read the sharing model of each existing object with metadata_component (sharingModel and externalSharingModel); write "to confirm" only when neither the index nor an input gives it, and it then becomes an open question.',
     check: checkSecurity,
     summary: (s) =>
       `${plural(s.measures.length, "measure")}, ${plural(s.sharing.length, "sharing setting")}, ${plural(s.nonFunctional.length, "target")}.${cites([...s.measures, ...s.nonFunctional].flatMap((m: { requirementIds: string[] }) => m.requirementIds))}`,
@@ -310,6 +312,10 @@ const SECTIONS: SectionSpec<any>[] = [
     title: "Decisions, risks and open questions",
     schema: decisionsSection,
     traces: true,
+    extra: (design) => {
+      const objects = sharingToConfirm(design);
+      return objects.length ? `The security section leaves the sharing default of ${objects.join(", ")} to confirm: add an open question for each, naming the object.` : undefined;
+    },
     uses: ["solution"],
     shape:
       '{"decisions": [{"id": "D1", "title": "Flow or Apex for the renewal reminder", "options": ["Record-triggered flow", "Apex trigger"], "choice": "Record-triggered flow", "reason": "...", "requirementIds": ["R2"]}],\n' +
