@@ -505,13 +505,13 @@ describe("Jira sub-tasks", () => {
     },
   });
 
-  it("gives each story one sub-task per component change of the detailed design, under the story, and updates them on the next publish", async () => {
+  it("per story: gives each story one sub-task per component change it cites, under the story, and updates them on the next publish", async () => {
     const { call, contexts, seen, jira, input, masker } = await connect();
     const { id } = await saveBacklog(call, backlog(input.id));
     const design = (await masker.maskOutputs("acme", [JSON.stringify(ddFor(id))])).texts[0]!;
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD", artifactType: "detailed", extra: { design: JSON.parse(design) } });
 
-    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskMode: "per-story" });
     expect(r.isError).toBeFalsy();
     const shown = seen.at(-1)!;
     expect(shown.target).toContain("5 to create");
@@ -536,14 +536,14 @@ describe("Jira sub-tasks", () => {
     expect(r.text).toContain("Skipped 1 won't-have item(s) and 1 sub-task(s) of stories not published");
 
     // Published again unchanged: nothing to do. A changed note updates the sub-task in place.
-    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" })).text).toContain("Nothing to publish");
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskMode: "per-story" })).text).toContain("Nothing to publish");
     const changed = ddFor(id);
     changed.deployment.components[0]!.notes = "Ask the owner";
     // Reworded the way Salesforce reads as the same component: the same sub-task.
     changed.deployment.components[0]!.type = "Custom Field";
     changed.deployment.components[0]!.name = "account.VIP__c";
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD v2", artifactType: "detailed", extra: { design: changed } });
-    const again = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    const again = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskMode: "per-story" });
     expect(again.text).toMatch(/Updated PORT-\d+ Create field account\.VIP__c/);
     expect(seen.at(-1)!.body).not.toContain("not planned");
     const last = jira.writes.at(-1)!;
@@ -553,11 +553,52 @@ describe("Jira sub-tasks", () => {
     // Left out on request.
     changed.deployment.components[0]!.notes = "Third version";
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD v3", artifactType: "detailed", extra: { design: changed } });
-    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtasks: false })).text).toContain("Nothing to publish");
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskMode: "per-story", subtasks: false })).text).toContain("Nothing to publish");
     // A backlog no design builds: none is used by default, and the model is told.
     const other = await call("backlog_save", { context: "acme", backlog: { ...backlog(input.id), title: "Other backlog" } });
     const otherId = /as (doc-\w+)/.exec(other.text)![1]!;
-    expect((await call("jira_publish", { context: "acme", artifactId: otherId, projectKey: "PORT" })).text).toContain("No detailed design names this backlog in its scope");
+    expect((await call("jira_publish", { context: "acme", artifactId: otherId, projectKey: "PORT", subtaskMode: "per-story" })).text).toContain("No detailed design names this backlog in its scope");
+  });
+
+  it("per change: one sub-task per component change, under the first published story that needs it, naming the others; a switch of mode leaves the extra ones alone", async () => {
+    const { call, contexts, seen, jira, input } = await connect();
+    const { id } = await saveBacklog(call, backlog(input.id));
+    const dd = ddFor(id);
+    dd.deployment.components[0]!.stories = ["S3", "S2", "S1"];
+    saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD", artifactType: "detailed", extra: { design: dd } });
+
+    // Published per story first, as before: S1 and S2 each get the field's sub-task.
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskMode: "per-story" });
+    const perStory = jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task");
+    expect(perStory.map((w) => [w.fields.summary, w.fields.parent?.key])).toEqual([
+      ["Create field Account.VIP__c", "PORT-2"],
+      ["Create flow VIP_Notify", "PORT-2"],
+      ["Create field Account.VIP__c", "PORT-5"], // S2, created after S1's sub-tasks
+    ]);
+
+    // Then per change (the default): the field's sub-task under S1 is kept, it names S2, and S2's is left in Jira.
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(r.isError).toBeFalsy();
+    const shown = seen.at(-1)!;
+    expect(shown.body).toContain("Also needed by: S2 Set the VIP flag.");
+    expect(shown.body).not.toMatch(/Also needed by:.*S3/);
+    expect(shown.body).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c \(PORT-\d+\)/);
+    const update = jira.writes.at(-1)!;
+    expect(update).toMatchObject({ op: "update" });
+    expect(JSON.stringify(update.fields.description)).toContain("Also needed by: S2 Set the VIP flag.");
+    expect(jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task" && (w as { op?: string }).op !== "update")).toHaveLength(3);
+
+    // A new backlog published per change from the start: one sub-task for the field, under S1.
+    const other = await call("backlog_save", { context: "acme", backlog: { ...backlog(input.id), title: "Other backlog" } });
+    const otherId = /as (doc-\w+)/.exec(other.text)![1]!;
+    const dd2 = ddFor(otherId);
+    dd2.deployment.components[0]!.stories = ["S2", "S1"];
+    saveArtifact(contexts, "acme", { kind: "design", title: "Other detailed design", content: "# DD", artifactType: "detailed", extra: { design: dd2 } });
+    const before = jira.writes.length;
+    await call("jira_publish", { context: "acme", artifactId: otherId, projectKey: "PORT" });
+    const created = jira.writes.slice(before).filter((w) => w.fields.issuetype?.name === "Sub-task");
+    expect(created.map((w) => w.fields.summary)).toEqual(["Create field Account.VIP__c", "Create flow VIP_Notify"]);
+    expect(created[0]!.fields.parent?.key).toBe(created[1]!.fields.parent?.key);
   });
 
   it("publishes the stories without sub-tasks when the project has no sub-task type", async () => {
@@ -566,7 +607,7 @@ describe("Jira sub-tasks", () => {
     saveArtifact(contexts, "acme", { kind: "design", title: "VIP DD", content: "# DD", artifactType: "detailed", extra: { design: ddFor(id) } });
     jira.fail.noSubtasks = true;
     const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
-    expect(r.text).toContain("Project PORT has no sub-task issue type, so the 3 sub-task(s) of the detailed design");
+    expect(r.text).toContain("Project PORT has no sub-task issue type, so the 2 sub-task(s) of the detailed design");
     expect(jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task")).toHaveLength(0);
     expect(jira.writes).toHaveLength(3);
     expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskIssueType: "Sub-task" })).text).toContain('has no sub-task issue type "Sub-task"');
