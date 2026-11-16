@@ -18,6 +18,7 @@ import {
   requirementFindings,
   same,
   soften,
+  sharingFindings,
   squash,
   warning,
   type DesignCheckEnv,
@@ -244,8 +245,9 @@ export function checkDdSecurity(s: DdSecuritySection, env: Env): Finding[] {
     }
   for (const o of (env.design.dataModel?.objects ?? []).filter((o) => o.status === "new" && !s.sharing.some((x) => same(x.object, o.name))))
     findings.push(warning(o.name, `New object ${o.name} has no sharing entry: give its internal (and external) default.`));
-  for (const x of s.sharing.filter((x) => x.external === "public read/write"))
-    findings.push(warning(x.object, `External users get read/write access to every ${x.object} record: check that is meant.`));
+  for (const x of s.sharing.filter((x) => x.external === "public read/write" || x.external === "public read/write/transfer" || x.external === "public full access"))
+    findings.push(warning(x.object, `External users get ${x.external} on every ${x.object} record: check that is meant.`));
+  findings.push(...sharingFindings(s.sharing, env));
   findings.push(...language(env, s, "security"));
   return findings;
 }

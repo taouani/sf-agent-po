@@ -10,7 +10,18 @@ export const list = <T extends z.ZodTypeAny>(item: T, max = 60) => z.array(item)
 export const requirementIds = z.array(z.string().regex(/^R[1-9]\d{0,5}$/, "use requirement ids such as R1")).max(40).default([]);
 export const localId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[1-9]\\d{0,3}$`), `use an id such as ${prefix}1`);
 export const STATUS = ["existing", "new", "changed", "retired"] as const;
-export const SHARING = ["private", "public read only", "public read/write", "controlled by parent"] as const;
+export const SHARING = ["private", "public read only", "public read/write", "public read/write/transfer", "public full access", "controlled by parent", "to confirm"] as const;
+export type Sharing = (typeof SHARING)[number];
+
+/** A Salesforce sharingModel value as the design names it; undefined for one it has no name for (ControlledByCampaign...). */
+export const SHARING_MODEL: Readonly<Record<string, Sharing>> = {
+  private: "private",
+  read: "public read only",
+  readwrite: "public read/write",
+  readwritetransfer: "public read/write/transfer",
+  fullaccess: "public full access",
+  controlledbyparent: "controlled by parent",
+};
 
 export const contextSection = z.strictObject({
     goals: list(text(500), 20).min(1),

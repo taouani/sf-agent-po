@@ -18,6 +18,9 @@ import {
   type DetailedDesign,
   checkDataModel,
   checkSecurity,
+  checkDecisions,
+  decisionsSection,
+  securitySection,
   dataModelSection,
   impactKey,
   checkAutomation,
@@ -213,6 +216,49 @@ describe("design checks review fixes", () => {
     ]);
   });
 
+  it("check sharing defaults against the index, and turn one left to confirm into an open question", () => {
+    const index = [
+      component("CustomObject", "Case", { sharingModel: "ReadWriteTransfer", externalSharingModel: "Private" }),
+      component("CustomObject", "Cart__c", {}),
+      component("CustomObject", "Account", { sharingModel: "Read" }),
+    ];
+    // Salesforce's values have names now, and "to confirm" is accepted.
+    const s = securitySection.parse({
+      sharing: [
+        { object: "Case", internal: "public read/write/transfer", external: "to confirm" },
+        { object: "Cart__c", internal: "to confirm" },
+        { object: "Account", internal: "public full access" },
+      ],
+      measures: [{ id: "S1", measure: "m", requirementIds: ["R2"] }],
+      nonFunctional: [],
+    });
+    expect(lines(checkSecurity(s, env(index)))).toEqual([
+      "error Case.external: The index gives Case's external default: private. Use it, or the default this design sets.",
+      "warning Cart__c.internal: Cart__c's internal default is to confirm: the decisions step asks for an open question about it.",
+      "warning Account.internal: The index gives Account's internal default as public read only, not public full access: if the design changes it, say so and why.",
+    ]);
+
+    const design = { title: "", security: s };
+    const without = decisionsSection.parse({ decisions: [{ id: "D1", title: "Flow or Apex", options: ["Flow", "Apex"], choice: "Flow", reason: "declarative", requirementIds: [] }], openQuestions: [{ question: "Who owns carts?", owner: "Business owner" }] });
+    expect(lines(checkDecisions(without, env(index, { design })))).toEqual([
+      "error Case: The security section leaves Case's sharing default to confirm: add an open question about it, naming Case, with who should answer.",
+      "error Cart__c: The security section leaves Cart__c's sharing default to confirm: add an open question about it, naming Cart__c, with who should answer.",
+    ]);
+    // A question naming another object, or the word in passing, does not count.
+    const near = { ...without, openQuestions: [{ question: "Who owns Case_Note__c records? In that case, who signs off for Cart__c?", owner: "Business owner" }] };
+    expect(lines(checkDecisions(near, env(index, { design })))).toEqual([
+      "error Case: The security section leaves Case's sharing default to confirm: add an open question about it, naming Case, with who should answer.",
+    ]);
+    const asked = { ...without, openQuestions: [...without.openQuestions, { question: "What is the sharing model of cart__c and of Case for external users?", owner: "Security" }] };
+    expect(checkDecisions(asked, env(index, { design }))).toEqual([]);
+
+    // A default the design has no word for is still known.
+    const campaign = securitySection.parse({ sharing: [{ object: "CampaignMember", internal: "to confirm" }], measures: [{ id: "S1", measure: "m", requirementIds: ["R2"] }], nonFunctional: [] });
+    expect(lines(checkSecurity(campaign, env([component("CustomObject", "CampaignMember", { sharingModel: "ControlledByCampaign" })])))).toEqual([
+      'error CampaignMember.internal: The index gives CampaignMember\'s internal default: ControlledByCampaign (write "controlled by parent"). Use it, or the default this design sets.',
+    ]);
+  });
+
   it("key what metadata_impact looked at on the type and real name, never in clear", () => {
     expect(impactKey("CustomObject", "Policy__c")).toBe(impactKey("Custom Object", " policy__c "));
     expect(impactKey("CustomObject", "Policy__c")).not.toContain("olicy");
@@ -334,6 +380,15 @@ describe("detailed design checks, review fixes", () => {
     const design = { title: "", dataModel: ddDataModelSection.parse({ objects: [{ name: "Policy__c", status: "existing", fields: [{ name: "A__c", label: "A", type: "Date", status: "new", access: [{ permissionSet: "Renewals" }, { permissionSet: "renewals" }, { permissionSet: "Agent Profile" }] }] }] }) };
     const security = ddSecuritySection.parse({ permissionSets: [{ name: "Renewals_Edit", status: "new", purpose: "p", grants: ["g"], group: "Renewals" }] });
     expect(checkDdSecurity(security, ddEnv({ design, lookup: (t, n) => (t === "Profile" && n === "Agent Profile" ? component(t, n) : undefined) }))).toEqual([]);
+  });
+
+  it("check a detailed design's sharing defaults against the index, with Salesforce's own values", () => {
+    const security = ddSecuritySection.parse({ sharing: [{ object: "Case", internal: "to confirm", external: "public full access", rules: ["Share open cases with the care team", "Share closed cases read only"] }] });
+    const lookup = (t: string, n: string) => (t === "CustomObject" && n === "Case" ? component(t, n, { sharingModel: "ReadWriteTransfer" }) : undefined);
+    expect(lines(checkDdSecurity(security, ddEnv({ lookup })))).toEqual([
+      "warning Case: External users get public full access on every Case record: check that is meant.",
+      "error Case.internal: The index gives Case's internal default: public read/write/transfer. Use it, or the default this design sets.",
+    ]);
   });
 
   it("match deployment entries whatever the type's spelling", () => {

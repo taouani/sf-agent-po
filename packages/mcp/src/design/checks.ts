@@ -21,6 +21,8 @@ import {
   type ImpactSection,
   type IntegrationsSection,
   type SecuritySection,
+  type Sharing,
+  SHARING_MODEL,
   type SolutionSection,
 } from "./schema.js";
 
@@ -252,6 +254,50 @@ export function checkIntegrations(s: IntegrationsSection, env: DesignCheckEnv): 
   return findings;
 }
 
+/** The org-wide defaults the index holds for an object, as the design names them. */
+function indexedSharing(env: { lookup?: DesignCheckEnv["lookup"] }, object: string): Record<"internal" | "external", { named?: Sharing; raw?: string }> {
+  const attrs = env.lookup?.("CustomObject", object)?.attrs;
+  const read = (v: unknown) => (typeof v === "string" && v ? { named: SHARING_MODEL[v.toLowerCase()], raw: v } : {});
+  return { internal: read(attrs?.sharingModel), external: read(attrs?.externalSharingModel) };
+}
+
+/**
+ * Sharing defaults against the index: "to confirm" when the index knows the default is sent back
+ * with it; one still to confirm must become an open question; one that differs from the index is
+ * pointed out, as the design may mean to change it.
+ */
+export function sharingFindings(sharing: readonly { object: string; internal: Sharing; external?: Sharing }[], env: { lookup?: DesignCheckEnv["lookup"] }): Finding[] {
+  const findings: Finding[] = [];
+  for (const x of sharing) {
+    const indexed = indexedSharing(env, x.object);
+    for (const side of ["internal", "external"] as const) {
+      const given = x[side];
+      const { named: known, raw } = indexed[side];
+      if (given === "to confirm" && raw)
+        // A value the design has no name for (ControlledByCampaign...) is still known: Salesforce's own word, with the closest name.
+        findings.push(error(`${x.object}.${side}`, `The index gives ${x.object}'s ${side} default: ${known ?? `${raw} (write "controlled by parent")`}. Use it, or the default this design sets.`));
+      else if (given === "to confirm")
+        findings.push(warning(`${x.object}.${side}`, `${x.object}'s ${side} default is to confirm: the decisions step asks for an open question about it.`));
+      else if (given && known && given !== known)
+        findings.push(warning(`${x.object}.${side}`, `The index gives ${x.object}'s ${side} default as ${known}, not ${given}: if the design changes it, say so and why.`));
+    }
+  }
+  return findings;
+}
+
+/**
+ * Whether a text names an object as a whole word: "Case" is not in "Case_Note__c" or "in that
+ * case,". Case matters for a plain word; an API name with an underscore is matched in any case.
+ */
+const names = (text: string, object: string) =>
+  new RegExp(`(?<![\\w])${object.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`, object.includes("_") ? "i" : "").test(text);
+
+/** The objects whose sharing default the security section leaves to confirm. */
+export function sharingToConfirm(design: unknown): string[] {
+  const sharing = (design as { security?: { sharing?: { object: string; internal: string; external?: string }[] } } | undefined)?.security?.sharing ?? [];
+  return sharing.filter((x) => x.internal === "to confirm" || x.external === "to confirm").map((x) => x.object);
+}
+
 export function checkSecurity(s: SecuritySection, env: DesignCheckEnv): Finding[] {
   const findings: Finding[] = [...repeatedIds(s.measures, "measures")];
   for (const m of s.measures) findings.push(...requirementFindings(env, m.id, m.requirementIds));
@@ -266,6 +312,7 @@ export function checkSecurity(s: SecuritySection, env: DesignCheckEnv): Finding[
     findings.push(warning(r.id, `Non-functional requirement ${r.id} has no target here: add it under nonFunctional, citing ${r.id}.`));
   for (const o of (env.design.dataModel?.objects ?? []).filter((o) => o.status === "new" && !s.sharing.some((x) => same(x.object, o.name))))
     findings.push(warning(o.name, `New object ${o.name} has no sharing entry: give its internal (and external) default.`));
+  findings.push(...sharingFindings(s.sharing, env));
   findings.push(...language(env, s, "security"));
   return findings;
 }
@@ -298,6 +345,9 @@ export function checkDecisions(s: DecisionsSection, env: DesignCheckEnv<unknown>
   s.openQuestions.forEach((q, i) => {
     if (!q.owner) findings.push(warning(`openQuestions.${i}`, "Name who should answer this question: a role, such as the business owner or security."));
   });
+  for (const object of sharingToConfirm(env.design))
+    if (!s.openQuestions.some((q) => names(q.question, object)))
+      findings.push(error(object, `The security section leaves ${object}'s sharing default to confirm: add an open question about it, naming ${object}, with who should answer.`));
   findings.push(...language(env, s, "decisions"));
   return findings;
 }

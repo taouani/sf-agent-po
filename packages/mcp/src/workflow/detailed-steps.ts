@@ -6,7 +6,7 @@ import type { StepDefinition, StepOutcome } from "./engine.js";
 import { z } from "zod";
 import { saveArtifact } from "../artifacts.js";
 import type { Finding } from "../backlog.js";
-import { checkDecisions } from "../design/checks.js";
+import { checkDecisions, sharingToConfirm } from "../design/checks.js";
 import {
   checkDdAutomation,
   checkDdDataModel,
@@ -180,10 +180,11 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     uses: ["scope", "dataModel"],
     shape:
       '{"permissionSets": [{"name": "Renewals_Agent", "status": "new", "purpose": "...", "grants": ["Policy__c: read, edit", "Policy__c.Renewal_Date__c: edit", "Apex class RenewalService"], "group": "Renewals", "stories": ["S1"]}],\n' +
-      ' "sharing": [{"object": "Letter__c", "internal": "controlled by parent", "external": "private", "rules": ["..."]}],\n' +
+      ' "sharing": [{"object": "Letter__c", "internal": "private" | "public read only" | "public read/write" | "public read/write/transfer" | "public full access" | "controlled by parent" | "to confirm", "external": "private", "rules": ["..."]}],\n' +
       ' "customPermissions": [{"name": "Send_Renewal", "status": "new", "purpose": "...", "stories": ["S1"]}], "guestAccess": "..."}',
     guidance:
-      "the permission sets and permission set groups to create or change (every one the field tables name), the internal and external org-wide defaults, sharing rules, custom permissions, and guest-user access for public Experience Cloud pages.",
+      "the permission sets and permission set groups to create or change (every one the field tables name), the internal and external org-wide defaults, sharing rules (one rule per item), custom permissions, and guest-user access for public Experience Cloud pages." +
+      ' Read the sharing model of each existing object with metadata_component (sharingModel and externalSharingModel); write "to confirm" only when neither the index nor an input gives it, and it then becomes an open question.',
     check: checkDdSecurity,
     summary: (s) => `${plural(s.permissionSets.length, "permission set")}, ${plural(s.sharing.length, "sharing setting")}.`,
   },
@@ -232,6 +233,10 @@ const SECTIONS: SectionSpec<any, DetailedDesign>[] = [
     schema: decisionsSection,
     traces: true,
     openNote: false,
+    extra: (design) => {
+      const objects = sharingToConfirm(design);
+      return objects.length ? `The security section leaves the sharing default of ${objects.join(", ")} to confirm: add an open question for each, naming the object.` : undefined;
+    },
     uses: ["scope"],
     shape:
       '{"decisions": [{"id": "D1", "title": "...", "options": ["...", "..."], "choice": "...", "reason": "...", "requirementIds": []}],\n' +
