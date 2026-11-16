@@ -13,7 +13,7 @@ const fakeModel =
     return spans;
   };
 
-type Issue = { fields: Record<string, any>; updated: number };
+type Issue = { fields: Record<string, any>; updated: number; status?: "new" | "indeterminate" | "done" };
 
 /** Jira as far as publishing uses it, recording every write. */
 function fakeJira() {
@@ -53,6 +53,7 @@ function fakeJira() {
       if (!i) throw new AtlassianError("Issue does not exist", 404);
       return { updated: String(i.updated), summary: i.fields.summary, parentKey: i.fields.parent?.key, labels: i.fields.labels ?? [] };
     },
+    getStories: async (keys: string[]) => new Map(keys.filter((k) => issues.has(k)).map((k) => [k, { status: issues.get(k)!.status ?? "new" }])),
     updateIssue: async (key: string, fields: Record<string, any>) => {
       if (fail.on?.("update", fields)) throw new AtlassianError("Bad request", 400);
       const i = issues.get(key)!;
@@ -583,6 +584,20 @@ describe("Jira sub-tasks", () => {
     expect(shown.body).toContain("Also needed by: S2 Set the VIP flag.");
     expect(shown.body).not.toMatch(/Also needed by:.*S3/);
     expect(shown.body).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c \(PORT-\d+\)/);
+    expect(r.text).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c \(PORT-\d+\)\. Tell the user to close them/);
+    // Also when nothing else changes, where no approval page shows it.
+    const quiet = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(quiet.text).toContain("Nothing to publish");
+    expect(quiet.text).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: S2:customfield:account\.vip__c/);
+    // A story taken out of the backlog is named too, until it is closed.
+    await saveBacklog(call, backlog(input.id, (b) => void b.epics[0]!.stories.splice(1, 1)));
+    const gone = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(gone.text).toMatch(/No longer in this backlog, left as they are in Jira: S2 \(PORT-\d+\)\./);
+    await saveBacklog(call, backlog(input.id));
+    // Once closed in Jira, it is no longer listed.
+    const leftover = /S2:customfield:account\.vip__c \((PORT-\d+)\)/.exec(quiet.text)![1]!;
+    jira.issues.get(leftover)!.status = "done";
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" })).text).not.toContain("not planned");
     const update = jira.writes.at(-1)!;
     expect(update).toMatchObject({ op: "update" });
     expect(JSON.stringify(update.fields.description)).toContain("Also needed by: S2 Set the VIP flag.");
