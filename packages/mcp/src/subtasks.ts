@@ -10,6 +10,8 @@ export interface PlannedSubtask {
   /** Its id in the Jira mapping: never a backlog id, which cannot hold a colon. */
   id: string;
   storyId: string;
+  /** The other stories that need the change (per-change mode). */
+  alsoFor: string[];
   /** Masked. */
   summary: string;
   /** Masked. */
@@ -163,6 +165,7 @@ export function planSubtasks(backlog: Backlog, design: DetailedDesign, designTit
       subtasks.push({
         id,
         storyId: story.id,
+        alsoFor: others.map((s) => s.id),
         summary,
         description: { type: "doc", version: 1, content: [...lines.map(para), { type: "rule" }, para(`From the detailed design "${designTitle}".`)] },
       });
