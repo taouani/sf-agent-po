@@ -322,6 +322,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     if (found?.note) notes.push(found.note);
     let subtaskType: string | undefined;
     let unmatched: string[] = [];
+    let plannedTasks = 0;
+    let elsewhereTasks = 0;
     if (design) {
       const types = project.subtaskTypes ?? [];
       if (args.subtaskIssueType && !types.includes(args.subtaskIssueType))
@@ -335,6 +337,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         previous: (id) => !!mapping.subtasks?.includes(id),
       });
       unmatched = planned.unmatched;
+      plannedTasks = planned.subtasks.length;
       if (!subtaskType) notes.push(`Project ${args.projectKey} has no sub-task issue type, so the ${planned.subtasks.length} sub-task(s) of the detailed design ${design.doc.id} are left out; the stories are published.`);
       else if (!planned.subtasks.length) notes.push(`The detailed design ${design.doc.id} gives no sub-task to these stories: its deployment list cites none of them.`);
       else {
@@ -362,19 +365,23 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         items.splice(0, items.length, ...items.flatMap((i) => [i, ...(i.level === "story" ? (byStory.get(i.id) ?? []) : [])]));
         // A change these epics need that goes under a story of an epic left out (the first that needs it) waits for that epic's publish.
         const elsewhere = planned.subtasks.filter((t) => outOfScope(t.storyId) && !mapping.items[t.id] && storyItems.get(t.storyId)?.action !== "skip" && t.alsoFor.some((id) => !outOfScope(id)));
+        elsewhereTasks = elsewhere.length;
         if (elsewhere.length)
           notes.push(
             `${elsewhere.length} sub-task(s) these epics also need go under a story of an epic left out, the first story that needs the change: ${elsewhere.map((t) => `${t.summary} (under ${t.storyId})`).join("; ")}. Publish epic ${[...new Set(elsewhere.map((t) => epicOf.get(t.storyId)))].join(", ")} to add them.`,
           );
       }
     }
+    // Stories of the epics left out that a whole publish would skip (won't have): not linked to either.
+    const skippedOutside = new Set(items.filter((i) => i.action === "skip" && outOfScope(i.id)).map((i) => i.id));
     if (scope) {
       items.splice(0, items.length, ...items.filter((i) => !outOfScope(i.id)));
-      if (design && subtaskType && !items.some((i) => i.level === "subtask")) notes.push(`The detailed design ${design.doc.id} gives no sub-task to the stories of epic ${args.epics!.join(", ")}.`);
+      if (design && subtaskType && plannedTasks && !elsewhereTasks && !items.some((i) => i.level === "subtask")) notes.push(`The detailed design ${design.doc.id} gives no sub-task to the stories of epic ${args.epics!.join(", ")}.`);
     }
 
     // Two items writing to one issue would overwrite each other on every publish.
-    const owners = new Map<string, string>();
+    // Issues of the epics left out are owned too, so an item of these epics cannot take one over.
+    const owners = new Map(Object.entries(mapping.items).flatMap(([id, e]) => (outOfScope(id) ? [[e.key, id] as const] : [])));
     for (const item of items) {
       if (!item.key) continue;
       const other = owners.get(item.key);
@@ -428,12 +435,35 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
 
     // Dependency links between stories that do not exist yet. Won't-have stories are not in Jira to link.
     // A story of an epic left out is linked to only once it is in Jira; links between two of them wait for their own publish.
-    const published = (id: string) => (byId.has(id) ? byId.get(id)!.action !== "skip" : outOfScope(id) && !!mapping.items[id]);
-    const keyOf = (id: string) => byId.get(id)?.key ?? mapping.items[id]?.key;
-    const links = backlog.epics
+    const published = (id: string) => (byId.has(id) ? byId.get(id)!.action !== "skip" : outOfScope(id) && !skippedOutside.has(id) && !!mapping.items[id]);
+    const keyOf = (id: string) => (byId.has(id) ? byId.get(id)!.key : mapping.items[id]?.key);
+    const wanted = backlog.epics
       .flatMap((e) => e.stories)
       .flatMap((s) => [...new Set(s.dependsOn ?? [])].map((blocker) => ({ blocker, blocked: s.id })))
-      .filter(({ blocker, blocked }) => (byId.has(blocker) || byId.has(blocked)) && published(blocker) && published(blocked))
+      .filter(({ blocker, blocked }) => (byId.has(blocker) || byId.has(blocked)) && published(blocker) && published(blocked));
+    // Such a story is read from Jira: one deleted there is created again by its epic's publish, and one edited there keeps its warning for it.
+    const outside = [...new Set(wanted.flatMap((l) => [l.blocker, l.blocked]).filter((id) => !byId.has(id)))];
+    const outsideStates = await mapLimit(outside, 8, (id) => {
+      const key = mapping.items[id]!.key;
+      return client.getIssueState(key).catch((err) => {
+        if (err instanceof AtlassianError && err.status === 404) return undefined;
+        if (err instanceof AtlassianError) throw new Error(`Jira did not return ${key} (HTTP ${err.status}). Nothing was written.`);
+        throw err;
+      });
+    });
+    const missing = outside.filter((_, n) => !outsideStates[n]);
+    const editedOutside = new Set(
+      outside.filter((id, n) => {
+        const before = mapping.items[id]!.updated;
+        return !!before && !!outsideStates[n] && outsideStates[n]!.updated !== before;
+      }),
+    );
+    if (missing.length)
+      notes.push(
+        `Not linked, as their issue is no longer in Jira: ${missing.map((id) => `${id} (${mapping.items[id]!.key})`).join(", ")}. Publish epic ${[...new Set(missing.map((id) => epicOf.get(id)))].join(", ")} to create them again; the links are added then.`,
+      );
+    const links = wanted
+      .filter(({ blocker, blocked }) => !missing.includes(blocker) && !missing.includes(blocked))
       .filter(({ blocker, blocked }) => {
         const [a, b] = [keyOf(blocker), keyOf(blocked)];
         return !(a && b && mapping.links.includes(`${a}>${b}`));
@@ -451,7 +481,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
     const gone = left.filter(([, i]) => open(i.key));
     const orphans = gone.filter(([id]) => !id.includes(":")).map(([id, i]) => `${id} (${i.key})`);
     const unplanned = [...gone.filter(([id]) => id.includes(":")).map(([id, i]) => `${id} (${i.key})`), ...strays];
-    return { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design: design?.doc, outOfScope };
+    return { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design: design?.doc, outOfScope, editedOutside };
   };
 
   /**
@@ -582,7 +612,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const { doc, meta, backlog } = loadBacklog(context, args.artifactId);
         if (!kit.atlassian) throw new Error("Jira is not set up for this server.");
         const client = kit.atlassian();
-        const { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design, outOfScope } = await plan(args, doc, meta, backlog, client);
+        const { project, mapping, items, links, orphans, unplanned, notes, unmatched, subtaskType, design, outOfScope, editedOutside } = await plan(args, doc, meta, backlog, client);
         const scoped = !!args.epics?.length;
         const only = scoped ? ` (epic ${args.epics!.join(", ")} only)` : "";
         // Saved with the mapping once the publish goes through (never on a rejection): where each change went this time. Those of epics left out stay.
@@ -604,7 +634,7 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
         const markPublished = () =>
           updateArtifactMeta(contexts, context, doc, (m) =>
             scoped
-              ? { jira: { ...mapping, ...(publishedModel() && { model: publishedModel() }) } }
+              ? { jira: { ...mapping, ...(!mapping.model && publishedModel() && { model: publishedModel() }) } }
               : {
                   // Saved again while this ran: the new version is still unpublished.
                   status: m.version === version ? "published" : "changed",
@@ -846,8 +876,8 @@ export function registerBacklogTools(server: McpServer, kit: PublishKit): void {
           save();
           done.push(`Linked ${blocker} blocks ${blocked}`);
           // A new link changes both issues' timestamps; refreshed, so the next publish does not report it as an edit made in Jira.
-          await refreshUpdated(link.blocker);
-          await refreshUpdated(link.blocked);
+          // Not for a story of an epic left out that was edited in Jira: its epic's next publish still warns about it.
+          for (const id of [link.blocker, link.blocked]) if (!editedOutside.has(id)) await refreshUpdated(id);
         }
 
         keepUnchanged();
