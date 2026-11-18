@@ -3,7 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AtlassianError, type AtlassianClient } from "@sf-agent-po/connectors";
 import { ContextRepository, Database, Masker, newVaultKey, Vault, type EntityDetector, type Span } from "@sf-agent-po/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalServer, createServer, mergeLabels, requestDigest, saveArtifact, type ApprovalRequest, type Backlog, type Decision, type PublishRequest, type Reviewer } from "../src/index.js";
+import { ApprovalServer, createServer, mergeLabels, requestDigest, saveArtifact, type ApprovalRequest, type Backlog, type Decision, type PublishRequest, type Reviewer, type Story } from "../src/index.js";
 
 const fakeModel =
   (names: readonly string[]): EntityDetector =>
@@ -656,6 +656,88 @@ describe("Jira sub-tasks", () => {
     expect(seen.at(-1)!.body).toMatch(/Sub-tasks not planned in this publish, left as they are in Jira: .*S1:customfield:account\.vip__c \(PORT-3\)/);
   });
 
+  it("publishes only the epics named: the others are not read, shown or written, and their sub-tasks and links wait for them", async () => {
+    const { call, contexts, seen, jira, input } = await connect();
+    const twoEpics = (over: (b: Backlog) => void = () => {}) =>
+      backlog(input.id, (b) => {
+        b.epics.push({
+          id: "E2",
+          summary: "VIP reports",
+          outcome: "Managers see the VIPs.",
+          priority: "should",
+          sourceIds: [input.id],
+          stories: [
+            { id: "S4", type: "story", summary: "VIP dashboard", persona: "Sales manager", want: "a dashboard", benefit: "I see them", acceptanceCriteria: [{ given: "VIPs", when: "I open it", then: "they show" }], dependsOn: ["S1"] },
+            { id: "S5", type: "story", summary: "VIP alert", persona: "Sales manager", want: "an alert", benefit: "I act fast", acceptanceCriteria: [{ given: "a new VIP", when: "it is set", then: "I am told" }] },
+          ],
+        });
+        over(b);
+      });
+    const { id } = await saveBacklog(call, twoEpics());
+    const meta = () => contexts.getDocument("acme", id)!.metadata as { status: string; jira?: { items: Record<string, { key: string }>; subtasks?: string[]; publishedVersion?: number } };
+
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E9"] })).text).toContain("This backlog has no epic E9. Its epics: E1, E2.");
+
+    // E1 alone: E2 and its stories are not shown or written, and S4's link to S1 waits for S4.
+    const first = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    expect(first.text).toContain("Published to Jira project PORT (epic E1 only):");
+    expect(seen.at(-1)!.target).toContain("3 to create");
+    expect(seen.at(-1)!.target).toContain("Only epic E1, its stories and their sub-tasks: the other epics are left out");
+    expect(seen.at(-1)!.body).not.toMatch(/E2|S4|S5/);
+    expect(Object.keys(meta().jira!.items).sort()).toEqual(["E1", "S1", "S2"]);
+    expect(jira.links).toEqual(["PORT-2>PORT-3"]);
+    // Part of the backlog: it is not marked published.
+    expect(meta().status).toBe("draft");
+    expect(meta().jira!.publishedVersion).toBeUndefined();
+
+    // S1 changes and is edited in Jira; sub-tasks come: the field goes under S1 (the first story that needs it), the flow under S5.
+    const s1 = meta().jira!.items.S1!.key;
+    jira.issues.get(s1)!.fields.summary = "Edited in Jira";
+    await saveBacklog(call, twoEpics((b) => void (b.epics[0]!.stories[0]!.summary = "Show the VIP flag on the account")));
+    const dd = ddFor(id);
+    dd.deployment.components = [
+      { type: "CustomField", name: "Account.VIP__c", change: "add", stories: ["S1", "S4"], notes: "Ask Lea Martin" },
+      { type: "Flow", name: "VIP_Notify", change: "add", stories: ["S5"] },
+    ];
+    saveArtifact(contexts, "acme", { kind: "design", title: "VIP flag detailed design", content: "# DD", artifactType: "detailed", extra: { design: dd } });
+    const before = jira.writes.length;
+    const second = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E2"] });
+    expect(second.isError).toBeFalsy();
+    const page = seen.at(-1)!;
+    expect(page.target).toContain("4 to create, 0 to update, 0 unchanged");
+    expect(page.body).not.toMatch(/E1 ·|S1 ·|S2 ·|Edited in Jira/);
+    expect(page.body).toContain("Dependency links (the first blocks the second):\n- S1 blocks S4");
+    expect(second.text).toContain("1 sub-task(s) these epics also need go under a story of an epic left out, the first story that needs the change: Create field Account.VIP__c (under S1). Publish epic E1 to add them.");
+    expect(second.text).not.toMatch(/No longer in this backlog|not planned/);
+    const written = jira.writes.slice(before);
+    expect(written.every((w) => w.op === "create")).toBe(true);
+    expect(written.map((w) => w.fields.summary)).toEqual(["VIP reports", "VIP dashboard", "VIP alert", "Create flow VIP_Notify"]);
+    expect(jira.issues.get(s1)!.fields.summary).toBe("Edited in Jira");
+    expect(jira.links).toContain(`${s1}>${meta().jira!.items.S4!.key}`);
+    expect(meta().jira!.subtasks).toEqual(["S5:flow:vip_notify"]);
+
+    // E1 next: S1 is updated and gets the field's sub-task; S5's sub-task is still known as planned. A new link between two E2 stories waits for E2.
+    await saveBacklog(call, twoEpics((b) => {
+      b.epics[0]!.stories[0]!.summary = "Show the VIP flag on the account";
+      b.epics[1]!.stories[1]!.dependsOn = ["S4"];
+    }));
+    const third = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    expect(third.text).toMatch(/Updated PORT-2 Show the VIP flag on the account/);
+    expect(third.text).toMatch(/Created PORT-\d+ Create field Account\.VIP__c/);
+    expect(meta().jira!.subtasks).toEqual(["S5:flow:vip_notify", "S1:customfield:account.vip__c"]);
+    expect(seen.at(-1)!.body).toContain("Also needed by: S4 VIP dashboard.");
+
+    const [s4, s5] = [meta().jira!.items.S4!.key, meta().jira!.items.S5!.key];
+    expect(jira.links).not.toContain(`${s4}>${s5}`);
+
+    // The whole backlog: only that link is left to add, and it is marked published.
+    const all = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(seen.at(-1)!.target).toContain("0 to create, 0 to update, 8 unchanged, 1 skipped, 1 dependency link(s) to add");
+    expect(all.text).toContain(`Linked ${s4} blocks ${s5}`);
+    expect(meta().status).toBe("published");
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" })).text).toContain("Nothing to publish: Jira project PORT is already up to date.");
+  });
+
   it("publishes the stories without sub-tasks when the project has no sub-task type", async () => {
     const { call, contexts, jira, input } = await connect();
     const { id } = await saveBacklog(call, backlog(input.id));
@@ -666,5 +748,77 @@ describe("Jira sub-tasks", () => {
     expect(jira.writes.filter((w) => w.fields.issuetype?.name === "Sub-task")).toHaveLength(0);
     expect(jira.writes).toHaveLength(3);
     expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", subtaskIssueType: "Sub-task" })).text).toContain('has no sub-task issue type "Sub-task"');
+  });
+});
+
+describe("publishing some epics only", () => {
+  const withE2 = (sourceId: string, s4: Partial<Story> = {}, over: (b: Backlog) => void = () => {}) =>
+    backlog(sourceId, (b) => {
+      b.epics.push({
+        id: "E2",
+        summary: "VIP reports",
+        outcome: "Managers see the VIPs.",
+        priority: "should",
+        sourceIds: [sourceId],
+        stories: [
+          { id: "S4", type: "story", summary: "VIP dashboard", persona: "Sales manager", want: "a dashboard", benefit: "I see them", acceptanceCriteria: [{ given: "VIPs", when: "I open it", then: "they show" }], ...s4 },
+          { id: "S5", type: "story", summary: "VIP alert", persona: "Sales manager", want: "an alert", benefit: "I act fast", acceptanceCriteria: [{ given: "a new VIP", when: "it is set", then: "I am told" }] },
+        ],
+      });
+      over(b);
+    });
+
+  it("links a story created again to its new issue (whole backlog too)", async () => {
+    const { call, jira, input } = await connect();
+    const { id } = await saveBacklog(call, backlog(input.id));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(jira.links).toEqual(["PORT-2>PORT-3"]);
+    jira.issues.delete("PORT-2");
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT" });
+    expect(jira.links).toEqual(["PORT-2>PORT-3", "PORT-4>PORT-3"]);
+  });
+
+  it("refuses an item that points at an issue of an epic left out", async () => {
+    const { call, jira, input } = await connect();
+    const { id } = await saveBacklog(call, withE2(input.id));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    await saveBacklog(call, withE2(input.id, { jiraKey: "PORT-2" }));
+    const before = jira.writes.length;
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E2"] });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("S1 and S4 both point at PORT-2");
+    expect(jira.writes.length).toBe(before);
+  });
+
+  it("does not link to a story of an epic left out that is now won't have, or no longer in Jira", async () => {
+    const { call, jira, input, seen } = await connect();
+    const { id } = await saveBacklog(call, withE2(input.id));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    expect(jira.links).toEqual(["PORT-2>PORT-3"]);
+    // S2 is now won't have, and S1's issue was deleted in Jira.
+    await saveBacklog(call, withE2(input.id, { dependsOn: ["S1", "S2"] }, (b) => void (b.epics[0]!.stories[1]!.priority = "wont")));
+    jira.issues.delete("PORT-2");
+    const r = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E2"] });
+    expect(r.isError).toBeFalsy();
+    expect(seen.at(-1)!.target).toContain("0 dependency link(s) to add");
+    expect(r.text).toContain("Not linked, as their issue is no longer in Jira: S1 (PORT-2). Publish epic E1 to create them again; the links are added then.");
+    expect(jira.links).toEqual(["PORT-2>PORT-3"]);
+    // Publishing E1 creates S1 again and links it to S4, which is in Jira; S2 stays unlinked.
+    const e1 = await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    const s1 = /Created (PORT-\d+) Show the VIP flag/.exec(e1.text)![1]!;
+    expect(jira.links).toEqual(["PORT-2>PORT-3", `${s1}>PORT-5`]); // S4 is PORT-5, after E2 (PORT-4)
+    expect((await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E2"] })).text).toContain("Nothing to publish");
+  });
+
+  it("keeps the edited-in-Jira warning of a story of an epic left out that it links to", async () => {
+    const { call, jira, input, seen } = await connect();
+    const { id } = await saveBacklog(call, withE2(input.id, { dependsOn: ["S1"] }));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    jira.issues.get("PORT-2")!.updated += 100; // S1 edited in Jira
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E2"] });
+    expect(jira.links).toContain("PORT-2>PORT-5");
+    await saveBacklog(call, withE2(input.id, { dependsOn: ["S1"] }, (b) => void (b.epics[0]!.stories[0]!.summary = "Show the VIP flag now")));
+    await call("jira_publish", { context: "acme", artifactId: id, projectKey: "PORT", epics: ["E1"] });
+    expect(seen.at(-1)!.body).toMatch(/S1 · .*WARNING: edited in Jira/);
   });
 });
